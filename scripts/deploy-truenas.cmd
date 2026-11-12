@@ -10,5 +10,5 @@ if "%MODE%"=="" set "MODE=update"
 where ssh >nul 2>nul || (echo ssh was not found. Enable the Windows OpenSSH client. & exit /b 1)
 echo Copying deploy script to %PP_SSH_HOST%...
 scp -q "%~dp0..\deploy\truenas.sh" %PP_SSH_HOST%:printpantry-truenas.sh || exit /b 1
-ssh %PP_SSH_HOST% "PP_NAS_ROOT=%PP_NAS_ROOT% bash ~/printpantry-truenas.sh %MODE%"
+ssh %PP_SSH_HOST% "sed -i 's/\r$//' ~/printpantry-truenas.sh && PP_NAS_ROOT=%PP_NAS_ROOT% bash ~/printpantry-truenas.sh %MODE%"
 exit /b %ERRORLEVEL%
