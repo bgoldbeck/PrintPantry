@@ -382,6 +382,10 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
         if name and name not in compat:
             compat.append(name)
     process["compatible_printers"] = compat
+    # Shown in the job log, since the CLI says little when it rejects presets.
+    job.log = (f'machine "{machine["name"]}" ({machine.get("from")}, built-in "{machine_system}"); '
+               f'process "{process["name"]}" ({process.get("from")}, built-in "{process.get("inherits", "")}", '
+               f'compatible {compat})\n')
     bed = job.bed_type if job.bed_type in BED_KEYS else default_bed(machine, fils)
     process["curr_bed_type"] = bed
     job.bed_type = bed
@@ -437,7 +441,7 @@ def run_job(job: Job) -> None:
                 break
             log.warning("job %s: slicer crashed (%s), retrying", job.id, proc.returncode)
             job.message = f"Slicing... (retry {attempt})"
-        job.log = (proc.stdout or "") + (proc.stderr or "")
+        job.log += (proc.stdout or "") + (proc.stderr or "")
         code = result.get("return_code", proc.returncode)
         if code != 0 or proc.returncode != 0:
             msg = result.get("error_string") or ""

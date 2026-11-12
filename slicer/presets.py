@@ -205,7 +205,16 @@ class PresetLibrary:
         merged["type"] = t
         # The CLI reads "inherits" of a user preset as its built-in printer or
         # process name (for compatibility checks); values are already merged.
-        anc = self.system_ancestor(preset, vendor) if preset.source == "user" else None
+        anc = self.builtin_for(preset, merged, vendor) if preset.source == "user" else None
+        if anc is not None and self.system_ancestor(preset, vendor) is None:
+            # No parent named: fill gaps from the matching built-in.
+            base: dict = {}
+            for p in reversed(self.chain(anc, anc.vendor or vendor)):
+                base.update(p.data)
+            base.update(merged)
+            merged = base
+            merged["name"] = preset.name
+            merged["type"] = t
         merged["inherits"] = anc.name if anc else ""
         merged["from"] = "User" if preset.source == "user" else "system"
         merged["instantiation"] = "true"
@@ -216,6 +225,42 @@ class PresetLibrary:
             if p.source == "system":
                 return p
         return None
+
+    def builtin_for(self, preset: Preset, merged: dict, vendor: str = "") -> Preset | None:
+        """The built-in preset a user preset stands in for.
+
+        Its own ancestor when it has one. Exported bundles often drop
+        "inherits", so fall back to a built-in with the same (or similar)
+        name, and for a printer to one of the same model and nozzle.
+        """
+        anc = self.system_ancestor(preset, vendor)
+        if anc is not None:
+            return anc
+        anc = self._system_only(preset.type, preset.name, vendor) or self._similar(preset.type, preset.name, vendor)
+        if anc is not None or preset.type != "machine":
+            return anc
+        model = str(merged.get("printer_model", "")).lower()
+        nozzle = merged.get("nozzle_diameter")
+        nozzle = str(nozzle[0] if isinstance(nozzle, list) and nozzle else nozzle or "")
+        if not model:
+            return None
+        best = None
+        for v in ([vendor] if vendor else []) + list(self.vendors):
+            for p in self._candidates("machine", v):
+                if p.source != "system":
+                    continue
+                try:
+                    flat = self.flatten("machine", p.name, v)
+                except PresetError:
+                    continue
+                if str(flat.get("printer_model", "")).lower() != model:
+                    continue
+                pn = flat.get("nozzle_diameter")
+                pn = str(pn[0] if isinstance(pn, list) and pn else pn or "")
+                if pn == nozzle:
+                    return p
+                best = best or p
+        return best
 
     # ------------------------------------------------------------ choices
     def machines_for(self, printer_model: str, vendor: str) -> list[Preset]:
