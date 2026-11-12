@@ -367,3 +367,28 @@ def test_per_extruder_settings_are_padded(tmp_path):
     ok = make_3mf(tmp_path / "p1s.3mf", {"nozzle_diameter": ["0.4"], "extruder_type": ["Direct Drive"]})
     project.copy_for_slicing(ok, tmp_path / "same.3mf")
     assert (tmp_path / "same.3mf").read_bytes() == ok.read_bytes()
+
+
+def test_rejected_bambu_values_are_dropped(tmp_path):
+    err = ("Param values in 3mf/config error: \n"
+           "raft_first_layer_expansion: -1 not in range [0.000000,3.4e38]\n"
+           "tree_support_wall_count: -1 not in range [0,2]\n")
+    assert service.invalid_keys(err) == ["raft_first_layer_expansion", "tree_support_wall_count"]
+    path = tmp_path / "p.3mf"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(project.SETTINGS, json.dumps({"raft_first_layer_expansion": "-1", "layer_height": "0.2"}))
+        zf.writestr("3D/3dmodel.model", "<model/>")
+    assert project.drop_keys(path, ["raft_first_layer_expansion", "nope"]) == ["raft_first_layer_expansion"]
+    with zipfile.ZipFile(path) as zf:
+        assert json.loads(zf.read(project.SETTINGS)) == {"layer_height": "0.2"}
+        assert zf.read("3D/3dmodel.model") == b"<model/>"
+    assert project.drop_keys(path, ["nope"]) == []
+
+
+def test_process_preset_is_written_into_the_project():
+    config = {"wall_loops": "2", "print_settings_id": "0.20mm Standard @BBL X1C",
+              "different_settings_to_system": ["wall_loops", "", ""]}
+    project.apply_process(config, {"name": "Standard Quality", "wall_loops": "3", "inherits": "x"})
+    assert config["wall_loops"] == "3" and "name" not in config and "inherits" not in config
+    assert config["print_settings_id"] == "0.20mm Standard @BBL X1C"
+    assert config["different_settings_to_system"] == ["", "", ""]

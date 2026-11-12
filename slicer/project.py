@@ -119,19 +119,69 @@ def pad_per_extruder(config: dict) -> bool:
     return changed
 
 
-def copy_for_slicing(src: Path, dst: Path) -> None:
-    """Copy a 3MF, padding its per-extruder settings (see pad_per_extruder)."""
+# Preset bookkeeping keys that must not replace the project's own.
+META_KEYS = {"name", "type", "from", "inherits", "instantiation", "setting_id", "version",
+             "compatible_printers", "compatible_printers_condition", "print_settings_id",
+             "nozzle_diameter", "curr_bed_type"}
+
+
+def apply_process(config: dict, process: dict) -> None:
+    """Put a process preset's values into project settings.
+
+    Also clears the project's list of process keys changed from the system
+    preset, so the CLI does not keep the project's old values for them.
+    """
+    for key, value in process.items():
+        if key not in META_KEYS:
+            config[key] = value
+    diff = config.get("different_settings_to_system")
+    if isinstance(diff, list) and diff:
+        diff[0] = ""
+
+
+def copy_for_slicing(src: Path, dst: Path, process: dict | None = None) -> None:
+    """Copy a 3MF, padding its per-extruder settings (see pad_per_extruder)
+    and, when given, writing a process preset into its settings."""
     with zipfile.ZipFile(src) as zin:
         try:
             settings = json.loads(zin.read(SETTINGS)) if SETTINGS in zin.namelist() else None
         except ValueError:
             settings = None
-        if isinstance(settings, dict) and pad_per_extruder(settings):
-            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
-                for item in zin.infolist():
-                    data = zin.read(item)
-                    if item.filename == SETTINGS:
-                        data = json.dumps(settings, indent=4).encode()
-                    zout.writestr(item, data)
-            return
+        if isinstance(settings, dict):
+            changed = pad_per_extruder(settings)
+            if process:
+                apply_process(settings, process)
+                changed = True
+            if changed:
+                with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+                    for item in zin.infolist():
+                        data = zin.read(item)
+                        if item.filename == SETTINGS:
+                            data = json.dumps(settings, indent=4).encode()
+                        zout.writestr(item, data)
+                return
     dst.write_bytes(src.read_bytes())
+
+
+def drop_keys(path: Path, keys: list[str]) -> list[str]:
+    """Remove settings from a 3MF's project settings, in place. Returns those removed."""
+    with zipfile.ZipFile(path) as zin:
+        items = [(i, zin.read(i)) for i in zin.infolist()]
+    removed: list[str] = []
+    out = []
+    for item, data in items:
+        if item.filename == SETTINGS:
+            try:
+                settings = json.loads(data)
+            except ValueError:
+                return []
+            removed = [k for k in keys if k in settings]
+            for k in removed:
+                del settings[k]
+            data = json.dumps(settings, indent=4).encode()
+        out.append((item, data))
+    if removed:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item, data in out:
+                zout.writestr(item, data)
+    return removed
