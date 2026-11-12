@@ -100,6 +100,20 @@ def test_user_presets_from_bundles(lib):
     assert any("broken.bbscfg" in p for p in lib.problems)
 
 
+def test_user_preset_without_inherits_still_names_a_builtin(profiles, tmp_path):
+    """Exported bundles can drop "inherits"; the CLI still needs a built-in name."""
+    cfg = tmp_path / "cfg3"
+    write(cfg / "printer/Snapmaker U1 (0.4 nozzle).json", {"name": "Snapmaker U1 (0.4 nozzle)", "from": "User",
+                                                           "printer_model": "Snapmaker U1", "nozzle_diameter": ["0.4"] * 4})
+    write(cfg / "printer/Shop U1.json", {"name": "Shop U1", "from": "User", "printer_model": "Snapmaker U1",
+                                         "nozzle_diameter": ["0.4"] * 4})
+    lib = P.PresetLibrary(profiles, cfg, vendors=("Snapmaker",)).load()
+    for name in ("Snapmaker U1 (0.4 nozzle)", "Shop U1"):
+        flat = lib.flatten("machine", name, "Snapmaker")
+        assert flat["from"] == "User"
+        assert flat["inherits"] == "Snapmaker U1 (0.4 nozzle)"
+
+
 def test_choices_for_a_printer(lib):
     machines = [m.name for m in lib.machines_for("Snapmaker U1", "Snapmaker")]
     assert sorted(machines) == ["My U1", "Snapmaker U1 (0.4 nozzle)"]
