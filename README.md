@@ -35,16 +35,21 @@ as a container on **TrueNAS SCALE**.
 
 ## Install on TrueNAS
 
-See [docs/truenas.md](docs/truenas.md). Short version: create
-`testpool/printpantry/{library,data}`, share `library` over SMB, then install
-[compose.yaml](compose.yaml) via **Apps > Install via YAML** after
-pushing the image with `scripts\release.cmd`. The UI is on port
-8484.
+From Windows, with the `sparkfall-truenas` SSH alias set up:
 
-## Building the image (Windows)
+```
+scripts\deploy-truenas.cmd setup    datasets + checkout + app, built on the NAS
+scripts\sync-library.cmd            copy D:\PrintPantry\library over
+scripts\deploy-truenas.cmd          update to the latest main later
+```
 
-There is no CI; images are built and uploaded by hand with the scripts in
-`scripts\` (needs Docker Desktop):
+The UI is on port 8484. Details and the manual (TrueNAS UI) route are in
+[docs/truenas.md](docs/truenas.md).
+
+## Publishing an image to ghcr.io (optional)
+
+Not needed for the TrueNAS deploy above, which builds on the NAS. There is no
+CI; to publish an image by hand (needs Docker Desktop):
 
 | Script | Does |
 | --- | --- |

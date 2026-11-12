@@ -4,6 +4,10 @@ rem Override any of these by setting them before running a script.
 
 if not defined PP_IMAGE set "PP_IMAGE=ghcr.io/bgoldbeck/printpantry"
 if not defined PP_GHCR_USER set "PP_GHCR_USER=bgoldbeck"
+rem SSH alias of the TrueNAS box (from ~/.ssh/config) and where the app lives there.
+if not defined PP_SSH_HOST set "PP_SSH_HOST=sparkfall-truenas"
+if not defined PP_NAS_ROOT set "PP_NAS_ROOT=/mnt/testpool/printpantry"
+if not defined PP_LOCAL_LIBRARY set "PP_LOCAL_LIBRARY=D:\PrintPantry\library"
 rem TrueNAS runs on x86-64.
 if not defined PP_PLATFORM set "PP_PLATFORM=linux/amd64"
 
@@ -15,6 +19,7 @@ if not defined PP_VERSION (
   exit /b 1
 )
 
+if /i "%~1"=="nodocker" exit /b 0
 where docker >nul 2>nul
 if errorlevel 1 (
   echo Docker was not found. Install Docker Desktop and make sure it is running.

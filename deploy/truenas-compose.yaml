@@ -1,0 +1,26 @@
+# Compose file for the "printpantry" custom app on TrueNAS.
+# The image is built on the NAS from the git checkout in src/repo;
+# `pull_policy: build` makes every redeploy rebuild it from the latest code.
+# To move pools, change /mnt/testpool/printpantry in the paths below
+# (and PP_NAS_ROOT in scripts\_config.cmd).
+services:
+  printpantry:
+    build:
+      context: /mnt/testpool/printpantry/src/repo
+    image: printpantry:local
+    pull_policy: build
+    restart: unless-stopped
+    user: "568:568"
+    ports:
+      - "8484:8484"
+    environment:
+      PP_PASSWORD: ""
+      PP_SCAN_INTERVAL: "300"
+      TZ: "America/Los_Angeles"
+    volumes:
+      - /mnt/testpool/printpantry/library:/library:ro
+      - /mnt/testpool/printpantry/data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
