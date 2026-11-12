@@ -36,6 +36,13 @@ from .store import Store
 log = logging.getLogger("printpantry.scan")
 
 UNCATEGORIZED = "Uncategorized"
+# Folders that sort files by type rather than by subject. Their contents are
+# treated as if they sat in the parent folder, so library/stls/x.stl and
+# library/3mf/x.3mf end up in the same model.
+TYPE_DIRS = {
+    "stl", "stls", "3mf", "3mfs", "gcode", "gcodes", "sliced", "prints", "print files",
+    "files", "models", "model", "project", "projects", "source", "sources",
+}
 SKIP_DIRS = {"@eadir", ".git", "__macosx", ".thumbnails", "#recycle", ".recycle", "$recycle.bin"}
 
 
@@ -295,8 +302,8 @@ class Scanner:
 
         for path in self._walk(root):
             rel = path.relative_to(root)
-            parts = rel.parts
             relpath = rel.as_posix()
+            parts = tuple(p for p in rel.parts[:-1] if p.lower() not in TYPE_DIRS) + (rel.parts[-1],)
             f = self._load_file(path, relpath)
             if f is None:
                 continue
@@ -323,7 +330,12 @@ class Scanner:
 
         # categories with no models still show (empty folders)
         for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-            if entry.is_dir() and not entry.name.startswith(".") and entry.name.lower() not in SKIP_DIRS:
+            if (
+                entry.is_dir()
+                and not entry.name.startswith(".")
+                and entry.name.lower() not in SKIP_DIRS
+                and entry.name.lower() not in TYPE_DIRS
+            ):
                 self._category(lib, entry.name, root, overrides)
 
         for cat in lib.categories.values():

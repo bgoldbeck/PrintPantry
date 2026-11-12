@@ -199,3 +199,20 @@ def test_spa_fallback(client):
     r = client.get("/")
     assert r.status_code == 200 and "Print Pantry" in r.text
     assert client.get("/api/nope").status_code == 404
+
+
+def test_type_folders_are_merged(tmp_path):
+    """library/stls/x.stl + library/3mf/x.3mf (Brandon's layout) -> one model."""
+    lib = tmp_path / "lib"
+    demo.write_stl(lib / "stls" / "Pot Ladle Clip-Pot Ladle Clip.stl", demo.SHAPES["cube"]())
+    demo.write_project_3mf(lib / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf", ["Pot Ladle Clip-Pot Ladle Clip.stl"], (1, 2, 3))
+    demo.write_stl(lib / "Kitchen" / "Spoon Rest" / "stl" / "rest.stl", demo.SHAPES["cube"]())
+    demo.write_u1_gcode(lib / "Kitchen" / "Spoon Rest" / "gcode" / "rest_U1.gcode", ["rest.stl"], 60, [("PLA", (1, 2, 3), 1.0)])
+    settings = Settings(library=lib, data=tmp_path / "d", password="", scan_interval=0)
+    with TestClient(create_app(settings, background_scan=False)) as c:
+        cats = [x["name"] for x in c.get("/api/library").json()["categories"]]
+        assert cats == ["Kitchen", "Uncategorized"]
+        unc = c.get("/api/categories/Uncategorized").json()["models"]
+        assert len(unc) == 1 and unc[0]["counts"]["stl"] == 1 and unc[0]["counts"]["project"] == 1
+        kitchen = c.get("/api/categories/Kitchen").json()["models"]
+        assert [m["name"] for m in kitchen] == ["Spoon Rest"] and kitchen[0]["counts"]["sliced"] == 1
