@@ -93,7 +93,9 @@ def create_app(settings: Settings | None = None, background_scan: bool = True) -
             time.sleep(1)  # slow down guessing
             return RedirectResponse("/login?error=1", status_code=303)
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(COOKIE, auth.make_cookie(), max_age=MAX_AGE, httponly=True, samesite="lax")
+        resp.set_cookie(
+            COOKIE, auth.make_cookie(), max_age=MAX_AGE, expires=MAX_AGE, httponly=True, samesite="lax"
+        )
         return resp
 
     @app.post("/logout")

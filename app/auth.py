@@ -1,6 +1,7 @@
 """Optional single-password login.
 
-Set ``PP_PASSWORD`` to turn it on. The session is an HMAC-signed cookie, keyed
+Set ``PP_PASSWORD`` to turn it on; ``PP_SESSION_DAYS`` (default 365) sets how
+long a login lasts. The session is an HMAC-signed cookie, keyed
 by a random secret kept in the data volume, so restarts don't log people out.
 """
 
@@ -8,12 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import time
 from pathlib import Path
 
 COOKIE = "pp_session"
-MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+# How long a login lasts. Long by default: this is a LAN-only app.
+MAX_AGE = 60 * 60 * 24 * int(os.environ.get("PP_SESSION_DAYS", "365"))
 
 
 class Auth:

@@ -21,11 +21,24 @@ checkout() {
   echo "Code: $(git -C "$ROOT/src/repo" log --oneline -1)"
 }
 
+PW_FILE="$ROOT/src/.pp_password"
+
+ensure_password() {
+  if [ ! -s "$PW_FILE" ]; then
+    (umask 077; python3 -c "import secrets,string;a=string.ascii_lowercase+string.digits;print('-'.join(''.join(secrets.choice(a) for _ in range(4)) for _ in range(3)))" > "$PW_FILE")
+    echo "Generated a login password (see: deploy-truenas.cmd password)." >&2
+  fi
+}
+
 compose_json() {
-  python3 - "$ROOT" "$1" <<'PY'
+  ensure_password
+  python3 - "$ROOT" "$1" "$PW_FILE" <<'PY'
 import json, sys
-root, mode = sys.argv[1], sys.argv[2]
+root, mode, pw_file = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(f"{root}/src/repo/deploy/truenas-compose.yaml").read().replace("/mnt/testpool/printpantry", root)
+# The password lives only on the NAS (src/.pp_password), never in the repo.
+password = open(pw_file).read().strip()
+text = text.replace('PP_PASSWORD: ""', "PP_PASSWORD: " + json.dumps(password))
 if mode == "create":
     print(json.dumps({"app_name": "printpantry", "custom_app": True, "custom_compose_config_string": text}))
 else:
@@ -73,6 +86,18 @@ case "${1:-update}" in
     quiet midclt call -j app.redeploy "$APP"
     wait_healthy
     ;;
+  password)
+    # show the password, or set a new one:  truenas.sh password NEW-PASSWORD
+    if [ -n "${2:-}" ]; then
+      (umask 077; printf '%s\n' "$2" > "$PW_FILE")
+      echo "Password changed; restarting the app..."
+      quiet midclt call -j app.update "$APP" "$(compose_json update)"
+      wait_healthy
+    else
+      ensure_password
+    fi
+    echo "Login password: $(cat "$PW_FILE")"
+    ;;
   *)
-    echo "usage: truenas.sh setup|update"; exit 2 ;;
+    echo "usage: truenas.sh setup|update|password [new]"; exit 2 ;;
 esac
