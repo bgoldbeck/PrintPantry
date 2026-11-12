@@ -4,6 +4,19 @@ This puts the library on **testpool** for now. Everything lives under one datase
 `testpool/printpantry`, so moving to another pool later means changing one path
 (see [Moving to another pool](#moving-to-another-pool)).
 
+## 0. Build and upload the image (on your Windows PC)
+
+From the repo folder, with Docker Desktop running:
+
+```
+scripts\login.cmd      (first time only: GitHub token with write:packages)
+scripts\release.cmd    (tests, builds and pushes ghcr.io/bgoldbeck/printpantry)
+```
+
+The first push creates the package as **private**. Make it public once so
+TrueNAS can pull without a login: GitHub > your profile > **Packages** >
+printpantry > **Package settings** > Change visibility > Public.
+
 ## 1. Create the datasets
 
 **Datasets** > select `testpool` > **Add Dataset**:
@@ -70,8 +83,8 @@ services:
 Open <http://192.168.1.140:8484>. New files show up within 5 minutes, or press
 **Rescan**.
 
-To update later: **Apps** > printpantry > **Update** (or Stop/Start, which pulls
-`latest` again).
+To update later: run `scripts\release.cmd` on your PC, then on TrueNAS
+**Apps** > printpantry > **Update** (or Stop/Start, which pulls `latest` again).
 
 ## Moving to another pool
 
@@ -86,7 +99,3 @@ To update later: **Apps** > printpantry > **Update** (or Stop/Start, which pulls
 * The library is mounted **read-only**; the app never changes your files.
 * Memory use is small (about 40 MB at idle). STL previews for cards are rendered
   by your browser once and stored in `data/thumbs`.
-* The first time the image is published, check that the package
-  `ghcr.io/bgoldbeck/printpantry` is **Public** (GitHub > your profile >
-  Packages > printpantry > Package settings) so TrueNAS can pull it without a
-  login.
