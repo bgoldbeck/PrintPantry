@@ -18,6 +18,7 @@ services:
       PP_SESSION_DAYS: "365"   # stay logged in for a year
       PP_SCAN_INTERVAL: "300"
       PP_U1_URL: "http://192.168.1.52:7125"
+      PP_SLICER_URL: "http://slicer:8485"
       TZ: "America/Los_Angeles"
     volumes:
       - /mnt/testpool/printpantry/library:/library:ro
@@ -26,3 +27,24 @@ services:
       resources:
         limits:
           memory: 512M
+
+  # OrcaSlicer's command line behind a small HTTP API (slicer/service.py).
+  # Not published on the LAN; only the app above talks to it. It writes
+  # sliced files into the library, next to the source, in "sliced" folders.
+  slicer:
+    build:
+      context: /mnt/testpool/printpantry/src/repo
+      dockerfile: slicer/Dockerfile
+    image: printpantry-slicer:local
+    pull_policy: build
+    restart: unless-stopped
+    user: "568:568"
+    environment:
+      TZ: "America/Los_Angeles"
+    volumes:
+      - /mnt/testpool/printpantry/library:/library
+      - /mnt/testpool/printpantry/config:/config:ro
+    deploy:
+      resources:
+        limits:
+          memory: 2G           # one slice at a time; small models need a few hundred MB

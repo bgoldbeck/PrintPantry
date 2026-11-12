@@ -6,6 +6,7 @@
 //   #/printers         live printer status and cameras
 import { createViewer, renderThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
+import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -258,19 +259,26 @@ function slicerPicker() {
       `<option value="${id}" ${PREFS?.slicer === id ? "selected" : ""}>${s.name}</option>`).join("")}</select></label>`;
 }
 
+// "Slice for U1" (first, it's the main printer) and "Slice for P1S" buttons.
+function sliceButtons(f) {
+  return slicerPrinters().map((p, i) =>
+    `<button class="small${i ? " ghost" : ""}" data-slice="${f.id}" data-printer="${p.id}">Slice for ${esc(p.name)}</button>`).join("");
+}
+
 function projectFileHtml(f) {
   return `<div class="file">
     <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
     <div class="file-sub">${[f.slicer, plural((f.plates || []).length || 1, "plate"), fmtSize(f.size)].filter(Boolean).map(esc).join(" · ")}</div>
     <div class="file-actions">
-      <button class="small" data-open="${f.id}">Open in<span class="slicer-name">${esc(slicerName())}</span></button>
+      ${sliceButtons(f)}
+      <button class="small${slicerPrinters().length ? " ghost" : ""}" data-open="${f.id}">Open in<span class="slicer-name">${esc(slicerName())}</span></button>
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
     </div></div>`;
 }
 
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
-  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs()]);
+  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs(), loadSlicer()]);
   setTitle(m.name);
   const cat = LIB.categories.find((c) => c.id === m.category);
   const stls = m.files.filter((f) => f.kind === "stl");
@@ -302,8 +310,9 @@ async function modelPage(id) {
       </div>
       <div>
         ${stls.length ? `<section class="panel" id="sources"></section>` : ""}
-        ${printPanels || `<section class="panel"><h2>Print files</h2><p class="empty">Nothing sliced yet. Slice the model and save the
-          <code>.gcode.3mf</code> (P1S) or <code>.gcode</code> (U1) into this model's folder.</p></section>`}
+        ${printPanels || `<section class="panel"><h2>Print files</h2><p class="empty">Nothing sliced yet. ${slicerPrinters().length
+          ? "Use a Slice button to slice it here, or save"
+          : "Slice the model and save"} the <code>.gcode.3mf</code> (P1S) or <code>.gcode</code> (U1) into this model's folder.</p></section>`}
         ${!stls.length && projects.length ? `<section class="panel"><h2>Editable source <span class="n">project 3MF</span></h2>
           <div class="panel-tools">${slicerPicker()}</div>${projects.map(projectFileHtml).join("")}</section>` : ""}
         ${images.length ? `<section class="panel"><h2>Pictures</h2><div class="gallery">${images.map((f) =>
@@ -313,6 +322,12 @@ async function modelPage(id) {
 
   view.querySelectorAll("[data-print]").forEach((b) =>
     b.addEventListener("click", () => openPrintDialog(b.dataset.print, b.dataset.printer)));
+  view.querySelector(".model-layout").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-slice]");
+    if (!b) return;
+    const f = m.files.find((x) => x.id === b.dataset.slice);
+    if (f) openSliceDialog(f, b.dataset.printer, async () => { await refreshLibrary(); route(); });
+  });
 
   const holder = document.getElementById("viewer");
   if (!stls.length) {
@@ -358,6 +373,7 @@ async function modelPage(id) {
     loading.textContent = `Loading ${f.name} (${fmtSize(f.size)})...`;
     actions.innerHTML = `<button class="small" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
+      ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>`;
     showSources(f);
     try {
