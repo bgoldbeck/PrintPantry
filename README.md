@@ -70,6 +70,8 @@ The version comes from `app/__init__.py`; bump it before a release.
 | `PP_PASSWORD` | empty | set to require a login |
 | `PP_SCAN_INTERVAL` | `300` | seconds between rescans (0 = startup and button only) |
 | `PP_PORT` | `8484` | HTTP port |
+| `PP_U1_URL` | empty | Moonraker on the Snapmaker U1, e.g. `http://192.168.1.52:7125` |
+| `PP_U1_API_KEY` | empty | only if the U1's Moonraker requires a key (stock doesn't) |
 
 ## Development
 
@@ -88,16 +90,16 @@ app/scanner.py   folder walk, grouping into categories and models
 app/config.py    env settings and printer profiles
 app/store.py     SQLite: parse cache, category settings
 app/main.py      FastAPI routes
+app/printers/    printer drivers (Moonraker for the U1, Bambu stub) and /api/printers
 app/static/      single-page UI, Three.js viewer (vendored, no build step)
 ```
 
 ## Roadmap
 
-* **v2 printers**: live status (P1S over MQTT, U1 over Moonraker), camera
-  snapshots, and sending a sliced file to a printer with an AMS-mapping and
-  "bed is clear" check. Printer profiles in `app/config.py` already tag files
-  by printer; connection details and print history will go in the same SQLite
-  store.
+* **v2 printers** (U1 done, see [docs/printers.md](docs/printers.md)): live
+  status, camera snapshots, pause/resume/cancel, and "Print on U1" with a
+  bed-clear confirm and a toolhead filament check. The P1S follows once
+  Developer Mode is on.
 * **v3 slicing**: a sidecar container running the OrcaSlicer CLI to turn project
   3MFs into P1S / U1 print files on the NAS.
 

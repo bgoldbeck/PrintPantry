@@ -3,7 +3,9 @@
 //   #/c/<category>     models in a category
 //   #/m/<model id>     model page with 3D viewer and print files
 //   #/search/<query>   search results
+//   #/printers         live printer status and cameras
 import { createViewer, renderThumbnail } from "./viewer.js";
+import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -195,7 +197,9 @@ function slicedFileHtml(f) {
     <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
     <div class="file-sub">${sub}${f.error ? ` · <span style="color:#c0392b">${esc(f.error)}</span>` : ""}</div>
     ${(f.plates || []).length ? `<div class="plates">${f.plates.map((p) => plateHtml(f, p, multi)).join("")}</div>` : ""}
-    <div class="file-actions"><a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a></div>
+    <div class="file-actions">
+      ${canPrintOn(f.printer) ? `<button class="small" data-print="${f.id}" data-printer="${f.printer}">Print on ${esc(printer(f.printer)?.name || f.printer)}</button>` : ""}
+      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a></div>
   </div>`;
 }
 
@@ -214,7 +218,7 @@ function projectFileHtml(f) {
 
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
-  const m = await api(`/api/models/${id}`);
+  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters()]);
   setTitle(m.name);
   const cat = LIB.categories.find((c) => c.id === m.category);
   const stls = m.files.filter((f) => f.kind === "stl");
@@ -252,6 +256,9 @@ async function modelPage(id) {
           `<a href="${fileUrl(f.id)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(f.name)}" src="${fileUrl(f.id)}"></a>`).join("")}</div></section>` : ""}
       </div>
     </div>`;
+
+  view.querySelectorAll("[data-print]").forEach((b) =>
+    b.addEventListener("click", () => openPrintDialog(b.dataset.print, b.dataset.printer)));
 
   const holder = document.getElementById("viewer");
   if (!stls.length) {
@@ -350,6 +357,7 @@ async function route() {
     if (kind === "c" && arg) await categoryPage(arg);
     else if (kind === "m" && arg) await modelPage(arg);
     else if (kind === "search" && arg) await searchPage(arg);
+    else if (kind === "printers") cleanup = await printersPage(view);
     else await homePage();
   } catch (e) {
     if (e.message === "login") return;

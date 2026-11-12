@@ -16,6 +16,7 @@ services:
     environment:
       PP_PASSWORD: ""          # set a password to require login (recommended)
       PP_SCAN_INTERVAL: "300"  # seconds between automatic rescans, 0 = only on startup / Rescan button
+      PP_U1_URL: "http://192.168.1.52:7125"  # Snapmaker U1 (Moonraker); empty = no U1
       TZ: "America/Los_Angeles"
     volumes:
       - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library:ro
