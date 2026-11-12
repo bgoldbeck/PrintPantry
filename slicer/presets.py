@@ -203,7 +203,10 @@ class PresetLibrary:
             merged.update(p.data)
         merged["name"] = preset.name
         merged["type"] = t
-        merged["inherits"] = ""
+        # The CLI reads "inherits" of a user preset as its built-in printer or
+        # process name (for compatibility checks); values are already merged.
+        anc = self.system_ancestor(preset, vendor) if preset.source == "user" else None
+        merged["inherits"] = anc.name if anc else ""
         merged["from"] = "User" if preset.source == "user" else "system"
         merged["instantiation"] = "true"
         return merged

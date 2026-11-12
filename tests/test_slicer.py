@@ -93,6 +93,7 @@ def test_user_presets_from_bundles(lib):
     assert ("machine", "My U1") in lib.user
     flat = lib.flatten("machine", "My U1", "Snapmaker")
     assert flat["printer_model"] == "Snapmaker U1" and flat["from"] == "User"
+    assert flat["inherits"] == "Snapmaker U1 (0.4 nozzle)"  # the CLI's built-in printer name
     # "0.20mm Standard" (Snapmaker Orca) resolves to "0.20 Standard" (OrcaSlicer).
     proc = lib.flatten("process", "My Fine", "Snapmaker")
     assert proc["wall_loops"] == "3" and proc["layer_height"] == "0.2"
@@ -239,6 +240,14 @@ def test_build_settings_writes_flat_presets(svc, tmp_path):
     fil = json.loads((work / "filament_1.json").read_text())
     assert fil["filament_colour"] == ["#123456"] and fil["inherits"] == ""
     assert not job.warnings
+    assert "Snapmaker U1 (0.4 nozzle)" in proc["compatible_printers"]
+    # A user printer preset: the process must list its built-in parent, or the
+    # CLI refuses to switch a P1S project to it (-16).
+    job.machine, job.process = "My U1", "My Fine"
+    service.build_settings(job, service.PRINTERS["u1"], work, info)
+    proc = json.loads((work / "process.json").read_text())
+    assert {"Snapmaker U1 (0.4 nozzle)", "My U1"} <= set(proc["compatible_printers"])
+    assert json.loads((work / "machine.json").read_text())["inherits"] == "Snapmaker U1 (0.4 nozzle)"
     # Wrong printer family is refused.
     job.machine = "Snapmaker A350"
     with pytest.raises(RuntimeError, match="not a Snapmaker U1"):
