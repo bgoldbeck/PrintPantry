@@ -373,6 +373,15 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
     # normalising it, and the plate type (a project setting, not a preset one).
     project.pad_per_extruder(machine)
     process["nozzle_diameter"] = machine.get("nozzle_diameter", ["0.4"])
+    # When the project was made for another printer, the CLI only switches if
+    # the process lists the new printer's built-in name as compatible.
+    machine_system = machine["name"] if machine.get("from") == "system" else machine.get("inherits", "")
+    compat = process.get("compatible_printers")
+    compat = [c for c in compat.split(";") if c] if isinstance(compat, str) else list(compat or [])
+    for name in (machine_system, machine["name"]):
+        if name and name not in compat:
+            compat.append(name)
+    process["compatible_printers"] = compat
     bed = job.bed_type if job.bed_type in BED_KEYS else default_bed(machine, fils)
     process["curr_bed_type"] = bed
     job.bed_type = bed
