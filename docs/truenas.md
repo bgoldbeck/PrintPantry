@@ -24,8 +24,16 @@ TrueNAS through `midclt`, which the admin user can run without sudo. Then open
 <http://192.168.1.140:8484>.
 
 Settings live in `scripts\_config.cmd` (`PP_SSH_HOST`, `PP_NAS_ROOT`,
-`PP_LOCAL_LIBRARY`). To require a login, set `PP_PASSWORD` in
-`deploy/truenas-compose.yaml` (or edit the app in the TrueNAS UI).
+`PP_LOCAL_LIBRARY`).
+
+**Login:** the deploy script makes a random password the first time and keeps
+it only on the NAS (`src/.pp_password`), never in this public repo. A login
+lasts 365 days (`PP_SESSION_DAYS`).
+
+```
+scripts\deploy-truenas.cmd password              show it
+scripts\deploy-truenas.cmd password my-new-pass  change it (restarts the app)
+```
 
 ## Manual way: TrueNAS UI and a published image
 
