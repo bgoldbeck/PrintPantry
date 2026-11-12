@@ -203,22 +203,74 @@ function slicedFileHtml(f) {
   </div>`;
 }
 
+// ---------------------------------------------------------------- desktop slicers
+// A web page can't start programs, so we hand the slicer a URL through its link
+// handler. Snapmaker Orca downloads any http(s) link it is given. Bambu Studio only
+// accepts MakerWorld links, so for it we go through the small "printpantry://"
+// helper from scripts\install-slicer-links.cmd, which downloads the file and
+// starts Bambu Studio with it.
+const SLICERS = {
+  snapmaker: { name: "Snapmaker Orca", link: (u) => `snapmaker-orca://open?file=${encodeURIComponent(u)}` },
+  bambu: { name: "Bambu Studio", link: (u) => `printpantry://open?slicer=bambu&file=${encodeURIComponent(u)}` },
+};
+let PREFS = null;
+async function loadPrefs() {
+  if (!PREFS) PREFS = await api("/api/prefs").catch(() => ({ slicer: "snapmaker" }));
+  return PREFS;
+}
+const slicerName = () => SLICERS[PREFS?.slicer || "snapmaker"].name;
+
+async function openInSlicer(fileId, button) {
+  const s = SLICERS[PREFS?.slicer] || SLICERS.snapmaker;
+  if (button) button.disabled = true;
+  try {
+    const { path } = await api(`/api/files/${fileId}/link`, { method: "POST" });
+    location.href = s.link(new URL(path, location.href).href);
+    const tip = PREFS?.slicer === "bambu"
+      ? `Opening in Bambu Studio. If nothing happens, run <code>scripts\\install-slicer-links.cmd</code> once on this PC, or use Download.`
+      : `Opening in Snapmaker Orca. If nothing happens, check Snapmaker Orca is installed, or use Download.`;
+    flash(tip);
+  } catch (e) {
+    flash(`Couldn't make a link: ${esc(e.message || e)}`);
+  } finally {
+    if (button) setTimeout(() => (button.disabled = false), 1500);
+  }
+}
+
+function flash(html) {
+  let el = document.getElementById("flash");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "flash";
+    el.className = "flash";
+    el.setAttribute("role", "status");
+    document.body.appendChild(el);
+  }
+  el.innerHTML = html;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 8000);
+}
+
+function slicerPicker() {
+  return `<label class="slicer-pick">Open in
+    <select id="slicer-pick">${Object.entries(SLICERS).map(([id, s]) =>
+      `<option value="${id}" ${PREFS?.slicer === id ? "selected" : ""}>${s.name}</option>`).join("")}</select></label>`;
+}
+
 function projectFileHtml(f) {
-  const abs = new URL(fileUrl(f.id, true), location.href).href;
-  const enc = encodeURIComponent(abs);
   return `<div class="file">
     <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
     <div class="file-sub">${[f.slicer, plural((f.plates || []).length || 1, "plate"), fmtSize(f.size)].filter(Boolean).map(esc).join(" · ")}</div>
     <div class="file-actions">
-      <a class="button small" href="bambustudio://open?file=${enc}">Open in Bambu Studio</a>
-      <a class="button small ghost" href="orcaslicer://open?file=${enc}">Open in OrcaSlicer</a>
+      <button class="small" data-open="${f.id}">Open in<span class="slicer-name">${esc(slicerName())}</span></button>
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
     </div></div>`;
 }
 
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
-  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters()]);
+  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs()]);
   setTitle(m.name);
   const cat = LIB.categories.find((c) => c.id === m.category);
   const stls = m.files.filter((f) => f.kind === "stl");
@@ -249,9 +301,11 @@ async function modelPage(id) {
         ${stls.length ? `<div class="file-actions" id="stl-actions"></div>` : ""}
       </div>
       <div>
+        ${stls.length ? `<section class="panel" id="sources"></section>` : ""}
         ${printPanels || `<section class="panel"><h2>Print files</h2><p class="empty">Nothing sliced yet. Slice the model and save the
           <code>.gcode.3mf</code> (P1S) or <code>.gcode</code> (U1) into this model's folder.</p></section>`}
-        ${projects.length ? `<section class="panel"><h2>Editable source <span class="n">project 3MF</span></h2>${projects.map(projectFileHtml).join("")}</section>` : ""}
+        ${!stls.length && projects.length ? `<section class="panel"><h2>Editable source <span class="n">project 3MF</span></h2>
+          <div class="panel-tools">${slicerPicker()}</div>${projects.map(projectFileHtml).join("")}</section>` : ""}
         ${images.length ? `<section class="panel"><h2>Pictures</h2><div class="gallery">${images.map((f) =>
           `<a href="${fileUrl(f.id)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(f.name)}" src="${fileUrl(f.id)}"></a>`).join("")}</div></section>` : ""}
       </div>
@@ -285,11 +339,27 @@ async function modelPage(id) {
   document.getElementById("reset").onclick = () => viewer.resetView();
 
   const actions = document.getElementById("stl-actions");
+  const sources = document.getElementById("sources");
+  const links = m.stl_links || {};
+  const linked = new Set(Object.values(links).flatMap((l) => l.projects));
+  const unlinked = projects.filter((f) => !linked.has(f.id));
+  function showSources(f) {
+    const mine = (links[f.id]?.projects || []).map((pid) => projects.find((p) => p.id === pid)).filter(Boolean);
+    sources.innerHTML = `<h2>Editable source <span class="n">${stls.length > 1 ? `for ${esc(f.name)}${mine.length ? " · " : ""}` : ""}${mine.length ? plural(mine.length, "project 3MF") : ""}</span></h2>
+      <div class="panel-tools">${slicerPicker()}</div>
+      ${mine.length ? mine.map(projectFileHtml).join("")
+        : `<p class="empty">No project 3MF for this STL yet. Press <strong>Create New Source</strong> to open it in your slicer,
+           then save the project next to the STL.</p>`}
+      ${unlinked.length ? `<h3 class="sub-head">Other project files in this model</h3>${unlinked.map(projectFileHtml).join("")}` : ""}`;
+  }
   async function show(f) {
     const loading = document.getElementById("viewer-loading");
     loading.style.display = "grid";
     loading.textContent = `Loading ${f.name} (${fmtSize(f.size)})...`;
-    actions.innerHTML = `<a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>`;
+    actions.innerHTML = `<button class="small" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
+        <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
+      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>`;
+    showSources(f);
     try {
       await viewer.load(fileUrl(f.id));
       loading.style.display = "none";
@@ -390,6 +460,20 @@ document.getElementById("rescan").addEventListener("click", async (e) => {
     b.disabled = false;
     b.textContent = "Rescan";
   }
+});
+
+// Slicer buttons and the slicer picker live in panels that get re-rendered.
+view.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-open]");
+  if (b) openInSlicer(b.dataset.open, b);
+});
+view.addEventListener("change", async (e) => {
+  if (e.target.id !== "slicer-pick") return;
+  PREFS = await api("/api/prefs", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slicer: e.target.value }),
+  }).catch(() => ({ ...PREFS, slicer: e.target.value }));
+  view.querySelectorAll(".slicer-name").forEach((el) => (el.textContent = slicerName()));
 });
 
 window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });

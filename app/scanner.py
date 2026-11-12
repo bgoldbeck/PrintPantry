@@ -140,7 +140,26 @@ class Model:
         data["files"] = [
             f.to_json() for f in sorted(self.files, key=lambda f: (order.get(f.kind, 9), f.relpath.lower()))
         ]
+        data["stl_links"] = self.stl_links()
         return data
+
+    def stl_links(self) -> dict[str, dict[str, list[str]]]:
+        """Which project 3MFs and print files belong to each STL.
+
+        One STL in the model: everything belongs to it. Several STLs: a file
+        belongs to every STL it names inside (object names) or whose file name
+        it starts with. A 3MF can belong to several STLs (multi-part projects),
+        and an STL can have any number of 3MFs, including none.
+        """
+        stls = self.by_kind("stl")
+        links = {s.id: {"projects": [], "sliced": []} for s in stls}
+        for f in self.files:
+            bucket = "projects" if f.kind == "project3mf" else "sliced" if f.kind in ("sliced3mf", "gcode") else ""
+            if not bucket:
+                continue
+            for s in stls if len(stls) == 1 else [s for s in stls if belongs_to_stl(f, s)]:
+                links[s.id][bucket].append(f.id)
+        return links
 
 
 @dataclass
@@ -202,6 +221,19 @@ def group_key(name: str) -> str:
         prev = base
         base = _VARIANT_SUFFIX.sub("", base)
     return re.sub(r"[\s_\-.]+", " ", base).strip().lower()
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[\s_\-.]+", " ", stem_of(name)).strip().lower()
+
+
+def belongs_to_stl(f: "LibFile", stl: "LibFile") -> bool:
+    """True if a 3MF / G-code file was made from this STL."""
+    target = _norm(stl.name)
+    if f.info and any(_norm(o) == target for o in f.info.objects):
+        return True
+    gk, sk = group_key(f.name), group_key(stl.name)
+    return bool(sk) and (gk == sk or gk.startswith(sk + " "))
 
 
 def pretty_name(name: str) -> str:
@@ -371,11 +403,12 @@ class Scanner:
         """Group files that sit directly in a category folder into models."""
         groups: dict[str, list[LibFile]] = {}
         names: dict[str, str] = {}
-        # Anchor groups on STLs and project 3MFs, then attach the rest.
-        anchors = sorted(
-            (f for f in files if f.kind in ("stl", "project3mf")), key=lambda f: f.kind != "stl"
-        )
-        others = [f for f in files if f.kind not in ("stl", "project3mf")]
+        # Anchor groups on STLs, then attach project 3MFs (so an STL can have
+        # several), then print files and pictures.
+        anchors = [f for f in files if f.kind == "stl"]
+        others = [f for f in files if f.kind == "project3mf"] + [
+            f for f in files if f.kind not in ("stl", "project3mf")
+        ]
         for f in anchors:
             key = group_key(f.name)
             groups.setdefault(key, []).append(f)
