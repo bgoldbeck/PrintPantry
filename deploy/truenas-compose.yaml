@@ -17,6 +17,7 @@ services:
       PP_PASSWORD: ""          # filled in on the NAS from src/.pp_password
       PP_SESSION_DAYS: "365"   # stay logged in for a year
       PP_SCAN_INTERVAL: "300"
+      PP_U1_URL: "http://192.168.1.52:7125"
       TZ: "America/Los_Angeles"
     volumes:
       - /mnt/testpool/printpantry/library:/library:ro

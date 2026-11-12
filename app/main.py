@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from . import __version__, formats
 from .auth import COOKIE, MAX_AGE, Auth
 from .config import Settings
+from .printers import PrinterHub
+from .printers.api import make_router as printers_router
 from .scanner import Scanner
 from .store import Store
 
@@ -30,12 +32,17 @@ class CategoryPatch(BaseModel):
     color: str | None = None
 
 
-def create_app(settings: Settings | None = None, background_scan: bool = True) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    background_scan: bool = True,
+    printers: PrinterHub | None = None,
+) -> FastAPI:
     settings = settings or Settings()
     settings.ensure_dirs()
     store = Store(settings.data / "printpantry.db")
     scanner = Scanner(settings, store)
     auth = Auth(settings.password, settings.data)
+    hub = printers or PrinterHub(settings.printers)
     icon_names = set()
     try:
         import json
@@ -54,15 +61,18 @@ def create_app(settings: Settings | None = None, background_scan: bool = True) -
     async def lifespan(app: FastAPI):
         if background_scan:
             threading.Thread(target=loop, name="scanner", daemon=True).start()
+            hub.start()
         else:
             scanner.scan()
         yield
         stop.set()
+        hub.stop()
 
     app = FastAPI(title="Print Pantry", version=__version__, lifespan=lifespan)
     app.state.scanner = scanner
     app.state.store = store
     app.state.settings = settings
+    app.state.printers = hub
 
     # ------------------------------------------------------------ auth
     @app.middleware("http")
@@ -251,6 +261,9 @@ def create_app(settings: Settings | None = None, background_scan: bool = True) -
             old.unlink(missing_ok=True)
         render_path(f).write_bytes(body)
         return {"ok": True}
+
+    # ------------------------------------------------------------ printers
+    app.include_router(printers_router(hub, resolve))
 
     # ------------------------------------------------------------ UI
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
