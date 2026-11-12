@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Print Pantry</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "/static/vendor/three/three.module.min.js",
+        "three/addons/": "/static/vendor/three/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="Print Pantry home">
+      <img src="/static/favicon.svg" alt="" width="32" height="32">
+      <span>Print Pantry</span>
+    </a>
+    <form class="search" id="search-form" role="search">
+      <input id="search" type="search" placeholder="Search models and files" autocomplete="off" aria-label="Search">
+    </form>
+    <button class="ghost" id="rescan" title="Look for new and changed files">Rescan</button>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <footer class="status" id="status"></footer>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
