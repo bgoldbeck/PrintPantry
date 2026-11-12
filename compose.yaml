@@ -17,6 +17,7 @@ services:
       PP_PASSWORD: ""          # set a password to require login (recommended)
       PP_SCAN_INTERVAL: "300"  # seconds between automatic rescans, 0 = only on startup / Rescan button
       PP_U1_URL: "http://192.168.1.52:7125"  # Snapmaker U1 (Moonraker); empty = no U1
+      PP_SLICER_URL: "http://slicer:8485"    # the slicer below; empty = no Slice buttons
       TZ: "America/Los_Angeles"
     volumes:
       - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library:ro
@@ -25,3 +26,21 @@ services:
       resources:
         limits:
           memory: 512M         # TrueNAS has little free RAM; the app idles around 60-80 MB
+
+  # Optional: slices project 3MFs and STLs with OrcaSlicer (about 1.4 GB image).
+  # Built from this repo: `docker compose build slicer`. Remove this block and
+  # PP_SLICER_URL above if you don't want it.
+  slicer:
+    build:
+      context: .
+      dockerfile: slicer/Dockerfile
+    image: printpantry-slicer:local
+    restart: unless-stopped
+    user: "568:568"
+    volumes:
+      - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library      # writes sliced files here
+      - ${PP_ROOT:-/mnt/testpool/printpantry}/config:/config:ro    # your exported presets
+    deploy:
+      resources:
+        limits:
+          memory: 2G

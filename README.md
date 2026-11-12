@@ -99,6 +99,7 @@ allow".
 | `PP_PORT` | `8484` | HTTP port |
 | `PP_U1_URL` | empty | Moonraker on the Snapmaker U1, e.g. `http://192.168.1.52:7125` |
 | `PP_U1_API_KEY` | empty | only if the U1's Moonraker requires a key (stock doesn't) |
+| `PP_SLICER_URL` | empty | the slicer container, e.g. `http://slicer:8485`; empty hides the Slice buttons |
 
 ## Development
 
@@ -118,6 +119,8 @@ app/config.py    env settings and printer profiles
 app/store.py     SQLite: parse cache, category settings
 app/main.py      FastAPI routes
 app/printers/    printer drivers (Moonraker for the U1, Bambu stub) and /api/printers
+app/slicing.py   /api/slicer, which forwards to the slicer container
+slicer/          the slicer container: OrcaSlicer CLI + a stdlib HTTP service
 app/static/      single-page UI, Three.js viewer (vendored, no build step)
 ```
 
@@ -127,7 +130,8 @@ app/static/      single-page UI, Three.js viewer (vendored, no build step)
   status, camera snapshots, pause/resume/cancel, and "Print on U1" with a
   bed-clear confirm and a toolhead filament check. The P1S follows once
   Developer Mode is on.
-* **v3 slicing**: a sidecar container running the OrcaSlicer CLI to turn project
-  3MFs into P1S / U1 print files on the NAS.
+* **v3 slicing** (done, see [docs/slicing.md](docs/slicing.md)): "Slice for U1"
+  and "Slice for P1S" on project 3MFs and STLs, run by OrcaSlicer's command
+  line in a second container on the NAS, with built-in or your own presets.
 
 Three.js (MIT) and Lucide icons (ISC) are vendored under `app/static/vendor`.

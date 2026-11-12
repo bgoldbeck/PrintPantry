@@ -13,10 +13,11 @@ SSH alias from `~/.ssh/config`):
 ```
 scripts\deploy-truenas.cmd setup   first time: datasets, code checkout, app install
 scripts\sync-library.cmd           copy D:\PrintPantry\library to the NAS
+scripts\sync-config.cmd            copy D:\PrintPantry\config (slicer presets) to the NAS
 scripts\deploy-truenas.cmd         later: pull latest main, rebuild, restart
 ```
 
-`setup` creates `testpool/printpantry/{library,data,src}`, sets permissions
+`setup` creates `testpool/printpantry/{library,data,src,config}`, sets permissions
 (library: you + apps group; data: apps user 568), clones the repo into `src/repo`
 and installs a custom app named **printpantry** from
 [deploy/truenas-compose.yaml](../deploy/truenas-compose.yaml). It talks to

@@ -46,6 +46,19 @@ else:
 PY
 }
 
+ensure_datasets() {
+  for ds in "" /library /data /src /config; do
+    if ! midclt call pool.dataset.query "[[\"id\",\"=\",\"$POOL_DS$ds\"]]" | grep -q '"id"'; then
+      midclt call pool.dataset.create "{\"name\":\"$POOL_DS$ds\",\"share_type\":\"GENERIC\"}" >/dev/null
+      echo "Created dataset $POOL_DS$ds"
+      # Slicer presets (scripts\sync-config.cmd): yours to write, the apps user reads.
+      if [ "$ds" = /config ]; then
+        quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/config\",\"uid\":$ME_UID,\"gid\":568,\"mode\":\"775\"}"
+      fi
+    fi
+  done
+}
+
 wait_healthy() {
   for _ in $(seq 1 60); do
     if python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8484/healthz',timeout=3)" 2>/dev/null; then
@@ -60,12 +73,7 @@ wait_healthy() {
 
 case "${1:-update}" in
   setup)
-    for ds in "" /library /data /src; do
-      if ! midclt call pool.dataset.query "[[\"id\",\"=\",\"$POOL_DS$ds\"]]" | grep -q '"id"'; then
-        midclt call pool.dataset.create "{\"name\":\"$POOL_DS$ds\",\"share_type\":\"GENERIC\"}" >/dev/null
-        echo "Created dataset $POOL_DS$ds"
-      fi
-    done
+    ensure_datasets
     quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/src\",\"uid\":$ME_UID,\"gid\":$ME_UID,\"mode\":\"755\"}"
     quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/library\",\"uid\":$ME_UID,\"gid\":568,\"mode\":\"775\"}"
     quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/data\",\"uid\":568,\"gid\":568,\"mode\":\"750\"}"
@@ -80,8 +88,9 @@ case "${1:-update}" in
     wait_healthy
     ;;
   update)
+    ensure_datasets
     checkout
-    echo "Rebuilding and restarting..."
+    echo "Rebuilding and restarting (the first build with the slicer downloads OrcaSlicer and takes a few minutes)..."
     quiet midclt call -j app.update "$APP" "$(compose_json update)"
     quiet midclt call -j app.redeploy "$APP"
     wait_healthy

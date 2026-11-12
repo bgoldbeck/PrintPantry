@@ -20,6 +20,8 @@ from .config import Settings
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
 from .scanner import Scanner
+from .slicing import SlicerClient, client_from_env
+from .slicing import make_router as slicer_router
 from .store import Store
 
 log = logging.getLogger("printpantry")
@@ -43,6 +45,7 @@ def create_app(
     settings: Settings | None = None,
     background_scan: bool = True,
     printers: PrinterHub | None = None,
+    slicer: SlicerClient | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     settings.ensure_dirs()
@@ -307,6 +310,9 @@ def create_app(
 
     # ------------------------------------------------------------ printers
     app.include_router(printers_router(hub, resolve))
+
+    # ------------------------------------------------------------ slicing
+    app.include_router(slicer_router(slicer or client_from_env(), resolve, scanner.scan))
 
     # ------------------------------------------------------------ UI
     app.mount("/static", StaticFiles(directory=STATIC), name="static")

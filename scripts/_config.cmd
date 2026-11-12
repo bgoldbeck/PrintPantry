@@ -8,6 +8,7 @@ rem SSH alias of the TrueNAS box (from ~/.ssh/config) and where the app lives th
 if not defined PP_SSH_HOST set "PP_SSH_HOST=sparkfall-truenas"
 if not defined PP_NAS_ROOT set "PP_NAS_ROOT=/mnt/testpool/printpantry"
 if not defined PP_LOCAL_LIBRARY set "PP_LOCAL_LIBRARY=D:\PrintPantry\library"
+if not defined PP_LOCAL_CONFIG set "PP_LOCAL_CONFIG=D:\PrintPantry\config"
 rem TrueNAS runs on x86-64.
 if not defined PP_PLATFORM set "PP_PLATFORM=linux/amd64"
 

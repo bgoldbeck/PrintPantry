@@ -287,3 +287,20 @@ button .muted { opacity: .75; font-weight: 400; }
   box-shadow: 0 8px 30px rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .flash.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .flash code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
+
+/* ---------------------------------------------------------------- slicing */
+.slice-dialog { width: min(600px, calc(100vw - 32px)); }
+.slice-dialog .notice { margin: 10px 0; }
+.slice-dialog pre { white-space: pre-wrap; font-size: .75rem; max-height: 200px; overflow: auto; }
+.slice-dialog .modes { display: flex; gap: 16px; flex-wrap: wrap; }
+.slice-dialog .modes .check { margin: 6px 0; font-weight: 500; }
+.field { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; margin: 10px 0; }
+.field > span { font-weight: 600; }
+.field select, .fil-row select { width: 100%; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+.fil-rows { display: grid; gap: 8px; }
+.fil-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; }
+.fil-row .slot { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; color: var(--ink-2); }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--c); border: 1px solid rgb(0 0 0 / 25%); display: inline-block; }
+@media (max-width: 640px) {
+  .field { grid-template-columns: 1fr; gap: 4px; }
+}
