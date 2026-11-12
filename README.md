@@ -15,7 +15,9 @@ as a container on **TrueNAS SCALE**.
 * Scans a library folder (read-only). One top-level folder per category, one
   folder per model inside it. Files directly inside a category folder are
   grouped into models by file name (`planter.stl`, `planter_P1S.gcode.3mf`,
-  `planter_U1.gcode` become one model).
+  `planter_U1.gcode` become one model). Folders that only sort by file type
+  (`stls`, `3mf`, `gcode`, `files`, `prints`...) are looked through, so
+  `library/stls/clip.stl` and `library/3mf/clip.3mf` are one model.
 * Category tiles with icons picked from the name (Tools gets a wrench, Garden a
   sprout...). Change the icon and colour in the UI, or drop a
   `_category.json` like `{"icon": "hammer", "color": "#E4572E"}` in the folder.
