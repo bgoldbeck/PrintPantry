@@ -35,8 +35,24 @@ as a container on **TrueNAS SCALE**.
 
 See [docs/truenas.md](docs/truenas.md). Short version: create
 `testpool/printpantry/{library,data}`, share `library` over SMB, then install
-[compose.yaml](compose.yaml) via **Apps > Install via YAML**. The UI is on port
+[compose.yaml](compose.yaml) via **Apps > Install via YAML** after
+pushing the image with `scripts\release.cmd`. The UI is on port
 8484.
+
+## Building the image (Windows)
+
+There is no CI; images are built and uploaded by hand with the scripts in
+`scripts\` (needs Docker Desktop):
+
+| Script | Does |
+| --- | --- |
+| `scripts\login.cmd` | one-time `docker login ghcr.io` (token with `write:packages`) |
+| `scripts\test.cmd` | runs the tests in a throwaway Python container |
+| `scripts\build.cmd` | builds `ghcr.io/bgoldbeck/printpantry:<version>` and `:latest` for linux/amd64 |
+| `scripts\push.cmd` | uploads both tags |
+| `scripts\release.cmd` | test + build + push (`release.cmd notest` skips tests) |
+
+The version comes from `app/__init__.py`; bump it before a release.
 
 ## Configuration
 
