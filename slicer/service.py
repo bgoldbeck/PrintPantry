@@ -427,20 +427,27 @@ def run_job(job: Job) -> None:
         # the slicer crash.)
         inp = work / ("input" + src.suffix.lower())
         if info.kind == "3mf":
-            project.copy_for_slicing(src, inp)
+            # With presets, write the process into the project too: the CLI
+            # keeps some project values over the loaded process, and a Bambu
+            # Studio project can hold values OrcaSlicer rejects (e.g. -1).
+            proc_file = work / "process.json"
+            overrides = json.loads(proc_file.read_text()) if job.mode == "presets" and proc_file.exists() else None
+            project.copy_for_slicing(src, inp, overrides)
         else:
             shutil.copyfile(src, inp)
         args.append(str(inp))
         log.info("job %s: %s", job.id, " ".join(args))
-        # In case OrcaSlicer's command line still crashes now and then on a
-        # file that slices fine the next time, a crash gets two more tries.
-        for attempt in range(1, CRASH_TRIES + 1):
-            proc, result = run_slicer(args, work, out)
-            crashed = proc.returncode < 0 or proc.returncode == 139
-            if not crashed or attempt == CRASH_TRIES:
+        for _ in range(INVALID_TRIES):
+            proc, result, crashed = run_with_retries(job, args, work, out)
+            bad = invalid_keys(proc.stderr or "") if result.get("return_code") == CLI_INVALID_VALUES else []
+            # A Bambu Studio project can hold values OrcaSlicer rejects, such
+            # as -1 for "auto". Drop them so OrcaSlicer's defaults apply.
+            if not bad or info.kind != "3mf" or not project.drop_keys(inp, bad):
                 break
-            log.warning("job %s: slicer crashed (%s), retrying", job.id, proc.returncode)
-            job.message = f"Slicing... (retry {attempt})"
+            job.warnings.append("Used OrcaSlicer defaults for " + ", ".join(bad))
+            job.log += (proc.stderr or "")
+            shutil.rmtree(out, ignore_errors=True)
+            out.mkdir()
         job.log += (proc.stdout or "") + (proc.stderr or "")
         code = result.get("return_code", proc.returncode)
         if code != 0 or proc.returncode != 0:
@@ -460,6 +467,26 @@ def run_job(job: Job) -> None:
 
 
 CRASH_TRIES = 3
+INVALID_TRIES = 4
+CLI_INVALID_VALUES = -18
+
+
+def invalid_keys(stderr: str) -> list[str]:
+    """Settings the CLI rejected ("key: value not in range [...]")."""
+    return re.findall(r"^(\w+): .* not in range", stderr, re.M)
+
+
+def run_with_retries(job: Job, args: list[str], work: Path, out: Path):
+    # In case OrcaSlicer's command line still crashes now and then on a
+    # file that slices fine the next time, a crash gets two more tries.
+    for attempt in range(1, CRASH_TRIES + 1):
+        proc, result = run_slicer(args, work, out)
+        crashed = proc.returncode < 0 or proc.returncode == 139
+        if not crashed or attempt == CRASH_TRIES:
+            break
+        log.warning("job %s: slicer crashed (%s), retrying", job.id, proc.returncode)
+        job.message = f"Slicing... (retry {attempt})"
+    return proc, result, crashed
 
 
 def run_slicer(args: list[str], work: Path, out: Path) -> tuple[subprocess.CompletedProcess, dict]:
