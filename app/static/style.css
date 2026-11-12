@@ -275,3 +275,15 @@ button.danger { background: #c0392b; color: #fff; }
 .toolmap tr.warn td { color: #b5542c; }
 .check { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; font-weight: 600; }
 .check input { width: 20px; height: 20px; margin-top: 2px; flex: none; }
+
+/* desktop slicer hand-off */
+.panel-tools { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
+.slicer-pick { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: .85rem; }
+.slicer-pick select { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); }
+.sub-head { font-size: .95rem; margin: 16px 0 8px; color: var(--ink-2); }
+button .muted { opacity: .75; font-weight: 400; }
+.flash { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); max-width: min(560px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
+.flash.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.flash code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }

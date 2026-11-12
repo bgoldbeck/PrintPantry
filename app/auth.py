@@ -54,3 +54,18 @@ class Auth:
             return False
         pw = hashlib.sha256(self.password.encode()).hexdigest()[:16]
         return hmac.compare_digest(sig, self._sign(expires + pw))
+
+    # -- one-off download links for desktop slicers, which have no login cookie
+    def link_token(self, file_id: str, ttl: int = 15 * 60) -> str:
+        expires = str(int(time.time()) + ttl)
+        return f"{file_id}.{expires}.{self._sign('dl:' + file_id + expires)[:32]}"
+
+    def check_link(self, token: str) -> str | None:
+        """Return the file id a link token is for, or None if bad or expired."""
+        parts = token.split(".")
+        if len(parts) != 3 or not parts[1].isdigit() or int(parts[1]) < time.time():
+            return None
+        file_id, expires, sig = parts
+        if not hmac.compare_digest(sig, self._sign("dl:" + file_id + expires)[:32]):
+            return None
+        return file_id

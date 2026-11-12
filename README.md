@@ -27,8 +27,14 @@ as a container on **TrueNAS SCALE**.
   * P1S `.gcode.3mf`: every plate with its thumbnail, time, weight and
     filament colours, read from `slice_info.config`.
   * U1 `.gcode` (Snapmaker Orca): thumbnail, time, per-toolhead filament.
-* Project 3MFs are kept as the editable source, with **Open in Bambu Studio /
-  OrcaSlicer** links.
+* Every STL is viewable, with or without a project 3MF. Each STL lists all the
+  project 3MFs made from it (any number): a 3MF belongs to an STL when the STL
+  is named inside it, or when its file name starts with the STL's name
+  (`clip.3mf`, `clip x4.3mf`). With one STL in a model, every 3MF belongs to it.
+* **Create New Source** opens the STL in your desktop slicer so you can make a
+  new project 3MF; **Open in ...** does the same for an existing 3MF. Pick
+  Snapmaker Orca or Bambu Studio in the "Open in" menu; the choice is saved on
+  the server. See [Opening files in a desktop slicer](#opening-files-in-a-desktop-slicer).
 * Search across model, category and file names. Optional password login.
 
 ![Model page](docs/screenshots/model.png)
@@ -60,6 +66,27 @@ CI; to publish an image by hand (needs Docker Desktop):
 | `scripts\release.cmd` | test + build + push (`release.cmd notest` skips tests) |
 
 The version comes from `app/__init__.py`; bump it before a release.
+
+## Opening files in a desktop slicer
+
+A web page can't start programs, so Print Pantry gives the slicer a short-lived
+download link (15 minutes, no login needed for that one file) through the
+slicer's link handler:
+
+* **Snapmaker Orca** works with nothing to install: its `snapmaker-orca://`
+  link downloads the file (into your Downloads folder) and opens it.
+* **Bambu Studio** only accepts `bambustudio://` links from MakerWorld, so on
+  each Windows PC run this once from the repo checkout:
+
+      scripts\install-slicer-links.cmd
+
+  It registers a `printpantry://` link for your Windows user that downloads the
+  file to `%TEMP%\PrintPantry` and starts Bambu Studio with it. It only follows
+  links to `192.168.1.140:8484` (pass another `host:port` to add one;
+  `remove` undoes it).
+
+The first click in each browser asks whether to open the app; tick "Always
+allow".
 
 ## Configuration
 

@@ -27,6 +27,13 @@ STATIC = Path(__file__).parent / "static"
 MAX_RENDER_BYTES = 2 * 1024 * 1024
 
 
+SLICERS = ("snapmaker", "bambu")
+
+
+class Prefs(BaseModel):
+    slicer: str | None = None
+
+
 class CategoryPatch(BaseModel):
     icon: str | None = None
     color: str | None = None
@@ -78,7 +85,8 @@ def create_app(
     @app.middleware("http")
     async def require_login(request: Request, call_next):
         path = request.url.path
-        open_paths = ("/login", "/healthz", "/static/style.css", "/static/favicon.svg")
+        # /api/dl/ checks its own signed token: slicers fetch it without a cookie.
+        open_paths = ("/login", "/healthz", "/static/style.css", "/static/favicon.svg", "/api/dl/")
         if auth.enabled and not path.startswith(open_paths) and not auth.valid(request.cookies.get(COOKIE)):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "login required"}, status_code=401)
@@ -224,6 +232,41 @@ def create_app(
             filename=f.name,
             content_disposition_type="attachment" if download else "inline",
         )
+
+    @app.post("/api/files/{file_id}/link")
+    def make_link(file_id: str):
+        """A short-lived download URL a desktop slicer can fetch without logging in.
+
+        The URL ends in a plain file name with no query string, because Snapmaker
+        Orca names the downloaded file after the last part of the URL.
+        """
+        f, _ = resolve(file_id)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", f.name).strip("_") or "model.stl"
+        return {"path": f"/api/dl/{auth.link_token(f.id)}/{safe}", "name": f.name}
+
+    @app.get("/api/dl/{token}/{filename}")
+    def signed_download(token: str, filename: str):
+        file_id = auth.check_link(token)
+        if not file_id:
+            raise HTTPException(403, "This link has expired. Press the button again.")
+        f, path = resolve(file_id)
+        return FileResponse(path, media_type="application/octet-stream", filename=filename)
+
+    # ------------------------------------------------------------ preferences
+    @app.get("/api/prefs")
+    def get_prefs():
+        prefs = store.get("prefs", {}) or {}
+        return {"slicer": prefs.get("slicer", "snapmaker"), "slicers": list(SLICERS)}
+
+    @app.put("/api/prefs")
+    def put_prefs(patch: Prefs):
+        prefs = store.get("prefs", {}) or {}
+        if patch.slicer is not None:
+            if patch.slicer not in SLICERS:
+                raise HTTPException(400, "Unknown slicer")
+            prefs["slicer"] = patch.slicer
+        store.set("prefs", prefs)
+        return get_prefs()
 
     @app.get("/api/files/{file_id}/thumb")
     def thumb(file_id: str, plate: int = 1):
