@@ -1,0 +1,26 @@
+# Print Pantry for TrueNAS SCALE 25.10 (Apps > Discover Apps > Install via YAML),
+# or any Docker host: `docker compose up -d`.
+#
+# Storage lives on one dataset. To move to another pool later, change only
+# the two paths under `volumes:` (or set PP_ROOT before `docker compose up`).
+#   <root>/library  your models, one folder per category (read-only here)
+#   <root>/data     the app's own database and preview cache
+services:
+  printpantry:
+    image: ghcr.io/bgoldbeck/printpantry:latest
+    container_name: printpantry
+    restart: unless-stopped
+    user: "568:568"            # TrueNAS "apps" user; must be able to read library, write data
+    ports:
+      - "8484:8484"
+    environment:
+      PP_PASSWORD: ""          # set a password to require login (recommended)
+      PP_SCAN_INTERVAL: "300"  # seconds between automatic rescans, 0 = only on startup / Rescan button
+      TZ: "America/Los_Angeles"
+    volumes:
+      - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library:ro
+      - ${PP_ROOT:-/mnt/testpool/printpantry}/data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M         # TrueNAS has little free RAM; the app idles around 60-80 MB
