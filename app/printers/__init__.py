@@ -47,6 +47,10 @@ class PrinterHub:
                     p, env.get("PP_P1S_HOST", ""), env.get("PP_P1S_SERIAL", ""), env.get("PP_P1S_ACCESS_CODE", "")
                 )
 
+        if data:
+            for drv in self.printers.values():
+                drv.load_colors(Path(data) / f"colors-{drv.profile.id}.json")
+
     def get(self, printer_id: str) -> Printer | None:
         return self.printers.get(printer_id)
 

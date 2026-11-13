@@ -305,3 +305,7 @@ button .muted { opacity: .75; font-weight: 400; }
   .field { grid-template-columns: 1fr; gap: 4px; }
 }
 button.light.on { background: #ffe9a8; color: #2b231d; border-color: #f2c94c; }
+button.tool { border: 0; color: var(--ink); font-weight: 500; cursor: pointer; }
+button.tool:hover { filter: brightness(0.96); }
+.colors.big button { width: 40px; height: 40px; border: 2px solid var(--line); }
+.colors.big button[aria-pressed="true"] { border-color: var(--ink); }
