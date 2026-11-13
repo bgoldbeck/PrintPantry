@@ -315,3 +315,8 @@ def test_colour_api(pclient, u1):
     assert pclient.put("/api/printers/u1/toolheads/0/color", json={"color": "yellow"}).status_code == 400
     r = pclient.put("/api/printers/u1/toolheads/0/color", json={"color": None})
     assert r.json()["status"]["toolheads"][0]["custom_color"] is False
+
+
+def test_ui_files_revalidate(pclient):
+    assert pclient.get("/static/printers.js").headers["cache-control"] == "no-cache"
+    assert "no-cache" not in pclient.get("/static/vendor/three/LICENSE").headers.get("cache-control", "")
