@@ -305,11 +305,12 @@ class Scanner:
         )
         if kind in ("3mf", "sliced3mf", "gcode"):
             cached = self.store.cached_info(relpath, st.st_mtime, st.st_size)
-            if cached is not None:
+            # Re-read files parsed by an older version of the reader.
+            if cached is not None and cached.pop("_v", 0) == formats.INFO_VERSION:
                 info = formats.FileInfo.from_json(cached)
             else:
                 info = formats.read_info(path)
-                self.store.put_info(relpath, st.st_mtime, st.st_size, info.to_json())
+                self.store.put_info(relpath, st.st_mtime, st.st_size, {**info.to_json(), "_v": formats.INFO_VERSION})
             f.info = info
             f.kind = info.kind if info.kind != "other" else kind
             if f.kind == "3mf":

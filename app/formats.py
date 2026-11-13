@@ -79,6 +79,9 @@ class FileInfo:
         return FileInfo(**{**data, "plates": plates})
 
 
+# Bump when read_info changes, so cached results are re-read.
+INFO_VERSION = 2
+
 MODEL_EXTS = {".stl"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
