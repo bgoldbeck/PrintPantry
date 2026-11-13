@@ -32,6 +32,8 @@ from .importer import SOURCE_FILE, Importer, ImportError_, suggest_category
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
 from .scanner import Scanner, make_id
+from .spools import Spools
+from .spools import make_router as spools_router
 from .slicing import SlicerClient, client_from_env
 from .slicing import make_router as slicer_router
 from .store import Store
@@ -481,6 +483,15 @@ def create_app(
     # ------------------------------------------------------------ printers
     app.include_router(printers_router(hub, resolve, on_start=history.record_start))
     app.include_router(history_router(history))
+
+    # ------------------------------------------------------------ spools and cost
+    from .printers import api as printers_api
+
+    spools = Spools(settings.data / "printpantry.db", store, hub)
+    app.state.spools = spools
+    printers_api.EXTRA_CHECKS[:] = [spools.check_tools]
+    app.include_router(spools_router(spools))
+    history.on_finish(lambda rec: spools.on_print_finished(rec, history))
 
     # ------------------------------------------------------------ slicing and calibration
     slicer = slicer or client_from_env()

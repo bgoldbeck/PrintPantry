@@ -312,10 +312,11 @@ export async function openPrintDialog(fileId, printerId) {
         <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
         <td>${heads().length > 1 ? `<div class="headpicks" role="group" aria-label="Toolhead for filament ${t.file_index + 1}">${heads().map((h) => headChip(t, h)).join("")}</div>`
           : `T${t.index + 1} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
+        <td>${t.spool ? `<small title="Spool on this toolhead">${esc(t.spool.label)}<br>${Math.round(t.spool.remaining_g)} g left${t.file.grams ? `, needs ${Math.round(t.file.grams)} g` : ""}</small>` : ""}</td>
         <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
     return `
       ${chk.blockers.length ? `<div class="notice error"><strong>Can't start:</strong><ul>${chk.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : ""}
-      ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th>Spool</th><th></th></tr></thead><tbody>${rows}</tbody></table>
         <p class="hint">The file's colour is whatever the slicer had set; only the material is checked.</p>` : ""}
       ${chk.warnings.length ? `<div class="notice warn"><ul>${chk.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
         <label class="check"><input type="checkbox" data-ack> I've checked the toolheads and want to print anyway</label>` : ""}`;
