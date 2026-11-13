@@ -73,7 +73,7 @@ function tempsHtml(st) {
 }
 function toolsHtml(st) {
   return st.toolheads.map((t) => `<span class="tool${t.active ? " active" : ""}${t.loaded === false ? " empty" : ""}" title="${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Unknown")}">
-      <i style="--c:${esc(t.color || "transparent")}"></i>T${t.index} ${esc(t.loaded === false ? "empty" : t.type || "?")}</span>`).join("");
+      <i style="--c:${esc(t.color || "transparent")}"></i>T${t.index + 1} ${esc(t.loaded === false ? "empty" : t.type || "?")}</span>`).join("");
 }
 
 function cardBody(p) {
@@ -187,7 +187,7 @@ export async function openPrintDialog(fileId, printerId) {
   const p = chk.printer, f = chk.file;
   const plate = (f.plates || [])[0] || {};
   const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
-      <td>T${t.index}</td><td>${swatch(t.file.type, t.file.color)}</td>
+      <td>T${t.index + 1}</td><td>${swatch(t.file.type, t.file.color)}</td>
       <td>${t.loaded ? (t.loaded.loaded === false ? "<em>empty</em>" : `${swatch(t.loaded.type, t.loaded.color)} <small>${esc(t.loaded.vendor)}</small>`) : "<em>unknown</em>"}</td>
       <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
   dlg.innerHTML = `
