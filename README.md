@@ -134,5 +134,9 @@ app/static/      single-page UI, Three.js viewer (vendored, no build step)
 * **v3 slicing** (done, see [docs/slicing.md](docs/slicing.md)): "Slice for U1"
   and "Slice for P1S" on project 3MFs and STLs, run by OrcaSlicer's command
   line in a second container on the NAS, with built-in or your own presets.
+* **Calibration** (U1 done, see [docs/calibration.md](docs/calibration.md)):
+  a filament flow ratio wizard (OrcaSlicer's flow test plates, sliced on the
+  NAS, saved per filament and used when slicing) and buttons for the U1's bed
+  mesh, input shaper and toolhead offset calibrations.
 
 Three.js (MIT) and Lucide icons (ISC) are vendored under `app/static/vendor`.

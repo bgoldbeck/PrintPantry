@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -16,6 +15,11 @@ log = logging.getLogger("printpantry.printers")
 
 class ColorRequest(BaseModel):
     color: str | None = None  # "#RRGGBB", or null to go back to the printer's colour
+
+
+class CalibrationRequest(BaseModel):
+    confirmed: bool = False  # the user ticked the "bed is clear" style check
+    params: dict = {}
 
 
 class PrintRequest(BaseModel):
@@ -36,7 +40,7 @@ def same_material(a: str, b: str) -> bool:
     return x.startswith(y) or y.startswith(x)
 
 
-def preflight(printer, f) -> dict:
+def preflight(printer, f, filaments=None) -> dict:
     """Everything that should be true before a print starts. Blockers stop it,
     warnings need a tick from the user."""
     blockers: list[str] = []
@@ -52,15 +56,22 @@ def preflight(printer, f) -> dict:
         blockers.append(f"{name} is offline" + (f": {st.message}" if st.message else ""))
     elif st.state not in IDLE_STATES:
         blockers.append(f"{name} is {st.state}" + (f" ({st.message})" if st.message else ""))
-    if f.kind not in printer.profile.file_types:
+    elif printer.calibration_running:
+        blockers.append(f"{name} is running {printer.calibrating['name']}")
+    if f is None:
+        pass
+    elif f.kind not in printer.profile.file_types:
         blockers.append(f"{f.name} isn't a file {name} can print")
     elif f.printer and f.printer != printer.profile.id:
         blockers.append(f"{f.name} was sliced for a different printer")
     elif not f.printer:
         warnings.append(f"Couldn't tell which printer {f.name} was sliced for")
 
-    plates = f.info.plates if f.info else []
-    file_fils = plates[0].filaments if plates else []
+    if f is None:
+        file_fils = filaments or []
+    else:
+        plates = f.info.plates if f.info else []
+        file_fils = plates[0].filaments if plates else []
     heads = {t.index: t for t in st.toolheads}
     for fl in file_fils:
         idx = fl.slot - 1
@@ -91,7 +102,7 @@ def preflight(printer, f) -> dict:
 def make_router(hub: PrinterHub, resolve) -> APIRouter:
     """``resolve(file_id)`` returns (LibFile, Path) or raises 404."""
     router = APIRouter(prefix="/api/printers")
-    starting = {pid: threading.Lock() for pid in hub.printers}
+    starting = hub.starting
 
     def get(printer_id: str):
         p = hub.get(printer_id)
@@ -166,10 +177,28 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
             raise HTTPException(400, str(exc)) from exc
         return p.to_json()
 
+    @router.post("/{printer_id}/calibrations/{cid}")
+    def calibrate(printer_id: str, cid: str, req: CalibrationRequest):
+        p = get(printer_id)
+        if not p.configured:
+            raise HTTPException(409, p.setup_hint or f"{p.profile.name} isn't set up")
+        if not req.confirmed:
+            raise HTTPException(400, "Confirm the printer is ready first")
+        lock = starting[printer_id]
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "A print is being sent to this printer")
+        try:
+            p.start_calibration(cid, req.params)
+        except PrinterError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            lock.release()
+        return p.to_json()
+
     @router.post("/{printer_id}/{action}")
     def action(printer_id: str, action: str):
         p = get(printer_id)
-        if action not in ("pause", "resume", "cancel", "light_on", "light_off"):
+        if action not in ("pause", "resume", "cancel", "light_on", "light_off", "estop"):
             raise HTTPException(404, "Unknown action")
         try:
             p.action(action)

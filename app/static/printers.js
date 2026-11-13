@@ -1,4 +1,5 @@
 // Printer pages: live status cards (#/printers) and the "Print on ..." dialog.
+import { calibrationDialog, calibrationHtml, flowSection, flowWizard } from "./calibration.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -16,7 +17,7 @@ function fmtDur(sec) {
   return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
 }
 const fmtTemp = (t) => (t == null ? "–" : `${Math.round(t)}°`);
-function fmtAge(ts) {
+export function fmtAge(ts) {
   if (!ts) return "";
   const s = Math.max(0, Date.now() / 1000 - ts);
   if (s < 5) return "just now";
@@ -39,7 +40,7 @@ export const canPrintOn = (id) => !!PRINTERS?.find((p) => p.id === id && p.can_p
 
 // ---------------------------------------------------------------- camera
 // Swap frames only once loaded so the picture never flashes blank.
-function cameraLoop(img, printerId, every, onFrame) {
+export function cameraLoop(img, printerId, every, onFrame) {
   let timer = null, alive = true, busy = false;
   async function tick() {
     if (!alive) return;
@@ -145,7 +146,8 @@ function cardBody(p) {
       </div>` : ""}
     ${st.temps.length ? `<div class="temps">${tempsHtml(st)}</div>` : ""}
     ${st.toolheads.length ? `<div class="tools">${toolsHtml(st)}</div>` : ""}
-    ${buttons.length ? `<div class="file-actions">${buttons.join("")}</div>` : ""}`;
+    ${buttons.length ? `<div class="file-actions">${buttons.join("")}</div>` : ""}
+    ${calibrationHtml(p)}`;
 }
 
 export async function printersPage(view) {
@@ -159,7 +161,8 @@ export async function printersPage(view) {
           <span class="state" data-state></span></div>
         ${p.can_camera ? `<div class="cam"><img alt="${esc(p.name)} camera" class="nocam"><span class="cam-age" data-age></span></div>` : ""}
         <div data-body></div>
-      </section>`).join("")}</div>`;
+      </section>`).join("")}</div>
+    <section class="panel flow-panel" data-flow-panel></section>`;
 
   const stops = [];
   const latest = new Map(list.map((p) => [p.id, p]));
@@ -174,6 +177,9 @@ export async function printersPage(view) {
     card.querySelector("[data-body]").innerHTML = cardBody(p);
   }
   list.forEach(paint);
+  const flowBox = view.querySelector("[data-flow-panel]");
+  const refreshFlow = () => flowSection(flowBox, () => [...latest.values()]);
+  refreshFlow();
 
   const onClick = async (e) => {
     const chip = e.target.closest("[data-tool]");
@@ -183,11 +189,24 @@ export async function printersPage(view) {
       if (t) colorDialog(p, t, paint);
       return;
     }
+    const cal = e.target.closest("[data-calib]");
+    if (cal) {
+      const p = latest.get(cal.closest(".printer-card").dataset.id);
+      if (p) calibrationDialog(p, cal.dataset.calib, paint);
+      return;
+    }
+    const fl = e.target.closest("[data-flow]");
+    if (fl) {
+      flowWizard([...latest.values()], { printer: fl.dataset.flow }, refreshFlow);
+      return;
+    }
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const card = b.closest(".printer-card");
+    if (!card) return;
     const act = b.dataset.act;
     if (act === "cancel" && !confirm("Cancel this print? It can't be resumed.")) return;
+    if (act === "estop" && !confirm("Emergency stop? Motors and heaters stop at once and the printer's firmware restarts.")) return;
     b.disabled = true;
     try { paint(await api(`/api/printers/${card.dataset.id}/${act}`, { method: "POST" })); }
     catch (err) { alert(err.message); b.disabled = false; }

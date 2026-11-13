@@ -59,11 +59,25 @@ class Status:
         return asdict(self)
 
 
+@dataclass
+class Calibration:
+    """A calibration the printer runs by itself (no test print needed)."""
+
+    id: str
+    name: str
+    about: str  # what it does, shown before starting
+    check: str  # what to make sure of first, ticked by the user
+    minutes: int  # rough duration
+    params: list[dict] = field(default_factory=list)  # {id, label, unit, default, min, max}
+    toolhead: bool = False  # asks which toolhead (T1..)
+
+
 class Printer:
     """Base driver. Subclasses fill in ``poll`` and the actions they support."""
 
     can_print = False
     can_camera = False
+    calibrations: tuple[Calibration, ...] = ()
     poll_seconds = 3.0
     offline_poll_seconds = 10.0
 
@@ -80,6 +94,9 @@ class Printer:
         self.color_file: Path | None = None
         self._colors: dict[str, dict] = {}
         self._raw: dict[int, str] = {}
+        # The calibration running now or last run: {id, name, state, started, finished, message}.
+        self.calibrating: dict | None = None
+        self._calib_lock = threading.Lock()
 
     # -- lifecycle
     def start(self) -> None:
@@ -175,6 +192,67 @@ class Printer:
     def action(self, name: str) -> None:
         raise PrinterError(f"'{name}' isn't supported on this printer yet")
 
+    # -- built-in calibrations
+    @property
+    def calibration_running(self) -> bool:
+        return bool(self.calibrating and self.calibrating.get("state") == "running")
+
+    def calibration(self, cid: str) -> Calibration:
+        for c in self.calibrations:
+            if c.id == cid:
+                return c
+        raise PrinterError(f"{self.profile.name} has no '{cid}' calibration")
+
+    def start_calibration(self, cid: str, params: dict) -> dict:
+        """Check the printer is free, then run the calibration in the background."""
+        cal = self.calibration(cid)
+        values = {}
+        for p in cal.params:
+            raw = params.get(p["id"], p["default"])
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                raise PrinterError(f"{p['label']} must be a number") from None
+            if not p["min"] <= v <= p["max"]:
+                raise PrinterError(f"{p['label']} must be between {p['min']} and {p['max']}")
+            values[p["id"]] = int(v) if float(v).is_integer() else v
+        if cal.toolhead:
+            try:
+                values["toolhead"] = int(params.get("toolhead") or 1)
+            except (TypeError, ValueError):
+                raise PrinterError("Pick a toolhead") from None
+        with self._calib_lock:
+            if self.calibration_running:
+                raise PrinterError(f"{self.calibrating['name']} is still running")
+            st = self.refresh()
+            if not st.online:
+                raise PrinterError(f"{self.profile.name} is offline")
+            if st.state not in IDLE_STATES:
+                raise PrinterError(f"{self.profile.name} is {st.state}, not ready for a calibration")
+            script = self.calibration_script(cal, values)
+            self.calibrating = {"id": cal.id, "name": cal.name, "state": "running", "started": time.time(),
+                                "finished": None, "message": "", "minutes": cal.minutes}
+        log.info("%s: starting calibration %s %s", self.profile.name, cal.id, values)
+        threading.Thread(target=self._run_calibration, args=(script,), name=f"calib-{self.profile.id}",
+                         daemon=True).start()
+        return self.calibrating
+
+    def _run_calibration(self, script: str) -> None:
+        state = self.calibrating
+        try:
+            self.run_script(script)
+            state.update(state="done", message="Finished")
+        except Exception as exc:  # noqa: BLE001 - shown on the Printers page
+            log.warning("%s: calibration %s failed: %s", self.profile.name, state["id"], exc)
+            state.update(state="failed", message=_short(exc))
+        state["finished"] = time.time()
+
+    def calibration_script(self, cal: Calibration, values: dict) -> str:
+        raise PrinterError(f"{cal.name} isn't supported on this printer yet")
+
+    def run_script(self, script: str) -> None:
+        raise PrinterError("Running commands isn't supported on this printer yet")
+
     def to_json(self) -> dict:
         p = self.profile
         return {
@@ -186,6 +264,8 @@ class Printer:
             "setup_hint": self.setup_hint,
             "can_print": self.can_print and self.configured,
             "can_camera": self.can_camera and self.configured,
+            "calibrations": [asdict(c) for c in self.calibrations] if self.configured else [],
+            "calibrating": self.calibrating,
             "status": self.status.to_json(),
         }
 

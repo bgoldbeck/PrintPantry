@@ -89,7 +89,8 @@ export async function openSliceDialog(file, printerId, onDone) {
         option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
       <div class="field"><span>Filaments</span><div class="fil-rows">${slots.map((s, i) => `
         <label class="fil-row"><span class="slot">${swatch(s.colour)}T${i + 1}${s.type ? ` · ${esc(s.type)}` : ""}</span>
-          <select data-fil="${i}"></select></label>`).join("")}</div></div>
+          <select data-fil="${i}"></select></label>`).join("")}</div>${Object.keys(o.calibrated || {}).length
+        ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
     </div>
     ${plates}
     <div data-warn></div>
@@ -119,7 +120,9 @@ export async function openSliceDialog(file, printerId, onDone) {
       const want = fils.some((f) => f.name === prev) ? prev
         : fils.some((f) => f.name === remembered) ? remembered : (d.filaments[i] || "");
       const pick = fils.some((f) => f.name === want) ? want : (fils.find((f) => f.type === slots[i].type)?.name || fils[0]?.name);
-      sel.innerHTML = fils.map((f) => option(f.name, `${f.name}${f.user ? " (yours)" : ""}`, f.name === pick)).join("");
+      const cal = o.calibrated || {};
+      sel.innerHTML = fils.map((f) => option(f.name,
+        `${f.name}${f.user ? " (yours)" : ""}${cal[f.name] ? ` · flow ${cal[f.name]} ✓` : ""}`, f.name === pick)).join("");
     });
     if (!procs.names.length || !fils.length) warnBox.innerHTML = `<div class="notice warn">No process or filament presets for ${esc(machine)}.</div>`;
   }

@@ -56,8 +56,10 @@ class SlicerClient:
         return data
 
 
-def make_router(client: SlicerClient, resolve, rescan) -> APIRouter:
-    """``resolve(file_id)`` -> (LibFile, Path) or 404; ``rescan()`` scans the library (blocking)."""
+def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIRouter:
+    """``resolve(file_id)`` -> (LibFile, Path) or 404; ``rescan()`` scans the library (blocking);
+    ``flow_ratios(printer)`` -> {filament preset: calibrated flow ratio}."""
+    flow_ratios = flow_ratios or (lambda printer: {})
     router = APIRouter(prefix="/api/slicer")
     rescanned: set[str] = set()
     lock = threading.Lock()
@@ -80,13 +82,18 @@ def make_router(client: SlicerClient, resolve, rescan) -> APIRouter:
     @router.get("/options")
     def options(file_id: str, printer: str = "u1"):
         f = sliceable(file_id)
-        return client.call("GET", "/options", params={"printer": printer, "path": f.relpath})
+        opts = client.call("GET", "/options", params={"printer": printer, "path": f.relpath})
+        opts["calibrated"] = flow_ratios(printer)
+        return opts
 
     @router.post("/jobs")
     def start(req: SliceRequest):
         f = sliceable(req.file_id)
         body = req.model_dump(exclude={"file_id"})
         body["path"] = f.relpath
+        if req.mode == "presets":
+            saved = flow_ratios(req.printer)
+            body["flow_ratios"] = {n: saved[n] for n in req.filaments if n in saved}
         job = client.call("POST", "/jobs", json=body)
         log.info("slice job %s: %s for %s", job.get("id"), f.relpath, req.printer)
         return job
