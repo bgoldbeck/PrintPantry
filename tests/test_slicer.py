@@ -211,8 +211,8 @@ def test_options_for_a_p1s_project_on_the_u1(svc):
     assert d["machine"] == "My U1"  # your own preset comes first
     assert d["process"] == "My Fine"
     assert d["filaments"] == ["Snapmaker PLA @U1", "Snapmaker PETG @U1"]
-    # PLA has no textured-plate temperature in these profiles, so the smooth plate is picked.
-    assert d["bed_type"] == "High Temp Plate"
+    # PLA has no textured-plate temperature in these profiles; it borrows the smooth plate's, so the textured default stays.
+    assert d["bed_type"] == "Textured PEI Plate"
     assert o["filaments"]["Snapmaker U1 (0.4 nozzle)"][0]["beds"]["High Temp Plate"] in (55, 70)
 
 
@@ -420,3 +420,14 @@ def test_process_preset_is_written_into_the_project():
     assert config["wall_loops"] == "3" and "name" not in config and "inherits" not in config
     assert config["print_settings_id"] == "0.20mm Standard @BBL X1C"
     assert config["different_settings_to_system"] == ["", "", ""]
+
+
+def test_fill_plate_temps():
+    fil = {"filament_type": ["PLA"], "textured_plate_temp": ["0"], "hot_plate_temp": ["55"],
+           "hot_plate_temp_initial_layer": ["60"]}
+    filled = service.fill_plate_temps(fil)
+    assert fil["textured_plate_temp"] == ["55"] and fil["textured_plate_temp_initial_layer"] == ["60"]
+    assert "hot_plate_temp" not in filled
+    bare = {"filament_type": ["PETG"]}
+    service.fill_plate_temps(bare)
+    assert bare["textured_plate_temp"] == ["70"]

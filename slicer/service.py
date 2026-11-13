@@ -127,6 +127,37 @@ def _temp(fil: dict, key: str) -> int:
         return 0
 
 
+# Fallbacks when a filament preset has no temperature for a plate. Snapmaker's
+# built-in filaments only set the smooth (High Temp) plate, but the U1's own
+# plate is textured PEI. Textured PEI runs the same temperature as smooth PEI.
+PLATE_FALLBACK = {
+    "textured_plate_temp": ("hot_plate_temp", "eng_plate_temp"),
+    "hot_plate_temp": ("textured_plate_temp", "eng_plate_temp"),
+    "eng_plate_temp": ("hot_plate_temp", "textured_plate_temp"),
+}
+MATERIAL_BED = {"PLA": 60, "PETG": 70, "TPU": 45, "ABS": 100, "ASA": 100, "PC": 110, "PA": 100, "PVA": 60}
+
+
+def fill_plate_temps(fil: dict) -> list[str]:
+    """Give PEI/engineering plates a temperature when the preset leaves it at 0,
+    taken from a similar plate or the material's usual bed temperature.
+    Edits ``fil`` in place; returns the keys filled in."""
+    filled = []
+    kind = str(_first(fil.get("filament_type", "")) or "").upper()
+    for key, sources in PLATE_FALLBACK.items():
+        for suffix in ("", "_initial_layer"):
+            k = key + suffix
+            if _temp(fil, k) > 0:
+                continue
+            value = next((_temp(fil, s + suffix) for s in sources if _temp(fil, s + suffix) > 0), 0)
+            if not value:
+                value = next((v for m, v in MATERIAL_BED.items() if kind.startswith(m)), 0)
+            if value:
+                fil[k] = [str(value)]
+                filled.append(k)
+    return filled
+
+
 def _float(v, default: float = 0.0) -> float:
     try:
         return float(_first(v))
@@ -158,6 +189,7 @@ def printer_options(printer: Printer) -> dict:
                 flat = lib.flatten("filament", f.name, printer.vendor)
             except P.PresetError:
                 continue
+            fill_plate_temps(flat)
             fils.append({
                 "name": f.name,
                 "type": str(_first(flat.get("filament_type", "")) or ""),
@@ -211,6 +243,7 @@ def options(printer_id: str, relpath: str) -> dict:
         fil_defaults.append(name)
         try:
             flats.append(lib.flatten("filament", name, printer.vendor))
+            fill_plate_temps(flats[-1])
         except P.PresetError:
             pass
     try:
@@ -429,6 +462,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
         fils = [lib.flatten("filament", n, printer.vendor) for n in job.filaments]
     except P.PresetError as exc:
         raise RuntimeError(str(exc)) from exc
+    for f in fils:
+        fill_plate_temps(f)
     calibrated = []
     for f in fils:
         ratio = job.flow_ratios.get(f["name"])

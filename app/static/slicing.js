@@ -64,7 +64,9 @@ export async function openSliceDialog(file, printerId, onDone) {
   if (o.project_matches && (last.mode === "project" || last.mode === "presets")) d.mode = last.mode;
   if (has(machineNames, last.machine)) d.machine = last.machine;
   if (has((o.processes[d.machine] || {}).names || [], last.process)) d.process = last.process;
-  if (has(o.bed_types.map((b) => b.name), last.bed_type)) d.bed_type = last.bed_type;
+  // A remembered plate counts only from the time the presets had temperatures for every
+  // plate (bedV 2); before that, Smooth PEI was often forced on the U1's textured plate.
+  if (last.bedV === 2 && has(o.bed_types.map((b) => b.name), last.bed_type)) d.bed_type = last.bed_type;
   const slots = proj.filaments.length ? proj.filaments : [{ type: "PLA", colour: "" }];
   const tooMany = slots.length > o.printer.max_filaments;
   const plates = proj.plates > 1
@@ -158,7 +160,7 @@ export async function openSliceDialog(file, printerId, onDone) {
     const byType = {};
     body.filaments.forEach((n, i) => { if (slots[i].type) byType[slots[i].type.toUpperCase()] = n; });
     saveLast(printerId, { mode: o.project_matches ? body.mode : last.mode, machine: body.machine,
-      process: body.process, bed_type: body.bed_type, filaments: body.filaments, byType });
+      process: body.process, bed_type: body.bed_type, bedV: 2, filaments: body.filaments, byType });
     progress.innerHTML = `<div class="notice">Sending to the slicer...</div>`;
     let job;
     try {
