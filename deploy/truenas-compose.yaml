@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     user: "568:568"
     ports:
-      - "8484:8484"
+      - "8483:8484"   # the printpantry-https app serves 8484 (http and https) in front of this
     environment:
       PP_PASSWORD: ""          # filled in on the NAS from src/.pp_password
       PP_SESSION_DAYS: "365"   # stay logged in for a year

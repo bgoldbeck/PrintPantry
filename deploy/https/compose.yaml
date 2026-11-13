@@ -1,5 +1,6 @@
-# TrueNAS custom app "printpantry-https": nginx in front of Print Pantry for
-# access from the internet. Installed and updated by `truenas.sh https`.
+# TrueNAS custom app "printpantry-https": nginx in front of Print Pantry: serves port
+# 8484 (http on the LAN, https from the internet) and passes it to the app on 8483.
+# Installed and updated by truenas.sh setup/update/https.
 services:
   https:
     image: nginx@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
@@ -13,7 +14,8 @@ services:
     tmpfs: ["/tmp:size=32m,mode=1777"]
     restart: unless-stopped
     ports:
-      - "8486:8486"
+      - "8484:8484"   # home network (http) and LAN https; picks by the first bytes
+      - "8486:8486"   # https from the internet (pfSense WAN 8484 -> here)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
