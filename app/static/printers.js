@@ -87,6 +87,10 @@ function cardBody(p) {
     st.eta_seconds != null && st.state === "printing" ? `about ${fmtDur(st.eta_seconds)} left` : "",
   ].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
   const buttons = [];
+  if (st.online && st.light != null) {
+    buttons.push(`<button class="small ghost light${st.light ? " on" : ""}" data-act="${st.light ? "light_off" : "light_on"}"
+      aria-pressed="${st.light}">${st.light ? "Light off" : "Light on"}</button>`);
+  }
   if (st.state === "printing") buttons.push(`<button class="small ghost" data-act="pause">Pause</button>`);
   if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);
   if (["printing", "paused"].includes(st.state)) buttons.push(`<button class="small danger" data-act="cancel">Cancel print</button>`);

@@ -304,3 +304,4 @@ button .muted { opacity: .75; font-weight: 400; }
 @media (max-width: 640px) {
   .field { grid-template-columns: 1fr; gap: 4px; }
 }
+button.light.on { background: #ffe9a8; color: #2b231d; border-color: #f2c94c; }

@@ -29,6 +29,8 @@ class FakeMoonraker:
         self.started: list[str] = []
         self.deleted: list[str] = []
         self.wakes = 0
+        self.light = 0.0
+        self.gcode: list[str] = []
 
     def status(self):
         return {
@@ -43,6 +45,7 @@ class FakeMoonraker:
             "virtual_sdcard": {"progress": 0.25},
             "display_status": {"progress": 0.25},
             "heater_bed": {"temperature": 60.2, "target": 60.0},
+            "led cavity_led": {"color_data": [[0.0, 0.0, 0.0, self.light]]},
             "toolhead": {"extruder": "extruder1"},
             "extruder": {"temperature": 219.6, "target": 220.0},
             "extruder1": {"temperature": 30.0, "target": 0.0},
@@ -73,6 +76,11 @@ class FakeMoonraker:
         if request.method == "DELETE" and path.startswith("/server/files/gcodes/"):
             self.deleted.append(path.split("/server/files/gcodes/", 1)[1])
             return httpx.Response(200, json={"result": {"item": {}}})
+        if path == "/printer/gcode/script":
+            script = request.url.params["script"]
+            self.gcode.append(script)
+            self.light = 1.0 if "WHITE=1" in script else 0.0
+            return httpx.Response(200, json={"result": "ok"})
         if path == "/printer/print/start":
             self.started.append(request.url.params["filename"])
             self.state = "printing"
@@ -272,3 +280,12 @@ def test_keep_all_uploads_when_zero(fake, tmp_path):
     for n in range(4):
         p.forget_old_uploads(f"{n}.gcode")
     assert fake.deleted == [] and len(json.loads(ledger.read_text())) == 4
+
+
+def test_light_toggle(pclient, fake, u1):
+    u1.refresh()
+    assert pclient.get("/api/printers/u1").json()["status"]["light"] is False
+    r = pclient.post("/api/printers/u1/light_on")
+    assert r.status_code == 200 and r.json()["status"]["light"] is True
+    assert fake.gcode == ["SET_LED LED=cavity_led WHITE=1"]
+    assert pclient.post("/api/printers/u1/light_off").json()["status"]["light"] is False
