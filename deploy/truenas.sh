@@ -152,11 +152,20 @@ wait_healthy() {
   return 1
 }
 
+# The app (uid/gid 568, apps) moves and renames files in the library, and
+# library sync writes as this user. Keep everything owned by this user, group
+# apps, group-writable, so both can. Files synced in from Windows otherwise
+# land with this user's own group and the app can't move them.
+fix_library_perms() {
+  quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/library\",\"uid\":$ME_UID,\"gid\":568,\"mode\":\"775\",\"options\":{\"recursive\":true}}" \
+    || echo "Could not fix library permissions; moving models in the app may fail." >&2
+}
+
 case "${1:-update}" in
   setup)
     ensure_datasets
     quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/src\",\"uid\":$ME_UID,\"gid\":$ME_UID,\"mode\":\"755\"}"
-    quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/library\",\"uid\":$ME_UID,\"gid\":568,\"mode\":\"775\"}"
+    fix_library_perms
     quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/data\",\"uid\":568,\"gid\":568,\"mode\":\"750\"}"
     checkout
     if midclt call app.query "[[\"name\",\"=\",\"$APP\"]]" | grep -q '"name"'; then
@@ -172,6 +181,7 @@ case "${1:-update}" in
     ;;
   update)
     ensure_datasets
+    fix_library_perms
     checkout
     remember_images
     echo "Rebuilding and restarting (the first build with the slicer downloads OrcaSlicer and takes a few minutes)..."
