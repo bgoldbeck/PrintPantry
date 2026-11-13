@@ -1,6 +1,7 @@
 // Printer pages: live status cards (#/printers) and the "Print on ..." dialog.
 import { swatchHtml } from "./filament.js";
 import { calibrationDialog, calibrationHtml, flowSection, flowWizard } from "./calibration.js";
+import { settingsDialog } from "./settings.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -416,6 +417,7 @@ function cardBody(p) {
   if (st.state === "printing") buttons.push(`<button class="small ghost" data-act="pause">Pause</button>`);
   if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);
   if (["printing", "paused"].includes(st.state)) buttons.push(`<button class="small danger" data-act="cancel">Cancel print</button>`);
+  if (p.has_settings && st.online) buttons.push(`<button class="small ghost" data-settings title="AI detection, AMS, fans and more">Settings</button>`);
   return `
     ${st.message && (st.state === "error" || st.state === "failed" || st.state === "offline" || st.state === "starting") ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
     ${job ? `<div class="job">
@@ -470,6 +472,12 @@ export async function printersPage(view) {
     if (cal) {
       const p = latest.get(cal.closest(".printer-card").dataset.id);
       if (p) calibrationDialog(p, cal.dataset.calib, paint);
+      return;
+    }
+    const sb = e.target.closest("[data-settings]");
+    if (sb) {
+      const p = latest.get(sb.closest(".printer-card").dataset.id);
+      if (p) settingsDialog(p);
       return;
     }
     const fl = e.target.closest("[data-flow]");
