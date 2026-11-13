@@ -31,7 +31,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from .base import IDLE_STATES, Calibration, Printer, PrinterError, Status, Temp, Toolhead
+from .base import IDLE_STATES, Calibration, Printer, PrinterError, Setting, Status, Temp, Toolhead
 
 log = logging.getLogger("printpantry.bambu")
 
@@ -74,6 +74,16 @@ P1S_CALIBRATIONS = (
 )
 CALIBRATION_OPTION = {"bed_level": 1 << 1, "vibration": 1 << 2, "motor_noise": 1 << 3}
 CALIBRATION_START_WAIT = 120.0
+
+# Settings, checked against Bambu Studio's own commands and tried on Brandon's
+# P1S (firmware 01.10, LAN mode) in Nov 2026. home_flag bits come from the same.
+FLAG_STEP_LOSS = 1 << 4
+FLAG_AMS_REMAIN = 1 << 7
+FLAG_AMS_REFILL = 1 << 10
+SPEED_LEVELS = [{"value": 1, "label": "Silent (50%)"}, {"value": 2, "label": "Standard (100%)"},
+                {"value": 3, "label": "Sport (124%)"}, {"value": 4, "label": "Ludicrous (166%)"}]
+AI_SENSITIVITY = [{"value": v, "label": v.title()} for v in ("low", "medium", "high")]
+XCAM_ACK_WAIT = 6.0
 CALIBRATION_TIMEOUT = 3600.0
 
 
@@ -289,6 +299,7 @@ class BambuPrinter(Printer):
     can_camera = True
     ams_mapping = True  # file filaments are mapped to AMS trays at print time
     calibrations = P1S_CALIBRATIONS
+    settings_wait = 12.0
 
     def __init__(self, profile, host: str = "", serial: str = "", access_code: str = "",
                  link_factory=None, ftp_factory=None, camera=None, ledger: Path | None = None,
@@ -310,6 +321,9 @@ class BambuPrinter(Printer):
         self._cam_lock = threading.Lock()
         self._jobs: list[dict] = self._load_jobs()
         self._last_gstate = ""
+        self._xcam_ack: dict = {}
+        self._xcam_event = threading.Event()
+        self._settings_push_at = 0.0
         missing = [n for n, v in (("PP_P1S_HOST", self.host), ("PP_P1S_SERIAL", self.serial),
                                   ("PP_P1S_ACCESS_CODE", self.access_code)) if not v]
         if missing:
@@ -346,6 +360,10 @@ class BambuPrinter(Printer):
         self._send({"print": {"sequence_id": "0", "command": command, **extra}})
 
     def on_report(self, data: dict) -> None:
+        x = data.get("xcam")
+        if isinstance(x, dict) and x.get("command") == "xcam_control_set":
+            self._xcam_ack = x
+            self._xcam_event.set()
         p = data.get("print")
         if not isinstance(p, dict):
             return
@@ -643,6 +661,104 @@ class BambuPrinter(Printer):
             raise PrinterError(f"Unknown action '{name}'")
         time.sleep(1.0)
         self.refresh()
+
+    # ------------------------------------------------------------ settings
+    def settings(self) -> list[Setting]:
+        st = self.refresh()
+        if not st.online:
+            raise PrinterError(f"{self.profile.name} is offline: {st.message or 'no answer'}")
+        with self._report_lock:
+            r = json.loads(json.dumps(self._report))
+        flag = int(_num(r.get("home_flag"), 0) or 0) & 0xFFFFFFFF
+        ams = r.get("ams") or {}
+        xcam = r.get("xcam") if isinstance(r.get("xcam"), dict) else {}
+        saved = self.saved_settings
+        if "printing_monitor" in xcam:  # newer firmware reports it; 01.10 on the P1S doesn't
+            ai, sens, note = bool(xcam["printing_monitor"]), xcam.get("halt_print_sensitivity"), ""
+        else:
+            ai, sens = saved.get("printing_monitor"), saved.get("halt_print_sensitivity")
+            note = ("The P1S doesn't report this setting, so this is what it last confirmed to Print Pantry."
+                    if ai is not None else "The P1S doesn't report this setting. Set it here once to see it.")
+        out = [
+            Setting("ai_monitor", "AI camera detection", "Spaghetti detection", "toggle", ai,
+                    "The camera watches each print and pauses it when it sees spaghetti (loose strands of filament).",
+                    note=note),
+            Setting("ai_sensitivity", "AI camera detection", "Spaghetti sensitivity", "choice", sens,
+                    "High catches problems sooner but pauses for false alarms more often.", options=AI_SENSITIVITY,
+                    disabled="" if ai else "Turn on spaghetti detection first"),
+            Setting("step_loss", "Printer", "Recover from step loss", "toggle", bool(flag & FLAG_STEP_LOSS),
+                    "If the toolhead gets knocked and loses its place, re-home and carry on instead of "
+                    "printing shifted layers."),
+            Setting("camera_record", "Printer", "Camera recording", "toggle",
+                    (r.get("ipcam") or {}).get("ipcam_record") == "enable",
+                    "Lets the printer's camera record to its SD card. Print Pantry's camera view works either way."),
+        ]
+        if ams.get("ams"):
+            out += [
+                Setting("ams_refill", "AMS", "Auto refill", "toggle", bool(flag & FLAG_AMS_REFILL),
+                        "When a spool runs out, carry on with another AMS slot that has the same filament."),
+                Setting("ams_read_insert", "AMS", "Read RFID when a spool is inserted", "toggle",
+                        bool(ams.get("insert_flag")), "Reads the Bambu spool's tag to fill in the material and colour."),
+                Setting("ams_read_startup", "AMS", "Read RFID at power on", "toggle",
+                        bool(ams.get("power_on_flag")), "Reads every spool's tag when the printer starts."),
+                Setting("ams_remain", "AMS", "Estimate remaining filament", "toggle", bool(flag & FLAG_AMS_REMAIN),
+                        "Works out how much is left on Bambu spools."),
+            ]
+        printing = st.state in ("printing", "paused")
+        out.append(Setting("speed", "While printing", "Speed", "choice", int(_num(r.get("spd_lvl"), 2) or 2),
+                           options=SPEED_LEVELS, note="Applies to the current print.",
+                           disabled="" if printing else "Only while printing"))
+        return out
+
+    def write_setting(self, s: Setting, value) -> None:
+        with self._report_lock:
+            r = self._report
+            ams = r.get("ams") or {}
+            flag = int(_num(r.get("home_flag"), 0) or 0)
+        seq = str(int(time.time()) % 100000)
+        if s.id in ("ai_monitor", "ai_sensitivity"):
+            on = value if s.id == "ai_monitor" else True
+            sens = value if s.id == "ai_sensitivity" else (self.saved_settings.get("halt_print_sensitivity") or "medium")
+            self._xcam_event.clear()
+            self._send({"xcam": {"command": "xcam_control_set", "sequence_id": seq, "module_name": "printing_monitor",
+                                 "control": on, "enable": on, "print_halt": True, "halt_print_sensitivity": sens}})
+            if not self._xcam_event.wait(XCAM_ACK_WAIT):
+                raise PrinterError(f"{self.profile.name} didn't answer the {s.label} change")
+            ack = self._xcam_ack
+            if str(ack.get("result", "")).upper() != "SUCCESS":
+                raise PrinterError(f"{self.profile.name} refused {s.label}: {ack.get('reason') or ack.get('result')}")
+            self.save_settings(printing_monitor=bool(ack.get("control", on)),
+                               halt_print_sensitivity=ack.get("halt_print_sensitivity", sens))
+            return
+        if s.id == "step_loss":
+            cmd = {"print": {"command": "print_option", "option": int(value), "auto_recovery": value}}
+        elif s.id == "ams_refill":
+            cmd = {"print": {"command": "print_option", "auto_switch_filament": value}}
+        elif s.id.startswith("ams_"):
+            opts = {"startup_read_option": bool(ams.get("power_on_flag")),
+                    "tray_read_option": bool(ams.get("insert_flag")),
+                    "calibrate_remain_flag": bool(flag & FLAG_AMS_REMAIN)}
+            key = {"ams_read_insert": "tray_read_option", "ams_read_startup": "startup_read_option",
+                   "ams_remain": "calibrate_remain_flag"}[s.id]
+            opts[key] = value
+            cmd = {"print": {"command": "ams_user_setting", "ams_id": -1, **opts}}
+        elif s.id == "camera_record":
+            cmd = {"camera": {"command": "ipcam_record_set", "control": "enable" if value else "disable"}}
+        elif s.id == "speed":
+            cmd = {"print": {"command": "print_speed", "param": str(value)}}
+        else:
+            raise PrinterError(f"{s.label} can't be changed")
+        for body in cmd.values():
+            body["sequence_id"] = seq
+        self._settings_push_at = time.monotonic() + 3.0
+        self._send(cmd)
+
+    def _settings_wait(self) -> None:
+        # The printer usually sends the change by itself; if not, ask once for a full report.
+        time.sleep(0.5)
+        if self._settings_push_at and time.monotonic() > self._settings_push_at:
+            self._settings_push_at = 0.0
+            self._send({"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}})
 
     # ------------------------------------------------------------ calibration
     def calibration_script(self, cal: Calibration, values: dict) -> str:

@@ -57,6 +57,7 @@ class PrinterHub:
             for drv in self.printers.values():
                 drv.load_colors(Path(data) / f"colors-{drv.profile.id}.json")
                 drv.load_light_auto(Path(data) / f"light-auto-{drv.profile.id}.json")
+                drv.load_saved_settings(Path(data) / f"settings-{drv.profile.id}.json")
 
     def get(self, printer_id: str) -> Printer | None:
         return self.printers.get(printer_id)

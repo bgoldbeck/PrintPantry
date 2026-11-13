@@ -74,6 +74,55 @@ class Calibration:
     toolhead: bool = False  # asks which toolhead (T1..)
 
 
+@dataclass
+class Setting:
+    """One printer setting shown in the Settings dialog, with the value read back from the printer."""
+
+    id: str
+    group: str
+    label: str
+    kind: str  # "toggle" | "choice" | "number"
+    value: object = None  # None = the printer doesn't report it (yet)
+    about: str = ""
+    options: list = field(default_factory=list)  # choice: [{"value": ..., "label": ...}]
+    min: float | None = None
+    max: float | None = None
+    step: float | None = None
+    unit: str = ""
+    note: str = ""  # shown under the control, e.g. "Resets when the next print starts"
+    disabled: str = ""  # why it can't be changed right now ("" = it can)
+
+
+def check_value(s: Setting, value):
+    """Coerce a value from the browser to the setting's type, or raise PrinterError."""
+    if s.disabled:
+        raise PrinterError(s.disabled)
+    if s.kind == "toggle":
+        if not isinstance(value, bool):
+            raise PrinterError(f"{s.label} must be on or off")
+        return value
+    if s.kind == "choice":
+        allowed = [o["value"] for o in s.options]
+        if value not in allowed:
+            raise PrinterError(f"{s.label} must be one of: " + ", ".join(str(a) for a in allowed))
+        return value
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise PrinterError(f"{s.label} must be a number") from None
+    if (s.min is not None and v < s.min) or (s.max is not None and v > s.max):
+        raise PrinterError(f"{s.label} must be between {s.min:g} and {s.max:g}")
+    return int(v) if v.is_integer() else v
+
+
+def same_value(a, b) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) < 0.6
+    return a == b
+
+
 class Printer:
     """Base driver. Subclasses fill in ``poll`` and the actions they support."""
 
@@ -82,6 +131,7 @@ class Printer:
     ams_mapping = False  # True: file filaments are mapped to trays at print time (Bambu AMS)
     calibrations: tuple[Calibration, ...] = ()
     poll_seconds = 3.0
+    settings_wait = 8.0  # seconds to wait for a changed setting to show up
     offline_poll_seconds = 10.0
 
     def __init__(self, profile):
@@ -102,6 +152,10 @@ class Printer:
         self._calib_lock = threading.Lock()
         self.light_auto = False
         self.light_auto_file: Path | None = None
+        # Settings the printer accepts but doesn't report back, as last confirmed by the printer.
+        self.settings_file: Path | None = None
+        self.saved_settings: dict = {}
+        self._settings_lock = threading.Lock()
 
     # -- lifecycle
     def start(self) -> None:
@@ -160,6 +214,24 @@ class Printer:
                 tmp.replace(self.light_auto_file)
             except OSError:
                 pass
+
+    def load_saved_settings(self, path: Path) -> None:
+        self.settings_file = path
+        try:
+            data = json.loads(path.read_text())
+            self.saved_settings = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            self.saved_settings = {}
+
+    def save_settings(self, **values) -> None:
+        self.saved_settings.update(values, saved_at=time.time())
+        if self.settings_file:
+            try:
+                tmp = self.settings_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.saved_settings))
+                tmp.replace(self.settings_file)
+            except OSError as exc:
+                log.warning("couldn't save %s: %s", self.settings_file, exc)
 
     def load_colors(self, path: Path) -> None:
         self.color_file = path
@@ -228,6 +300,39 @@ class Printer:
 
     def action(self, name: str) -> None:
         raise PrinterError(f"'{name}' isn't supported on this printer yet")
+
+    # -- printer settings
+    def settings(self) -> list[Setting]:
+        """The settings this printer has, each read back from the printer now."""
+        return []
+
+    def write_setting(self, s: Setting, value) -> None:
+        raise PrinterError(f"{s.label} can't be changed on this printer")
+
+    def set_setting(self, sid: str, value, wait: float | None = None) -> list[Setting]:
+        """Change one setting, then read it back until the printer shows the new value."""
+        if not self.configured:
+            raise PrinterError(self.setup_hint or f"{self.profile.name} isn't set up")
+        with self._settings_lock:
+            current = {s.id: s for s in self.settings()}
+            s = current.get(sid)
+            if s is None:
+                raise PrinterError(f"{self.profile.name} has no setting '{sid}'")
+            value = check_value(s, value)
+            log.info("%s: setting %s = %r", self.profile.name, sid, value)
+            self.write_setting(s, value)
+            deadline = time.monotonic() + (wait if wait is not None else self.settings_wait)
+            while True:
+                now = {x.id: x for x in self.settings()}
+                got = now[sid].value if sid in now else None
+                if same_value(got, value):
+                    return list(now.values())
+                if time.monotonic() > deadline:
+                    raise PrinterError(f"{self.profile.name} didn't confirm {s.label} (it still reports {got!r})")
+                self._settings_wait()
+
+    def _settings_wait(self) -> None:
+        time.sleep(0.5)
 
     # -- built-in calibrations
     @property
@@ -305,6 +410,7 @@ class Printer:
             "calibrating": self.calibrating,
             "status": self.status.to_json(),
             "light_auto": getattr(self, "light_auto", False),
+            "has_settings": self.configured and type(self).settings is not Printer.settings,
         }
 
 

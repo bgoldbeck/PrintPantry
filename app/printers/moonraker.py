@@ -24,7 +24,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from .base import IDLE_STATES, Calibration, Printer, PrinterError, Status, Temp, Toolhead
+from .base import IDLE_STATES, Calibration, Printer, PrinterError, Setting, Status, Temp, Toolhead
 
 log = logging.getLogger("printpantry.moonraker")
 
@@ -49,6 +49,16 @@ STATE_MAP = {
     "error": "error",
 }
 ACTIONS = {"pause", "resume", "cancel"}
+# Settings (checked against the U1's own Klipper code, Snapmaker/u1-klipper, and
+# tried on Brandon's U1 in Nov 2026). Each is read back after it is set.
+RUNOUT_SENSORS = tuple(f"e{i}_filament" for i in range(4))
+SETTINGS_QUERY = "&".join((
+    "defect_detection", "print_task_config", "gcode_move", "fan_generic%20cavity_fan", "print_stats",
+    *(f"filament_motion_sensor%20{n}" for n in RUNOUT_SENSORS),
+))
+AI_GROUP = "AI camera detection"
+FIL_GROUP = "Filament"
+LIVE_GROUP = "While printing"
 LIGHT = "cavity_led"
 LIGHT_GCODE = {"light_on": f"SET_LED LED={LIGHT} WHITE=1", "light_off": f"SET_LED LED={LIGHT} WHITE=0"}
 # Calibrations the U1's own firmware provides (checked against its Klipper
@@ -397,6 +407,83 @@ class MoonrakerPrinter(Printer):
         if removed:
             log.info("removed %d old uploads from %s: %s", len(removed), self.profile.name, ", ".join(removed))
         return removed
+
+    # ------------------------------------------------------------ settings
+    def settings(self) -> list[Setting]:
+        res = self._get(f"/printer/objects/query?{SETTINGS_QUERY}") or {}
+        st = res.get("status", {})
+        out: list[Setting] = []
+        dd = st.get("defect_detection")
+        if isinstance(dd, dict):
+            main = dd.get("main_enable")
+            off = "" if main else "Turn on AI detection first"
+            sub = lambda k: (dd.get(k) or {})  # noqa: E731
+            out += [
+                Setting("ai_main", AI_GROUP, "AI detection", "toggle", bool(main),
+                        "The camera watches each print for the problems below and pauses the print when it sees one."),
+                Setting("ai_noodle", AI_GROUP, "Spaghetti detection", "toggle", bool(sub("noodle").get("enable")),
+                        "Pauses the print when filament turns into a tangle of loose strands.", disabled=off),
+                Setting("ai_noodle_sens", AI_GROUP, "Spaghetti sensitivity", "choice", sub("noodle").get("sensitivity"),
+                        "High catches problems sooner but pauses for false alarms more often.",
+                        options=[{"value": "low", "label": "Low"}, {"value": "high", "label": "High"}], disabled=off),
+                Setting("ai_clean_bed", AI_GROUP, "Check the bed is clear", "toggle", bool(sub("clean_bed").get("enable")),
+                        "Looks for objects left on the bed before a print starts.", disabled=off),
+                Setting("ai_residue", AI_GROUP, "Residue detection", "toggle", bool(sub("residue").get("enable")),
+                        "Looks for leftover filament on the bed during the print.", disabled=off),
+            ]
+        tc = st.get("print_task_config")
+        if isinstance(tc, dict) and "auto_replenish_filament" in tc:
+            out += [
+                Setting("auto_refill", FIL_GROUP, "Auto refill", "toggle", bool(tc.get("auto_replenish_filament")),
+                        "When a spool runs out, carry on with another toolhead that has the same filament."),
+                Setting("tangle", FIL_GROUP, "Tangle detection", "toggle", bool(tc.get("filament_entangle_detect")),
+                        "Pauses the print when the filament stops feeding, for example a tangled spool."),
+                Setting("tangle_sens", FIL_GROUP, "Tangle sensitivity", "choice", tc.get("filament_entangle_sen"),
+                        options=[{"value": v, "label": v.title()} for v in ("low", "medium", "high")],
+                        disabled="" if tc.get("filament_entangle_detect") else "Turn on tangle detection first"),
+            ]
+        sensors = [st.get(f"filament_motion_sensor {n}") for n in RUNOUT_SENSORS]
+        sensors = [x for x in sensors if isinstance(x, dict)]
+        if sensors:
+            out.append(Setting("runout", FIL_GROUP, "Runout sensors", "toggle", all(x.get("enabled") for x in sensors),
+                               "Pauses the print when a toolhead runs out of filament.",
+                               note="Turns itself back on when the printer restarts."))
+        gm = st.get("gcode_move") or {}
+        if "speed_factor" in gm:
+            out += [
+                Setting("speed", LIVE_GROUP, "Speed", "number", round(gm["speed_factor"] * 100), min=50, max=200,
+                        step=5, unit="%", note="Goes back to 100% when the next print starts."),
+                Setting("flow", LIVE_GROUP, "Flow", "number", round(gm.get("extrude_factor", 1) * 100), min=75,
+                        max=125, step=1, unit="%", note="Applies to the current print."),
+            ]
+        fan = st.get("fan_generic cavity_fan")
+        if isinstance(fan, dict):
+            out.append(Setting("cavity_fan", LIVE_GROUP, "Chamber fan", "number", round((fan.get("speed") or 0) * 100),
+                               min=0, max=100, step=10, unit="%",
+                               note="The print's G-code can change it again."))
+        return out
+
+    def write_setting(self, s: Setting, value) -> None:
+        on = int(bool(value)) if isinstance(value, bool) else None
+        script = {
+            "ai_main": f"DEFECT_DETECTION_CONFIG MAIN_ENABLE={on}",
+            "ai_noodle": f"DEFECT_DETECTION_CONFIG NOODLE_ENABLE={on}",
+            "ai_noodle_sens": f"DEFECT_DETECTION_CONFIG NOODLE_SENSITIVITY={value}",
+            "ai_clean_bed": f"DEFECT_DETECTION_CONFIG CLEAN_BED_ENABLE={on}",
+            "ai_residue": f"DEFECT_DETECTION_CONFIG RESIDUE_ENABLE={on}",
+            "auto_refill": f"SET_PRINT_PREFERENCES AUTO_REPLENISH_FILAMENT={on}",
+            "tangle": f"SET_PRINT_PREFERENCES FILAMENT_ENTANGLE_DETECT={on}",
+            "tangle_sens": f"SET_PRINT_PREFERENCES FILAMENT_ENTANGLE_SEN={value}",
+            "runout": "\n".join(f"SET_FILAMENT_SENSOR SENSOR={n} ENABLE={on}" for n in RUNOUT_SENSORS),
+            "speed": f"M220 S{value}",
+            "flow": f"M221 S{value}",
+        }.get(s.id)
+        if s.id == "cavity_fan":
+            script = f"SET_FAN_SPEED FAN=cavity_fan SPEED={value / 100:.2f}"
+        if not script:
+            raise PrinterError(f"{s.label} can't be changed")
+        # Klipper runs it between moves, so it can wait a few seconds mid-print.
+        self._post("/printer/gcode/script", timeout=20.0, params={"script": script})
 
     # ------------------------------------------------------------ calibration
     def calibration_script(self, cal: Calibration, values: dict) -> str:

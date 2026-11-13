@@ -982,3 +982,23 @@ dialog.prompt-dialog h2 {
   margin-top: 0;
   margin-bottom: 16px;
 }
+
+/* Printer settings dialog */
+.settings-dialog { width: min(640px, 100vw - 24px); }
+.set-group { border: 1px solid var(--line); border-radius: 14px; padding: 4px 14px 8px; margin: 12px 0; }
+.set-group legend { font-weight: 700; padding: 0 6px; }
+.set-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); }
+.set-group legend + .set-row { border-top: 0; }
+.set-row.saving { opacity: .6; }
+.set-label { display: grid; gap: 2px; min-width: 0; }
+.set-label small { color: var(--ink-2); font-size: .85rem; }
+.set-label small.set-note { font-style: italic; }
+.set-ctl { flex: none; }
+.set-ctl select { padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.seg { display: inline-flex; gap: 4px; }
+.seg.unknown button { opacity: .85; }
+.num-set { display: inline-flex; gap: 6px; align-items: center; }
+.num-set input.num { width: 76px; }
+@media (max-width: 520px) {
+  .set-row { flex-direction: column; align-items: stretch; }
+}

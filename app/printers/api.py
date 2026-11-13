@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -24,6 +25,10 @@ class ColorRequest(BaseModel):
 class CalibrationRequest(BaseModel):
     confirmed: bool = False  # the user ticked the "bed is clear" style check
     params: dict = {}
+
+
+class SettingRequest(BaseModel):
+    value: bool | int | float | str
 
 
 class PrintRequest(BaseModel):
@@ -238,6 +243,28 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
         except PrinterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return p.to_json()
+
+    @router.get("/{printer_id}/settings")
+    def get_settings(printer_id: str):
+        p = get(printer_id)
+        if not p.configured:
+            raise HTTPException(409, p.setup_hint or f"{p.profile.name} isn't set up")
+        try:
+            items = p.settings()
+        except PrinterError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Couldn't read the settings: {exc}") from exc
+        return {"settings": [asdict(s) for s in items]}
+
+    @router.put("/{printer_id}/settings/{sid}")
+    def put_setting(printer_id: str, sid: str, req: SettingRequest):
+        p = get(printer_id)
+        try:
+            items = p.set_setting(sid, req.value)
+        except PrinterError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"settings": [asdict(s) for s in items]}
 
     @router.post("/{printer_id}/calibrations/{cid}")
     def calibrate(printer_id: str, cid: str, req: CalibrationRequest):
