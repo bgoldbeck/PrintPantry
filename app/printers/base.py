@@ -11,7 +11,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 # States the UI understands. Drivers map their own words onto these.
-IDLE_STATES = {"idle", "complete", "cancelled"}
+# "failed" is a Bambu print that stopped with an error; the printer is free again.
+IDLE_STATES = {"idle", "complete", "cancelled", "failed"}
 BUSY_STATES = {"printing", "paused", "starting"}
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 log = logging.getLogger("printpantry.printers")
@@ -37,12 +38,13 @@ class Toolhead:
     loaded: bool | None = None  # None = printer doesn't say
     active: bool = False
     custom_color: bool = False  # colour set by hand in Print Pantry, not by the printer
+    label: str = ""  # shown name when not "T<index+1>", e.g. "A1" or "Ext" for Bambu AMS trays
 
 
 @dataclass
 class Status:
     online: bool = False
-    state: str = "offline"  # offline|idle|printing|paused|complete|cancelled|error|starting|not_set_up
+    state: str = "offline"  # offline|idle|printing|paused|complete|cancelled|failed|error|starting|not_set_up
     message: str = ""  # printer's own error or status text
     file: str = ""
     progress: float | None = None  # 0..1
@@ -77,6 +79,7 @@ class Printer:
 
     can_print = False
     can_camera = False
+    ams_mapping = False  # True: file filaments are mapped to trays at print time (Bambu AMS)
     calibrations: tuple[Calibration, ...] = ()
     poll_seconds = 3.0
     offline_poll_seconds = 10.0

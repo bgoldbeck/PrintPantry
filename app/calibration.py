@@ -275,7 +275,9 @@ def make_router(store: CalibrationStore, slicer, hub, library: Path, starting: d
                 raise HTTPException(409, "This printer can't print that file")
             log.info("printing flow test %s on %s", path.name, p.profile.id)
             try:
-                p.start_print(path, path.name)
+                # A Bambu test is sliced for filament 1; the chosen AMS tray is picked at print time.
+                tool_map = {0: t["toolhead"] - 1} if getattr(p, "ams_mapping", False) else None
+                p.start_print(path, path.name, tool_map=tool_map)
             except PrinterError as exc:
                 raise HTTPException(502, str(exc)) from exc
         finally:

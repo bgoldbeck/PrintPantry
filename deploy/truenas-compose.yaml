@@ -18,6 +18,9 @@ services:
       PP_SESSION_DAYS: "365"   # stay logged in for a year
       PP_SCAN_INTERVAL: "300"
       PP_U1_URL: "http://192.168.1.52:7125"
+      PP_P1S_HOST: ""          # these three filled in on the NAS from src/.pp_p1s
+      PP_P1S_SERIAL: ""
+      PP_P1S_ACCESS_CODE: ""
       PP_SLICER_URL: "http://slicer:8485"
       TZ: "America/Los_Angeles"
     volumes:

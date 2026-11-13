@@ -65,6 +65,8 @@ def default_tool_map(file_fils, heads: dict) -> dict[int, int]:
             continue
         spare = next((h.index for h in sorted(heads.values(), key=lambda h: h.index)
                       if h.index not in taken and fits(fl, h)), None)
+        if spare is None and i not in heads and len(heads) == 1:
+            spare = next(iter(heads))  # one place to print from (a P1S without an AMS)
         out[i] = spare if spare is not None else i
         if spare is not None:
             taken.add(spare)
@@ -104,6 +106,10 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
         plates = f.info.plates if f.info else []
         file_fils = plates[0].filaments if plates else []
     heads = {t.index: t for t in st.toolheads}
+
+    def label(i: int) -> str:
+        h = heads.get(i)
+        return (h.label if h and h.label else "") or f"T{i + 1}"
     # Library files get a suggested toolhead per filament; calibration prints
     # (f is None) are sliced for one specific toolhead and stay on it.
     chosen = default_tool_map(file_fils, heads) if f is not None else {fl.slot - 1: fl.slot - 1 for fl in file_fils}
@@ -115,6 +121,7 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
         t = heads.get(idx)
         row = {
             "index": idx,
+            "label": label(idx),
             "file_index": file_idx,
             "file": {"type": fl.type, "color": fl.color, "grams": fl.grams},
             "loaded": None,
@@ -123,15 +130,15 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
         if st.online and printer.configured:
             if t is None:
                 if heads:
-                    blockers.append(f"The file uses T{idx + 1}, which this printer doesn't have")
+                    blockers.append(f"The file uses {label(idx)}, which this printer doesn't have")
                     row["ok"] = False
             else:
                 row["loaded"] = {"type": t.type, "color": t.color, "vendor": t.vendor, "loaded": t.loaded}
                 if t.loaded is False:
-                    warnings.append(f"T{idx + 1} looks empty, but the file needs {fl.type or 'filament'} there")
+                    warnings.append(f"{label(idx)} looks empty, but the file needs {fl.type or 'filament'} there")
                     row["ok"] = False
                 elif not same_material(fl.type, t.type):
-                    warnings.append(f"T{idx + 1} has {t.type}, but the file was sliced for {fl.type}")
+                    warnings.append(f"{label(idx)} has {t.type}, but the file was sliced for {fl.type}")
                     row["ok"] = False
         tools.append(row)
     if st.online and printer.configured:
