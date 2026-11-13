@@ -92,6 +92,7 @@ function modelCard(m, showCategory = false) {
     <div class="body">
       <div class="name">${esc(m.name)}</div>
       <div class="meta">${bits.join(" · ")} ${m.printers.map(printerBadge).join("")}</div>
+      ${(m.tags || []).length ? `<div class="card-tags">${m.tags.slice(0, 4).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
     </div></a>`;
 }
 
@@ -114,6 +115,45 @@ function hydrateStlCovers(root) {
       }
     }, { once: true });
   });
+}
+
+// ---------------------------------------------------------------- tags
+const tagHref = (t) => `#/search/${encodeURIComponent(`tag:${t.replaceAll(" ", "_")}`)}`;
+function tagCloud(list, active = []) {
+  return `<div class="tag-cloud">${list.map(({ tag, count }) =>
+    `<a class="tag${active.includes(tag) ? " on" : ""}" href="${tagHref(tag)}">${esc(tag)}${count != null ? ` <span class="n">${count}</span>` : ""}</a>`).join("")}</div>`;
+}
+
+function tagEditor(m, holder) {
+  let tags = [...(m.tags || [])];
+  let known = [];
+  api("/api/tags").then((r) => { known = r.tags.map((t) => t.tag); draw(); }).catch(() => {});
+  async function save(next) {
+    try {
+      const r = await api(`/api/models/${m.id}/tags`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags: next }),
+      });
+      tags = r.tags;
+    } catch (e) { flash(`Couldn't save tags: ${esc(e.message || e)}`); }
+    draw(true);
+  }
+  function draw(focus) {
+    const suggestions = known.filter((t) => !tags.includes(t));
+    holder.innerHTML = `${tags.map((t) => `<span class="tag">
+        <a href="${tagHref(t)}">${esc(t)}</a><button type="button" class="x" data-untag="${esc(t)}" aria-label="Remove tag ${esc(t)}">×</button></span>`).join("")}
+      <form class="tag-add"><input list="tag-list" placeholder="${tags.length ? "Add tag" : "Add tags, like kitchen or gift"}" aria-label="Add a tag" maxlength="40">
+        <datalist id="tag-list">${suggestions.map((t) => `<option value="${esc(t)}">`).join("")}</datalist></form>`;
+    const input = holder.querySelector("input");
+    holder.querySelector("form").onsubmit = (e) => {
+      e.preventDefault();
+      const add = input.value.split(",").map((x) => x.trim()).filter(Boolean);
+      if (add.length) save([...tags, ...add]);
+    };
+    holder.querySelectorAll("[data-untag]").forEach((b) =>
+      b.addEventListener("click", () => save(tags.filter((t) => t !== b.dataset.untag))));
+    if (focus) input.focus();
+  }
+  draw();
 }
 
 // ---------------------------------------------------------------- pages
@@ -142,8 +182,13 @@ async function homePage() {
       <button class="edit" data-edit="${esc(c.id)}" title="Change icon and colour" aria-label="Change icon for ${esc(c.name)}">${icon("pencil")}</button>
     </a>`).join("");
   view.innerHTML = `<div class="tiles">${tiles}</div>
+    <div id="home-tags"></div>
     <div class="section-head"><h2>Recently changed</h2></div>
     <div class="cards" id="recent"></div>`;
+  api("/api/tags").then(({ tags }) => {
+    const el = document.getElementById("home-tags");
+    if (el && tags.length) el.innerHTML = `<div class="section-head"><h2>Tags</h2></div>${tagCloud(tags.slice(0, 40))}`;
+  }).catch(() => {});
   view.querySelectorAll("[data-edit]").forEach((b) =>
     b.addEventListener("click", (e) => { e.preventDefault(); editCategory(b.dataset.edit); }));
   const recent = await api("/api/models?sort=recent&limit=8");
@@ -173,9 +218,24 @@ async function searchPage(q) {
   if (!LIB) await refreshLibrary();
   setTitle(`Search: ${q}`);
   searchInput.value = q;
-  const res = await api(`/api/models?q=${encodeURIComponent(q)}`);
+  const [res, all] = await Promise.all([api(`/api/models?q=${encodeURIComponent(q)}`), api("/api/tags").catch(() => ({ tags: [] }))]);
+  const active = q.toLowerCase().split(/\s+/).filter((w) => w.startsWith("tag:")).map((w) => w.slice(4).replaceAll("_", " "));
+  const words = q.toLowerCase().split(/\s+/).filter((w) => w && !w.startsWith("tag:"));
+  const cats = LIB.categories.filter((c) => words.length && words.every((w) => c.name.toLowerCase().includes(w)));
+  // Tags in the results, to narrow down further.
+  const inResults = new Map();
+  res.models.forEach((m) => (m.tags || []).forEach((t) => inResults.set(t, (inResults.get(t) || 0) + 1)));
+  const narrow = [...inResults].filter(([t]) => !active.includes(t)).sort((a, b) => b[1] - a[1]).slice(0, 20)
+    .map(([tag, count]) => ({ tag, count }));
+  const matchingTags = all.tags.filter((t) => words.length && words.every((w) => t.tag.includes(w)) && !active.includes(t.tag));
+  const title = active.length && !words.length ? `Tagged ${active.map((t) => `"${esc(t)}"`).join(" and ")}` : `Results for "${esc(q)}"`;
   view.innerHTML = `<div class="crumbs"><a href="#/">All categories</a></div>
-    <h1>Results for "${esc(q)}"</h1><p class="sub">${plural(res.total, "model")}</p>
+    <h1>${title}</h1><p class="sub">${plural(res.total, "model")}${active.length ? ` · <a href="#/search/${encodeURIComponent(words.join(" "))}">clear tag filter</a>` : ""}</p>
+    ${cats.length ? `<div class="tiles small">${cats.map((c) => `<a class="tile" href="#/c/${encodeURIComponent(c.id)}" style="--c:${c.color}">
+      <div class="icon">${icon(c.icon)}</div><div><div class="label">${esc(c.name)}</div><div class="count">${plural(c.model_count, "model")}</div></div></a>`).join("")}</div>` : ""}
+    ${matchingTags.length ? `<p class="sub">Tags: ${tagCloud(matchingTags)}</p>` : ""}
+    ${narrow.length > 1 ? `<div class="narrow"><span class="muted">Narrow down:</span>${narrow.map(({ tag, count }) =>
+      `<a class="tag" href="#/search/${encodeURIComponent(`${q} tag:${tag.replaceAll(" ", "_")}`)}">${esc(tag)} <span class="n">${count}</span></a>`).join("")}</div>` : ""}
     ${res.models.length ? `<div class="cards">${res.models.map((m) => modelCard(m, true)).join("")}</div>` : `<div class="notice">Nothing matched.</div>`}`;
   hydrateStlCovers(view);
 }
@@ -322,7 +382,9 @@ async function modelPage(id) {
   view.innerHTML = `
     <div class="crumbs"><a href="#/">All categories</a> / <a href="#/c/${encodeURIComponent(m.category)}">${esc(m.category)}</a></div>
     <h1>${esc(m.name)}</h1>
-    <p class="sub">${esc(m.path.replace(/#.*/, ""))}</p>
+    <p class="sub">${esc(m.path.replace(/#.*/, ""))}${m.source ? ` · from <a href="${esc(m.source.url)}" target="_blank" rel="noopener">${esc(m.source.site)}</a>${m.source.author ? ` by ${esc(m.source.author)}` : ""}${m.source.license ? ` · ${esc(m.source.license)}` : ""}` : ""}</p>
+    <div class="tags-edit" id="tags"></div>
+    ${m.source?.summary ? `<details class="source-summary"><summary>Description from ${esc(m.source.site)}</summary><p>${esc(m.source.summary).replaceAll("\n", "<br>")}</p></details>` : ""}
     <div class="model-layout">
       <div class="viewer-wrap">
         <div class="viewer" id="viewer"></div>
@@ -343,6 +405,7 @@ async function modelPage(id) {
       </div>
     </div>`;
 
+  tagEditor(m, document.getElementById("tags"));
   hydrateStlCovers(view);
   historyCtx([m]).then((ctx) => historyPanel(document.getElementById("history"), m.id, ctx));
   view.querySelectorAll("[data-print]").forEach((b) =>
@@ -457,6 +520,141 @@ function editCategory(name) {
   dlg.addEventListener("close", () => dlg.remove());
   dlg.showModal();
 }
+
+// ---------------------------------------------------------------- import from Printables / MakerWorld
+function openImport(prefill = "") {
+  const dlg = document.createElement("dialog");
+  dlg.className = "import-dialog";
+  document.body.appendChild(dlg);
+  let plan = null, timer = null;
+  dlg.addEventListener("close", () => { clearTimeout(timer); dlg.remove(); });
+
+  function step1(err = "") {
+    dlg.innerHTML = `<h2>Import a model</h2>
+      <form id="imp-form">
+        <label for="imp-url">Printables or MakerWorld link</label>
+        <input id="imp-url" type="url" required placeholder="https://www.printables.com/model/..." value="${esc(prefill)}">
+        ${err ? `<div class="notice error">${esc(err)}</div>` : ""}
+        <div class="dialog-actions" style="margin-top:16px">
+          <button type="button" class="ghost" data-mw>MakerWorld login</button>
+          <span style="flex:1"></span>
+          <button type="button" class="ghost" data-close>Cancel</button><button type="submit">Look up</button></div>
+      </form>`;
+    const input = dlg.querySelector("#imp-url");
+    input.focus();
+    dlg.querySelector("[data-close]").onclick = () => dlg.close();
+    dlg.querySelector("[data-mw]").onclick = () => mwLogin();
+    dlg.querySelector("form").onsubmit = async (e) => {
+      e.preventDefault();
+      prefill = input.value.trim();
+      dlg.querySelector("button[type=submit]").disabled = true;
+      dlg.querySelector("button[type=submit]").textContent = "Looking up...";
+      try {
+        plan = await api("/api/import/preview", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: prefill }),
+        });
+        step2();
+      } catch (e2) { step1(e2.message || String(e2)); }
+    };
+  }
+
+  async function mwLogin() {
+    const st = await api("/api/import/settings").catch(() => ({}));
+    dlg.innerHTML = `<h2>MakerWorld login</h2>
+      <p>MakerWorld only hands out files to logged-in accounts. Print Pantry can use your MakerWorld login token to
+      download the 3MF. Without it, MakerWorld imports bring in the details, tags and pictures only.</p>
+      <p class="muted">To get the token: log in at makerworld.com in your browser, press F12, open
+      Application (Chrome/Edge) or Storage (Firefox) &gt; Cookies &gt; https://makerworld.com, and copy the value of
+      the cookie named <code>token</code>. It is stored only on your NAS. Tokens expire after a few months.</p>
+      <label for="mw-token">Token ${st.makerworld_token ? "(one is saved; paste a new one to replace it)" : ""}</label>
+      <input id="mw-token" type="password" autocomplete="off" placeholder="${st.makerworld_token ? "••••••••" : "Paste the token"}">
+      <div class="dialog-actions" style="margin-top:16px">
+        ${st.makerworld_token ? `<button type="button" class="ghost" data-clear>Forget token</button><span style="flex:1"></span>` : ""}
+        <button type="button" class="ghost" data-back>Back</button><button type="button" data-save>Save</button></div>`;
+    const save = async (token) => {
+      await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ makerworld_token: token }) });
+      flash(token ? "MakerWorld token saved." : "MakerWorld token removed.");
+      step1();
+    };
+    dlg.querySelector("[data-back]").onclick = () => step1();
+    dlg.querySelector("[data-save]").onclick = () => save(dlg.querySelector("#mw-token").value.trim());
+    const clear = dlg.querySelector("[data-clear]");
+    if (clear) clear.onclick = () => save("");
+  }
+
+  function step2() {
+    const cats = plan.categories || [];
+    const pick = plan.suggested_category || "";
+    const total = plan.files.reduce((n, f) => n + (f.size || 0), 0);
+    dlg.innerHTML = `<h2>Import from ${esc(plan.site)}</h2>
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        ${plan.pictures[0] ? `<img src="${esc(plan.pictures[0])}" alt="" style="width:110px;height:110px;object-fit:cover;border-radius:12px;flex:none" referrerpolicy="no-referrer">` : ""}
+        <div><strong>${esc(plan.title)}</strong>
+          <div class="muted">${[plan.author && `by ${esc(plan.author)}`, esc(plan.license), plan.site_categories.length ? esc(plan.site_categories.join(" / ")) : ""].filter(Boolean).join(" · ")}</div>
+          <div class="muted">${plan.files.length ? `${plural(plan.files.length, "file")}${total ? `, ${fmtSize(total)}` : ""}` : "No files"} · ${plural(plan.picture_count, "picture")}</div>
+          ${plan.tags.length ? `<div class="card-tags">${plan.tags.slice(0, 12).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+        </div>
+      </div>
+      ${plan.files.length ? `<ul class="files">${plan.files.map((f) => `<li>${esc(f.name)}${f.size ? ` (${fmtSize(f.size)})` : ""}</li>`).join("")}</ul>` : ""}
+      ${plan.note ? `<div class="notice">${esc(plan.note)}</div>` : ""}
+      <label for="imp-cat">Category</label>
+      <select id="imp-cat">
+        ${pick ? "" : `<option value="" selected disabled>Pick a category</option>`}
+        ${cats.map((c) => `<option ${c === pick ? "selected" : ""}>${esc(c)}</option>`).join("")}
+        <option value="__new">New category...</option></select>
+      <input id="imp-newcat" placeholder="New category name" style="display:none;margin-top:6px"
+        value="${esc(plan.site_categories[plan.site_categories.length - 1] || "")}">
+      <label for="imp-name">Model name <span class="hint">(the folder it goes in)</span></label>
+      <input id="imp-name" value="${esc(plan.title)}">
+      <div class="dialog-actions" style="margin-top:16px">
+        <button type="button" class="ghost" data-back>Back</button><button type="button" data-go>Import</button></div>`;
+    const sel = dlg.querySelector("#imp-cat"), newcat = dlg.querySelector("#imp-newcat");
+    sel.onchange = () => { newcat.style.display = sel.value === "__new" ? "" : "none"; if (sel.value === "__new") newcat.focus(); };
+    dlg.querySelector("[data-back]").onclick = () => step1();
+    dlg.querySelector("[data-go]").onclick = async (e) => {
+      const category = sel.value === "__new" ? newcat.value.trim() : sel.value;
+      if (!category) { sel.focus(); return; }
+      e.currentTarget.disabled = true;
+      try {
+        const job = await api("/api/import", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: plan.url, category, name: dlg.querySelector("#imp-name").value.trim() }),
+        });
+        progress(job);
+      } catch (err) { e.currentTarget.disabled = false; flash(esc(err.message || err)); }
+    };
+  }
+
+  function progress(job) {
+    const doneHtml = () => `<p>Saved to <code>${esc(job.folder)}</code>${job.done_files.length ? ` with ${plural(job.done_files.length, "file")}` : ""}${job.skipped.length ? ` (${plural(job.skipped.length, "file")} already there)` : ""}.</p>
+      ${job.note ? `<div class="notice">${esc(job.note)}</div>` : ""}`;
+    dlg.innerHTML = `<h2>${job.state === "done" ? "Imported" : job.state === "error" ? "Import failed" : "Importing..."}</h2>
+      <p><strong>${esc(job.title || plan.title)}</strong></p>
+      ${job.state === "running" ? `<p class="muted">${esc(job.step)}</p>` : ""}
+      ${job.state === "error" ? `<div class="notice error">${esc(job.error)}</div>` : ""}
+      ${job.state === "done" ? doneHtml() : ""}
+      <div class="dialog-actions" style="margin-top:16px">
+        <button type="button" class="ghost" data-close>${job.state === "running" ? "Hide" : "Close"}</button>
+        ${job.state === "done" ? `<button type="button" data-another class="ghost">Import another</button><button type="button" data-open-model>Open model</button>` : ""}</div>`;
+    dlg.querySelector("[data-close]").onclick = () => dlg.close();
+    if (job.state === "running") {
+      timer = setTimeout(async () => {
+        try { progress(await api(`/api/import/${job.id}`)); } catch { timer = setTimeout(() => progress(job), 2000); }
+      }, 1000);
+      return;
+    }
+    if (job.state === "done") {
+      refreshLibrary().catch(() => {});
+      dlg.querySelector("[data-another]").onclick = () => { prefill = ""; step1(); };
+      dlg.querySelector("[data-open-model]").onclick = () => { dlg.close(); location.hash = `#/m/${job.model_id}`; };
+    }
+  }
+
+  step1();
+  dlg.showModal();
+}
+
+document.getElementById("import").addEventListener("click", () => openImport());
 
 // ---------------------------------------------------------------- router
 async function route() {

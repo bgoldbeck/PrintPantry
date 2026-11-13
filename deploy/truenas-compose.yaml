@@ -21,7 +21,7 @@ services:
       PP_SLICER_URL: "http://slicer:8485"
       TZ: "America/Los_Angeles"
     volumes:
-      - /mnt/testpool/printpantry/library:/library:ro
+      - /mnt/testpool/printpantry/library:/library   # writable: imports from Printables/MakerWorld land here
       - /mnt/testpool/printpantry/data:/data
     logging:                 # cap container logs at 3 x 10 MB
       driver: json-file

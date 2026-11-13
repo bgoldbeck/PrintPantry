@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -10,7 +11,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -21,12 +28,14 @@ from .calibration import make_router as calibration_router
 from .config import Settings
 from .history import History
 from .history import make_router as history_router
+from .importer import SOURCE_FILE, Importer, ImportError_, suggest_category
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
-from .scanner import Scanner
+from .scanner import Scanner, make_id
 from .slicing import SlicerClient, client_from_env
 from .slicing import make_router as slicer_router
 from .store import Store
+from .tags import Tags, clean_tag
 
 log = logging.getLogger("printpantry")
 STATIC = Path(__file__).parent / "static"
@@ -38,6 +47,21 @@ SLICERS = ("snapmaker", "bambu")
 
 class Prefs(BaseModel):
     slicer: str | None = None
+
+
+class TagsBody(BaseModel):
+    tags: list[str]
+
+
+class ImportBody(BaseModel):
+    url: str
+    category: str = ""
+    name: str = ""
+    tags: list[str] = []
+
+
+class ImportSettings(BaseModel):
+    makerworld_token: str = ""
 
 
 class CategoryPatch(BaseModel):
@@ -63,19 +87,19 @@ def create_app(
     background_scan: bool = True,
     printers: PrinterHub | None = None,
     slicer: SlicerClient | None = None,
+    importer: Importer | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     settings.ensure_dirs()
     store = Store(settings.data / "printpantry.db")
     scanner = Scanner(settings, store)
     auth = Auth(settings.password, settings.data)
+    tags = Tags(store)
     hub = printers or PrinterHub(settings.printers, data=settings.data)
     history = History(settings.data / "printpantry.db", settings.data / "history", hub,
                       lambda: scanner.library, store)
     icon_names = set()
     try:
-        import json
-
         icon_names = set(json.loads((STATIC / "icons.json").read_text()))
     except (OSError, ValueError):
         pass
@@ -110,6 +134,7 @@ def create_app(
     app.state.settings = settings
     app.state.printers = hub
     app.state.history = history
+    app.state.tags = tags
 
     # ------------------------------------------------------------ caching
     @app.middleware("http")
@@ -192,12 +217,15 @@ def create_app(
             ],
         }
 
+    def summary(m) -> dict:
+        return {**m.summary(), "tags": tags.get(m.id)}
+
     @app.get("/api/categories/{name}")
     def category(name: str):
         cat = lib().categories.get(name)
         if not cat:
             raise HTTPException(404, "No such category")
-        return {**cat.summary(), "models": [m.summary() for m in cat.models]}
+        return {**cat.summary(), "models": [summary(m) for m in cat.models]}
 
     @app.put("/api/categories/{name}")
     def update_category(name: str, patch: CategoryPatch):
@@ -218,32 +246,94 @@ def create_app(
         return cat.summary()
 
     @app.get("/api/models")
-    def models(q: str = "", printer: str = "", sort: str = "name", limit: int = 200):
+    def models(q: str = "", printer: str = "", tag: str = "", category: str = "", sort: str = "", limit: int = 200):
+        """Search the whole library.
+
+        ``q`` matches model names, categories, tags, file names and the object
+        names inside 3MFs; every word must match somewhere. ``tag:kitchen``
+        inside ``q`` (or the ``tag`` parameter) keeps only models with that tag,
+        ``cat:tools`` only that category. Best matches (name hits) come first.
+        """
+        all_tags = tags.all()
         items = list(lib().models.values())
-        if q:
-            words = q.lower().split()
-            items = [
-                m for m in items
-                if all(
-                    w in m.name.lower() or w in m.category.lower()
-                    or any(w in f.name.lower() for f in m.files)
-                    for w in words
-                )
-            ]
+        words, want_tags, want_cats = [], [clean_tag(tag)] if tag else [], [category.lower()] if category else []
+        for w in q.lower().split():
+            if w.startswith("tag:") and len(w) > 4:
+                want_tags.append(clean_tag(w[4:].replace("_", " ")))
+            elif w.startswith(("cat:", "category:")) and w.split(":", 1)[1]:
+                want_cats.append(w.split(":", 1)[1])
+            else:
+                words.append(w)
+        if want_tags:
+            items = [m for m in items if all(t in all_tags.get(m.id, []) for t in want_tags)]
+        if want_cats:
+            items = [m for m in items if all(c in m.category.lower() for c in want_cats)]
         if printer:
             items = [m for m in items if any(f.printer == printer for f in m.files)]
+        scores: dict[str, int] = {}
+        if words:
+            kept = []
+            for m in items:
+                name, cat = m.name.lower(), m.category.lower()
+                mtags = " ".join(all_tags.get(m.id, []))
+                files = " ".join(f.name.lower() for f in m.files)
+                objects = " ".join(o.lower() for f in m.files if f.info for o in f.info.objects)
+                score = 0
+                for w in words:
+                    if w in name:
+                        score += 10 if name.startswith(w) or f" {w}" in name else 6
+                    elif w in mtags:
+                        score += 5
+                    elif w in cat:
+                        score += 3
+                    elif w in files or w in objects:
+                        score += 1
+                    else:
+                        break
+                else:
+                    kept.append(m)
+                    scores[m.id] = score
+            items = kept
         if sort == "recent":
             items.sort(key=lambda m: m.mtime, reverse=True)
-        else:
+        elif sort == "name" or not words:
             items.sort(key=lambda m: m.name.lower())
-        return {"total": len(items), "models": [m.summary() for m in items[: max(1, min(limit, 1000))]]}
+        else:
+            items.sort(key=lambda m: (-scores.get(m.id, 0), m.name.lower()))
+        return {"total": len(items), "models": [summary(m) for m in items[: max(1, min(limit, 1000))]]}
 
     @app.get("/api/models/{model_id}")
     def model(model_id: str):
         m = lib().models.get(model_id)
         if not m:
             raise HTTPException(404, "No such model")
-        return m.detail()
+        data = {**m.detail(), "tags": tags.get(m.id)}
+        source = read_source(m)
+        if source:
+            data["source"] = source
+        return data
+
+    def read_source(m) -> dict | None:
+        """Where an imported model came from (written by the importer)."""
+        if "#" in m.relpath:
+            return None
+        meta = settings.library / m.relpath / SOURCE_FILE
+        try:
+            raw = json.loads(meta.read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        keep = ("site", "url", "title", "author", "license", "summary", "imported_at")
+        return {k: raw[k] for k in keep if raw.get(k)}
+
+    @app.put("/api/models/{model_id}/tags")
+    def put_tags(model_id: str, body: TagsBody):
+        if model_id not in lib().models:
+            raise HTTPException(404, "No such model")
+        return {"tags": tags.set(model_id, body.tags)}
+
+    @app.get("/api/tags")
+    def all_tags():
+        return {"tags": tags.counts(set(lib().models))}
 
     @app.post("/api/rescan")
     def rescan():
@@ -293,6 +383,47 @@ def create_app(
             raise HTTPException(403, "This link has expired. Press the button again.")
         f, path = resolve(file_id)
         return FileResponse(path, media_type="application/octet-stream", filename=filename)
+
+    # ------------------------------------------------------------ import from Printables / MakerWorld
+    imp = importer or Importer(settings.library, store, scanner.scan, tags.add, make_id)
+    imp.rescan, imp.add_tags, imp.make_model_id = scanner.scan, tags.add, make_id
+    app.state.importer = imp
+
+    def category_names() -> list[str]:
+        return sorted((c for c in lib().categories if c != "Uncategorized"), key=str.lower)
+
+    @app.get("/api/import/settings")
+    def import_settings():
+        return {"makerworld_token": bool(imp.makerworld_token)}
+
+    @app.put("/api/import/settings")
+    def put_import_settings(body: ImportSettings):
+        imp.set_makerworld_token(body.makerworld_token)
+        return import_settings()
+
+    @app.post("/api/import/preview")
+    def import_preview(body: ImportBody):
+        try:
+            plan = imp.plan(body.url)
+        except ImportError_ as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {**plan.preview(), "suggested_category": suggest_category(plan.categories, category_names()),
+                "categories": category_names(), "site_categories": plan.categories}
+
+    @app.post("/api/import")
+    def import_start(body: ImportBody):
+        try:
+            job = imp.start(body.url, body.category, body.name, body.tags)
+        except ImportError_ as exc:
+            raise HTTPException(400, str(exc)) from None
+        return job.to_json()
+
+    @app.get("/api/import/{job_id}")
+    def import_status(job_id: str):
+        job = imp.jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "No such import")
+        return job.to_json()
 
     # ------------------------------------------------------------ preferences
     @app.get("/api/prefs")

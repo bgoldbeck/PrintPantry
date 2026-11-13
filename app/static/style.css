@@ -401,3 +401,48 @@ dialog textarea { width: 100%; margin-top: 6px; padding: 10px 12px; border-radiu
   .print-pic { width: 52px; height: 52px; }
   .outcome { grid-column: 2; justify-self: start; }
 }
+
+/* ---------------------------------------------------------------- tags */
+.tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 999px; font-size: .85rem;
+  background: var(--surface-2); color: var(--ink); text-decoration: none;
+  border: 1px solid var(--line);
+}
+a.tag:hover { border-color: var(--accent); }
+.tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.tag .n { color: var(--ink-2); font-size: .75rem; }
+.tag.on .n { color: inherit; opacity: .8; }
+.tag a { text-decoration: none; }
+.tag .x { padding: 0 2px; background: none; color: var(--ink-2); border: 0; font-size: 1rem; line-height: 1; }
+.tag .x:hover { color: var(--accent); }
+.tag-cloud, .card-tags, .narrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tag-cloud { margin: 0 0 8px; }
+p.sub .tag-cloud { display: inline-flex; margin: 0 0 0 6px; vertical-align: middle; }
+.card-tags { margin-top: 6px; }
+.card-tags .tag { font-size: .75rem; padding: 1px 8px; }
+.narrow { margin: 0 0 20px; }
+.tags-edit { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -12px 0 20px; }
+.tag-add input {
+  padding: 4px 12px; border-radius: 999px; border: 1px dashed var(--line);
+  background: transparent; width: 15em; font-size: .85rem;
+}
+.tag-add input:focus { outline: 2px solid var(--accent); border-style: solid; }
+.tiles.small { margin-bottom: 20px; }
+.tiles.small .tile { min-height: 0; padding: 14px 18px; }
+.tiles.small .tile .icon svg { width: 28px; height: 28px; }
+
+/* ---------------------------------------------------------------- import */
+.import-dialog { width: min(560px, calc(100vw - 32px)); }
+.import-dialog label { display: block; font-weight: 600; margin: 14px 0 4px; }
+.import-dialog input, .import-dialog select {
+  width: 100%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface);
+}
+.import-dialog .hint { color: var(--ink-2); font-size: .85rem; margin: 4px 0 0; font-weight: 400; }
+.import-dialog .notice { margin: 14px 0 0; }
+.import-dialog .files { max-height: 160px; overflow: auto; font-size: .85rem; color: var(--ink-2); margin: 6px 0 0; padding-left: 18px; }
+.tiles.small .tile .icon { width: 44px; height: 44px; }
+.tiles.small .tile .label { font-size: 1.15rem; margin-top: 10px; }
+.source-summary { margin: -8px 0 20px; color: var(--ink-2); max-width: 70ch; }
+.source-summary summary { cursor: pointer; font-weight: 600; }
+.source-summary p { white-space: normal; font-size: .9rem; }

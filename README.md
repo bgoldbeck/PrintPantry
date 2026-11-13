@@ -35,7 +35,23 @@ as a container on **TrueNAS SCALE**.
   new project 3MF; **Open in ...** does the same for an existing 3MF. Pick
   Snapmaker Orca or Bambu Studio in the "Open in" menu; the choice is saved on
   the server. See [Opening files in a desktop slicer](#opening-files-in-a-desktop-slicer).
-* Search across model, category and file names. Optional password login.
+* Search across model names, tags, categories, file names and the parts named
+  inside 3MFs; name hits come first. `tag:kitchen` and `cat:tools` narrow it
+  down (use `_` for spaces in a tag). Optional password login.
+* **Tags** on every model: add or remove them on the model page. The home page
+  lists all tags; click one to see its models. Tags live in the app's
+  database (keyed by the model's folder), so the library itself isn't touched.
+* **Import** a model from a Printables or MakerWorld link. It downloads into
+  `library/<Category>/<Model name>/` with pictures in `images/`, a
+  `pantry-source.json` saying where it came from, and the site's tags. The
+  category is guessed from the site's own category when one of yours matches.
+  * Printables: STL and 3MF files, pictures, tags, author, licence. No login.
+  * MakerWorld: details, tags and pictures work without login, but MakerWorld
+    only gives files to logged-in accounts. Paste your MakerWorld `token`
+    cookie under Import > MakerWorld login (stored only on the NAS) and the
+    3MF comes along too. Without it, drop the 3MF into the folder yourself.
+  * Imported files exist only on the NAS (scripts\sync-library.cmd copies PC
+    to NAS, not back). The app's library mount is writable for this.
 
 ![Model page](docs/screenshots/model.png)
 
