@@ -55,6 +55,12 @@ class Tags:
     def add(self, model_id: str, tags) -> list[str]:
         return self.set(model_id, self.get(model_id) + list(tags or []))
 
+    def migrate_id(self, old_id: str, new_id: str) -> None:
+        data = self.all()
+        if old_id in data:
+            data[new_id] = data.pop(old_id)
+            self.store.set(KEY, data)
+
     def counts(self, live_ids=None) -> list[dict]:
         """Every tag with how many models carry it, most used first."""
         counts: dict[str, int] = {}

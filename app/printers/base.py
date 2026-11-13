@@ -100,6 +100,8 @@ class Printer:
         # The calibration running now or last run: {id, name, state, started, finished, message}.
         self.calibrating: dict | None = None
         self._calib_lock = threading.Lock()
+        self.light_auto = False
+        self.light_auto_file: Path | None = None
 
     # -- lifecycle
     def start(self) -> None:
@@ -123,11 +125,42 @@ class Printer:
         except Exception as exc:  # noqa: BLE001 - any failure means "can't reach it"
             st = Status(online=False, state="offline", message=_short(exc))
         self._apply_colors(st)
+        if getattr(self, "light_auto", False) and st.online and st.light is not None:
+            if st.state in ("printing", "starting") and not st.light:
+                try:
+                    self.action("light_on")
+                    st.light = True
+                except Exception:
+                    pass
+            elif st.state in ("idle", "complete", "cancelled", "failed") and st.light:
+                try:
+                    self.action("light_off")
+                    st.light = False
+                except Exception:
+                    pass
         st.updated_at = time.time()
         self.status = st
         return st
 
     # -- hand-set toolhead colours
+    def load_light_auto(self, path: Path) -> None:
+        self.light_auto_file = path
+        try:
+            data = json.loads(path.read_text())
+            self.light_auto = bool(data.get("auto", False))
+        except (OSError, ValueError):
+            self.light_auto = False
+
+    def set_light_auto(self, val: bool) -> None:
+        self.light_auto = bool(val)
+        if self.light_auto_file:
+            try:
+                tmp = self.light_auto_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps({"auto": self.light_auto}))
+                tmp.replace(self.light_auto_file)
+            except OSError:
+                pass
+
     def load_colors(self, path: Path) -> None:
         self.color_file = path
         try:
@@ -271,6 +304,7 @@ class Printer:
             "calibrations": [asdict(c) for c in self.calibrations] if self.configured else [],
             "calibrating": self.calibrating,
             "status": self.status.to_json(),
+            "light_auto": getattr(self, "light_auto", False),
         }
 
 

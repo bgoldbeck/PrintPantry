@@ -28,7 +28,8 @@ from .calibration import make_router as calibration_router
 from .config import Settings
 from .history import History
 from .history import make_router as history_router
-from .importer import SOURCE_FILE, Importer, ImportError_, suggest_category
+import shutil
+from .importer import SOURCE_FILE, Importer, ImportError_, safe_name, suggest_category
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
 from .scanner import Scanner, make_id
@@ -53,6 +54,14 @@ class Prefs(BaseModel):
 
 class TagsBody(BaseModel):
     tags: list[str]
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+class CategoryChangeBody(BaseModel):
+    category: str
 
 
 class ImportBody(BaseModel):
@@ -332,6 +341,83 @@ def create_app(
         if model_id not in lib().models:
             raise HTTPException(404, "No such model")
         return {"tags": tags.set(model_id, body.tags)}
+
+    @app.put("/api/models/{model_id}/rename")
+    def rename_model(model_id: str, body: RenameBody):
+        m = lib().models.get(model_id)
+        if not m:
+            raise HTTPException(404, "No such model")
+        new_name = safe_name(body.name)
+        if not new_name:
+            raise HTTPException(400, "Invalid model name")
+        root = settings.library.resolve()
+        if "#" in m.relpath:
+            raise HTTPException(400, "Loose files directly in a category cannot be renamed as a model folder; rename the file directly")
+        old_path = (root / m.relpath).resolve()
+        if not old_path.is_dir() or root not in old_path.parents:
+            raise HTTPException(404, "Model folder not found")
+        new_path = old_path.parent / new_name
+        if new_path != old_path:
+            if new_path.exists():
+                raise HTTPException(409, f"A model named '{new_name}' already exists in category '{m.category}'")
+            old_path.rename(new_path)
+            new_relpath = new_path.relative_to(root).as_posix()
+            new_id = make_id(new_relpath)
+            tags.migrate_id(model_id, new_id)
+            scanner.scan()
+            return {"ok": True, "id": new_id, "name": new_name}
+        return {"ok": True, "id": model_id, "name": m.name}
+
+    @app.put("/api/models/{model_id}/category")
+    def change_model_category(model_id: str, body: CategoryChangeBody):
+        m = lib().models.get(model_id)
+        if not m:
+            raise HTTPException(404, "No such model")
+        new_category = safe_name(body.category)
+        if not new_category:
+            raise HTTPException(400, "Invalid category name")
+        root = settings.library.resolve()
+        if "#" in m.relpath:
+            raise HTTPException(400, "Loose files cannot be recategorized directly; move into a model folder first")
+        old_path = (root / m.relpath).resolve()
+        if not old_path.is_dir() or root not in old_path.parents:
+            raise HTTPException(404, "Model folder not found")
+        target_cat_dir = (root / new_category).resolve()
+        if root not in target_cat_dir.parents and target_cat_dir != root:
+            raise HTTPException(400, "Invalid category path")
+        target_cat_dir.mkdir(parents=True, exist_ok=True)
+        new_path = target_cat_dir / old_path.name
+        if new_path != old_path:
+            if new_path.exists():
+                raise HTTPException(409, f"A model named '{old_path.name}' already exists in category '{new_category}'")
+            shutil.move(str(old_path), str(new_path))
+            new_relpath = new_path.relative_to(root).as_posix()
+            new_id = make_id(new_relpath)
+            tags.migrate_id(model_id, new_id)
+            scanner.scan()
+            return {"ok": True, "id": new_id, "category": new_category}
+        return {"ok": True, "id": model_id, "category": m.category}
+
+    @app.put("/api/files/{file_id}/rename")
+    def rename_file(file_id: str, body: RenameBody):
+        hit = resolve(file_id)
+        f, old_path = hit
+        new_name = safe_name(body.name)
+        if not new_name:
+            raise HTTPException(400, "Invalid file name")
+        if not Path(new_name).suffix and old_path.suffix:
+            new_name = new_name + old_path.suffix
+        new_path = old_path.parent / new_name
+        if new_path != old_path:
+            if new_path.exists():
+                raise HTTPException(409, f"A file named '{new_name}' already exists in this folder")
+            old_path.rename(new_path)
+            scanner.scan()
+            root = settings.library.resolve()
+            new_rel = new_path.relative_to(root).as_posix()
+            new_f_id = make_id(new_rel)
+            return {"ok": True, "id": new_f_id, "name": new_name}
+        return {"ok": True, "id": file_id, "name": f.name}
 
     @app.get("/api/tags")
     def all_tags():

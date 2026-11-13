@@ -260,6 +260,15 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
     @router.post("/{printer_id}/{action}")
     def action(printer_id: str, action: str):
         p = get(printer_id)
+        if action in ("light_auto_on", "light_auto_off", "light_auto_toggle"):
+            if action == "light_auto_on":
+                p.set_light_auto(True)
+            elif action == "light_auto_off":
+                p.set_light_auto(False)
+            else:
+                p.set_light_auto(not getattr(p, "light_auto", False))
+            p.refresh()
+            return p.to_json()
         if action not in ("pause", "resume", "cancel", "light_on", "light_off", "estop"):
             raise HTTPException(404, "Unknown action")
         try:
