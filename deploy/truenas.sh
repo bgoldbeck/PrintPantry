@@ -127,8 +127,7 @@ else:
 }
 
 ensure_https() {
-  # Installs or refreshes the proxy. Only runs once installed with `truenas.sh https`.
-  [ "${1:-}" = install ] || midclt call app.query "[[\"name\",\"=\",\"$HTTPS_APP\"]]" | grep -q '"name"' || return 0
+  # Installs or refreshes the front door on port 8484 (http on the LAN, https from outside).
   if [ ! -d "$ROOT/https" ]; then
     # The pool root belongs to root, so create the folder through the middleware.
     quiet midclt call filesystem.mkdir "{\"path\":\"$ROOT/https\"}"
@@ -141,18 +140,18 @@ ensure_https() {
   else
     quiet midclt call -j app.create "$(https_json create)"
   fi
-  echo "HTTPS proxy: https://animalfarm.duckdns.org:8484/ (NAS port 8486)"
+  echo "Front door: http://$(hostname -I | awk '{print $1}'):8484 and https://animalfarm.duckdns.org:8484/"
 }
 
 wait_healthy() {
   for _ in $(seq 1 60); do
-    if python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8484/healthz',timeout=3)" 2>/dev/null; then
+    if python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8483/healthz',timeout=3)" 2>/dev/null; then
       echo "Print Pantry is up: http://$(hostname -I | awk '{print $1}'):8484"
       return 0
     fi
     sleep 3
   done
-  echo "App did not answer on port 8484. Check Apps > printpantry > Logs in the TrueNAS UI."
+  echo "App did not answer on port 8483. Check Apps > printpantry > Logs in the TrueNAS UI."
   return 1
 }
 
@@ -181,6 +180,7 @@ case "${1:-update}" in
       quiet midclt call -j app.create "$(compose_json create)"
     fi
     wait_healthy
+    ensure_https
     prune_images
     ;;
   update)
@@ -198,7 +198,7 @@ case "${1:-update}" in
   https)
     # Install/refresh the HTTPS proxy for access from the internet.
     checkout
-    ensure_https install
+    ensure_https
     ;;
   password)
     # show the password, or set a new one:  truenas.sh password NEW-PASSWORD

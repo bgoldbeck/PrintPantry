@@ -90,7 +90,7 @@ services:
     restart: unless-stopped
     user: "568:568"
     ports:
-      - "8484:8484"
+      - "8484:8484"   # the scripted install maps 8483 here and puts nginx on 8484
     environment:
       PP_PASSWORD: "pick-a-password"
       PP_SCAN_INTERVAL: "300"
