@@ -119,7 +119,7 @@ def test_status_parsing(u1, fake):
     assert st.online and st.state == "printing"
     assert st.progress == 0.25 and st.layer == 12 and st.total_layers == 80
     assert st.eta_seconds == pytest.approx(3000)
-    assert [t.name for t in st.temps] == ["T0", "T1", "T2", "T3", "Bed"]
+    assert [t.name for t in st.temps] == ["T1", "T2", "T3", "T4", "Bed"]
     assert st.temps[0].target == 220.0
     heads = st.toolheads
     assert [h.type for h in heads] == ["PLA", "PETG", "PLA", "TPU"]
@@ -188,8 +188,8 @@ def test_check_flags_toolhead_mismatch(pclient):
     chk = pclient.get("/api/printers/u1/check", params={"file_id": f["id"]}).json()
     assert chk["ok"]
     assert len(chk["tools"]) == len(f["plates"][0]["filaments"])
-    # The demo 4-colour file vs. the fake's loaded filaments: T3 is empty.
-    assert any("T3" in w for w in chk["warnings"])
+    # The demo 4-colour file vs. the fake's loaded filaments: T4 (4th head) is empty.
+    assert any("T4" in w for w in chk["warnings"])
 
 
 def test_print_needs_bed_clear_and_ack(pclient, fake):

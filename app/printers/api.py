@@ -70,15 +70,15 @@ def preflight(printer, f) -> dict:
         if st.online and printer.configured:
             if t is None:
                 if heads:
-                    blockers.append(f"The file uses T{idx}, which this printer doesn't have")
+                    blockers.append(f"The file uses T{idx + 1}, which this printer doesn't have")
                     row["ok"] = False
             else:
                 row["loaded"] = {"type": t.type, "color": t.color, "vendor": t.vendor, "loaded": t.loaded}
                 if t.loaded is False:
-                    warnings.append(f"T{idx} looks empty, but the file needs {fl.type or 'filament'} there")
+                    warnings.append(f"T{idx + 1} looks empty, but the file needs {fl.type or 'filament'} there")
                     row["ok"] = False
                 elif not same_material(fl.type, t.type):
-                    warnings.append(f"T{idx} has {t.type}, but the file was sliced for {fl.type}")
+                    warnings.append(f"T{idx + 1} has {t.type}, but the file was sliced for {fl.type}")
                     row["ok"] = False
         tools.append(row)
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools}

@@ -159,7 +159,7 @@ class MoonrakerPrinter(Printer):
             e = s.get(name)
             if e is None:
                 continue
-            st.temps.append(Temp(f"T{i}", e.get("temperature"), e.get("target")))
+            st.temps.append(Temp(f"T{i + 1}", e.get("temperature"), e.get("target")))
         bed = s.get("heater_bed")
         if bed is not None:
             st.temps.append(Temp("Bed", bed.get("temperature"), bed.get("target")))

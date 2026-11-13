@@ -25,7 +25,7 @@ class Temp:
 
 @dataclass
 class Toolhead:
-    index: int  # 0-based, T0..T3
+    index: int  # 0-based; shown to people as T1..T4 like the U1 screen
     type: str = ""  # material loaded, e.g. "PLA"
     color: str = ""  # #RRGGBB
     vendor: str = ""
