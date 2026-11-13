@@ -6,11 +6,13 @@ one place to change addresses:
     PP_U1_URL          Moonraker on the Snapmaker U1, e.g. http://192.168.1.52:7125
     PP_U1_API_KEY      only if Moonraker on the U1 requires one (stock doesn't)
     PP_P1S_HOST / PP_P1S_SERIAL / PP_P1S_ACCESS_CODE   reserved for the P1S
+    PP_PRINTER_KEEP_FILES  how many files Print Pantry uploaded stay on a printer (default 5, 0 = keep all)
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from .base import BUSY_STATES, IDLE_STATES, Printer, PrinterError, Status
 from .bambu import BambuPrinter
@@ -20,7 +22,7 @@ __all__ = ["PrinterHub", "Printer", "PrinterError", "Status", "IDLE_STATES", "BU
 
 
 class PrinterHub:
-    def __init__(self, profiles, env: dict | None = None, drivers: dict | None = None):
+    def __init__(self, profiles, env: dict | None = None, drivers: dict | None = None, data: Path | None = None):
         env = os.environ if env is None else env
         self.printers: dict[str, Printer] = {}
         for p in profiles:
@@ -29,7 +31,11 @@ class PrinterHub:
             elif p.id == "u1":
                 url = env.get("PP_U1_URL", "").strip()
                 if url:
-                    self.printers[p.id] = MoonrakerPrinter(p, url, env.get("PP_U1_API_KEY", ""))
+                    ledger = Path(data) / f"uploads-{p.id}.json" if data else None
+                    self.printers[p.id] = MoonrakerPrinter(
+                        p, url, env.get("PP_U1_API_KEY", ""), ledger=ledger,
+                        keep_files=int(env.get("PP_PRINTER_KEEP_FILES", "5") or 0),
+                    )
                 else:
                     drv = Printer(p)
                     drv.configured = False

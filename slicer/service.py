@@ -445,10 +445,11 @@ def run_job(job: Job) -> None:
             if not bad or info.kind != "3mf" or not project.drop_keys(inp, bad):
                 break
             job.warnings.append("Used OrcaSlicer defaults for " + ", ".join(bad))
-            job.log += (proc.stderr or "")
+            job.log = (job.log + (proc.stderr or ""))[-LOG_KEEP:]
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir()
         job.log += (proc.stdout or "") + (proc.stderr or "")
+        job.log = job.log[-LOG_KEEP:]  # --debug 2 is chatty; jobs stay in memory
         code = result.get("return_code", proc.returncode)
         if code != 0 or proc.returncode != 0:
             msg = result.get("error_string") or ""
@@ -467,6 +468,7 @@ def run_job(job: Job) -> None:
 
 
 CRASH_TRIES = 3
+LOG_KEEP = 20000  # characters of slicer output kept per job
 INVALID_TRIES = 4
 CLI_INVALID_VALUES = -18
 
@@ -520,6 +522,20 @@ def publish(job: Job, printer: Printer, src: Path, out: Path) -> list[str]:
             n = int(re.sub(r"\D", "", f.stem) or 1)
             produced.append((f, output_name(src, printer, n if len(plates) > 1 or job.plate else None)))
     written = []
+    if produced and printer.output == "gcode" and not job.plate:
+        # A full re-slice replaces every earlier output for this source, so a
+        # model that went from 3 plates to 2 doesn't keep a stale plate 3 (and
+        # a single-plate result doesn't sit next to old per-plate files).
+        single = output_name(src, printer, None)
+        stem = single[: -len(".gcode")]
+        fresh = {name for _, name in produced}
+        for old in dest_dir.iterdir():
+            n = old.name
+            if n in fresh or not old.is_file():
+                continue
+            if n == single or re.fullmatch(re.escape(stem) + r"_plate_\d+\.gcode", n):
+                old.unlink(missing_ok=True)
+                log.info("job %s: removed outdated %s", job.id, n)
     for f, name in produced:
         target = dest_dir / name
         tmp = dest_dir / f".{name}.part"
@@ -591,8 +607,16 @@ class Handler(BaseHTTPRequestHandler):
         self._route("POST")
 
 
+def sweep_work() -> None:
+    """Remove job folders left behind if the container stopped mid-slice."""
+    if WORK.is_dir():
+        for d in WORK.iterdir():
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    sweep_work()
     threading.Thread(target=worker, name="slicer-worker", daemon=True).start()
     threading.Thread(target=PRESETS.get, daemon=True).start()  # warm the preset cache
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

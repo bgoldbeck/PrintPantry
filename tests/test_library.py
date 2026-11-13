@@ -291,3 +291,16 @@ def test_slicer_preference(client):
     assert client.put("/api/prefs", json={"slicer": "bambu"}).json()["slicer"] == "bambu"
     assert client.get("/api/prefs").json()["slicer"] == "bambu"
     assert client.put("/api/prefs", json={"slicer": "cura"}).status_code == 400
+
+
+def test_prune_thumbs(tmp_path):
+    from types import SimpleNamespace
+
+    from app.main import prune_thumbs
+
+    (tmp_path / "abc-100-5.png").write_bytes(b"x")
+    (tmp_path / "abc-90-5.png").write_bytes(b"x")
+    (tmp_path / "gone-1-1.png").write_bytes(b"x")
+    stl = SimpleNamespace(id="abc", mtime=100.7, size=5)
+    assert prune_thumbs(tmp_path, [stl]) == 2
+    assert [p.name for p in tmp_path.iterdir()] == ["abc-100-5.png"]

@@ -7,6 +7,9 @@ someone has asked for it recently, with the Snapmaker-specific websocket call
 seconds while the camera is being viewed, then fetch the file over HTTP.
 Printing: upload to the ``gcodes`` root without starting, check the printer is
 still idle, then ``/printer/print/start``.
+Cleanup: files Print Pantry uploaded are listed in a small ledger in the data
+volume; only the newest ``keep_files`` of them stay on the printer, so its
+storage doesn't fill up. Files put there any other way are never touched.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import threading
 import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -93,8 +96,11 @@ class MoonrakerPrinter(Printer):
     can_print = True
     can_camera = True
 
-    def __init__(self, profile, base_url: str, api_key: str = "", transport=None, wake_camera=None):
+    def __init__(self, profile, base_url: str, api_key: str = "", transport=None, wake_camera=None,
+                 ledger: Path | None = None, keep_files: int = 5):
         super().__init__(profile)
+        self.ledger = ledger
+        self.keep_files = keep_files
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         headers = {"X-Api-Key": api_key} if api_key else {}
@@ -242,6 +248,42 @@ class MoonrakerPrinter(Printer):
             raise PrinterError(f"File uploaded, but {self.profile.name} is now {st.state}, so it wasn't started")
         self._post("/printer/print/start", params={"filename": remote})
         self.refresh()
+        try:
+            self.forget_old_uploads(remote)
+        except Exception as exc:  # noqa: BLE001 - the print started; cleanup can wait
+            log.warning("couldn't clean up old uploads on %s: %s", self.profile.name, exc)
+
+    # ------------------------------------------------------------ cleanup
+    def _read_ledger(self) -> list[str]:
+        try:
+            names = json.loads(self.ledger.read_text())
+            return [n for n in names if isinstance(n, str)]
+        except (OSError, ValueError, AttributeError):
+            return []
+
+    def forget_old_uploads(self, latest: str) -> list[str]:
+        """Record ``latest`` as uploaded; delete our uploads beyond the newest ``keep_files``."""
+        if self.ledger is None:
+            return []
+        names = [n for n in self._read_ledger() if n != latest] + [latest]
+        removed: list[str] = []
+        if self.keep_files > 0:
+            old, names = names[: -self.keep_files], names[-self.keep_files:]
+            for name in old:
+                if name == latest:
+                    continue
+                r = self.http.delete(f"/server/files/gcodes/{quote(name)}")
+                if r.status_code in (200, 404):
+                    removed.append(name)
+                else:  # e.g. in use; try again next time
+                    names.insert(0, name)
+                    log.warning("couldn't delete %s from %s: %s", name, self.profile.name, _error_text(r))
+        tmp = self.ledger.with_suffix(".tmp")
+        tmp.write_text(json.dumps(names))
+        tmp.replace(self.ledger)
+        if removed:
+            log.info("removed %d old uploads from %s: %s", len(removed), self.profile.name, ", ".join(removed))
+        return removed
 
     def action(self, name: str) -> None:
         if name not in ACTIONS:

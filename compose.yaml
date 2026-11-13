@@ -22,6 +22,11 @@ services:
     volumes:
       - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library:ro
       - ${PP_ROOT:-/mnt/testpool/printpantry}/data:/data
+    logging:                 # cap container logs at 3 x 10 MB
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
@@ -40,6 +45,11 @@ services:
     volumes:
       - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library      # writes sliced files here
       - ${PP_ROOT:-/mnt/testpool/printpantry}/config:/config:ro    # your exported presets
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:

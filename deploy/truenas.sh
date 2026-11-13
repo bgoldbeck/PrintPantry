@@ -59,6 +59,47 @@ ensure_datasets() {
   done
 }
 
+# Every deploy rebuilds the two images; the old ones lose their tag and would
+# pile up (about 1 GB per slicer build). Remember the image ids in use before a
+# rebuild, and after it delete the ones no longer tagged. Only images this
+# script recorded are ever deleted, never other apps' images.
+IMG_LEDGER="$ROOT/src/.pp_old_images"
+
+remember_images() {
+  midclt call app.image.query | python3 -c '
+import json, sys
+for i in json.load(sys.stdin):
+    if set(i.get("repo_tags") or []) & {"printpantry:local", "printpantry-slicer:local"}:
+        print(i["id"])' >> "$IMG_LEDGER" 2>/dev/null || true
+}
+
+prune_images() {
+  [ -s "$IMG_LEDGER" ] || return 0
+  midclt call app.image.query > "$IMG_LEDGER.query" 2>/dev/null || return 0
+  python3 - "$IMG_LEDGER" <<'PY'
+import json, subprocess, sys
+ledger = sys.argv[1]
+images = {i["id"]: i for i in json.load(open(ledger + ".query"))}
+keep, freed, removed = [], 0, 0
+for img in dict.fromkeys(l.strip() for l in open(ledger) if l.strip()):
+    info = images.get(img)
+    if info is None:
+        continue  # already gone
+    if info.get("repo_tags"):
+        keep.append(img)  # still the current build
+        continue
+    if subprocess.run(["midclt", "call", "app.image.delete", img], capture_output=True).returncode == 0:
+        removed += 1
+        freed += info.get("size", 0)
+    else:
+        keep.append(img)  # in use or busy; try next deploy
+open(ledger, "w").write("".join(k + "\n" for k in keep))
+if removed:
+    print(f"Removed {removed} old Print Pantry image(s) (up to {freed / 1e9:.1f} GB, less what they shared).")
+PY
+  rm -f "$IMG_LEDGER.query"
+}
+
 wait_healthy() {
   for _ in $(seq 1 60); do
     if python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8484/healthz',timeout=3)" 2>/dev/null; then
@@ -80,33 +121,43 @@ case "${1:-update}" in
     checkout
     if midclt call app.query "[[\"name\",\"=\",\"$APP\"]]" | grep -q '"name"'; then
       echo "App already installed; updating instead."
+      remember_images
       quiet midclt call -j app.update "$APP" "$(compose_json update)"
     else
       echo "Installing app (first build takes a minute)..."
       quiet midclt call -j app.create "$(compose_json create)"
     fi
     wait_healthy
+    prune_images
     ;;
   update)
     ensure_datasets
     checkout
+    remember_images
     echo "Rebuilding and restarting (the first build with the slicer downloads OrcaSlicer and takes a few minutes)..."
     quiet midclt call -j app.update "$APP" "$(compose_json update)"
     quiet midclt call -j app.redeploy "$APP"
     wait_healthy
+    prune_images
     ;;
   password)
     # show the password, or set a new one:  truenas.sh password NEW-PASSWORD
     if [ -n "${2:-}" ]; then
       (umask 077; printf '%s\n' "$2" > "$PW_FILE")
       echo "Password changed; restarting the app..."
+      remember_images
       quiet midclt call -j app.update "$APP" "$(compose_json update)"
       wait_healthy
+      prune_images
     else
       ensure_password
     fi
     echo "Login password: $(cat "$PW_FILE")"
     ;;
+  prune)
+    # Delete old Print Pantry images now (also runs after every deploy).
+    prune_images
+    ;;
   *)
-    echo "usage: truenas.sh setup|update|password [new]"; exit 2 ;;
+    echo "usage: truenas.sh setup|update|password [new]|prune"; exit 2 ;;
 esac

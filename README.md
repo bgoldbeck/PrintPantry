@@ -100,6 +100,7 @@ allow".
 | `PP_U1_URL` | empty | Moonraker on the Snapmaker U1, e.g. `http://192.168.1.52:7125` |
 | `PP_U1_API_KEY` | empty | only if the U1's Moonraker requires a key (stock doesn't) |
 | `PP_SLICER_URL` | empty | the slicer container, e.g. `http://slicer:8485`; empty hides the Slice buttons |
+| `PP_PRINTER_KEEP_FILES` | `5` | how many files Print Pantry uploaded stay on the U1; older ones are deleted (0 = keep all) |
 
 ## Development
 

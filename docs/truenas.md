@@ -112,6 +112,31 @@ public (GitHub > Packages > printpantry > Package settings). To update later:
 run `scripts\release.cmd`, then on TrueNAS
 **Apps** > printpantry > **Update** (or Stop/Start, which pulls `latest` again).
 
+## Disk use: what cleans itself up
+
+Print Pantry never deletes anything in your library or presets folders, except
+that slicing replaces its own earlier output for the same file. What it keeps
+in check:
+
+- **Old images.** Each deploy rebuilds both images; the previous ones (about
+  1 GB for the slicer) are deleted after the new version is up. Only images
+  `truenas.sh` recorded as Print Pantry's are touched. `deploy-truenas.cmd prune`
+  runs the same cleanup by hand.
+- **Container logs.** Capped at 3 x 10 MB per container in the compose file.
+- **Slicer scratch files.** Each job works in a temporary folder that is deleted
+  when the job ends, and leftovers from a crash are swept when the slicer starts.
+  Job logs in memory are capped at 20,000 characters each, 50 jobs.
+- **Sliced files.** Re-slicing writes over the same `sliced/<name>_U1.gcode` /
+  `_P1S.gcode.3mf`. A full re-slice also removes that file's outdated per-plate
+  G-code (e.g. a plate 3 that no longer exists).
+- **STL previews** in `data/thumbs` are deleted when their STL is removed or changes.
+- **Files on the U1.** Print Pantry remembers what it uploaded (`data/uploads-u1.json`)
+  and keeps only its newest 5 on the printer (`PP_PRINTER_KEEP_FILES`, 0 = keep
+  all). Files you put on the printer another way are left alone.
+
+Not cleaned automatically: Docker's build cache (it is reused by every build,
+so it stays roughly the size of one slicer build).
+
 ## Moving to another pool
 
 1. Stop the app.

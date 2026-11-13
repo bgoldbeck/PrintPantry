@@ -41,6 +41,19 @@ class CategoryPatch(BaseModel):
     color: str | None = None
 
 
+def prune_thumbs(folder: Path, stls) -> int:
+    """Delete stored STL previews whose STL was removed or changed."""
+    keep = {f"{f.id}-{int(f.mtime)}-{f.size}.png" for f in stls}
+    removed = 0
+    for png in folder.glob("*.png"):
+        if png.name not in keep:
+            png.unlink(missing_ok=True)
+            removed += 1
+    if removed:
+        log.info("removed %d stale STL previews", removed)
+    return removed
+
+
 def create_app(
     settings: Settings | None = None,
     background_scan: bool = True,
@@ -52,7 +65,7 @@ def create_app(
     store = Store(settings.data / "printpantry.db")
     scanner = Scanner(settings, store)
     auth = Auth(settings.password, settings.data)
-    hub = printers or PrinterHub(settings.printers)
+    hub = printers or PrinterHub(settings.printers, data=settings.data)
     icon_names = set()
     try:
         import json
@@ -62,10 +75,15 @@ def create_app(
         pass
     stop = threading.Event()
 
+    def scan_and_tidy():
+        lib = scanner.scan()
+        if not lib.error:
+            prune_thumbs(settings.data / "thumbs", [f for f in lib.files.values() if f.kind == "stl"])
+
     def loop():
-        scanner.scan()
+        scan_and_tidy()
         while settings.scan_interval > 0 and not stop.wait(settings.scan_interval):
-            scanner.scan()
+            scan_and_tidy()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -73,7 +91,7 @@ def create_app(
             threading.Thread(target=loop, name="scanner", daemon=True).start()
             hub.start()
         else:
-            scanner.scan()
+            scan_and_tidy()
         yield
         stop.set()
         hub.stop()
