@@ -69,3 +69,104 @@ class Auth:
         if not hmac.compare_digest(sig, self._sign("dl:" + file_id + expires)[:32]):
             return None
         return file_id
+
+
+# -- exposure to the internet through a TLS proxy ------------------------------
+import ipaddress  # noqa: E402
+import threading  # noqa: E402
+
+# Peers whose X-Real-IP / X-Forwarded-Proto we believe: the HTTPS proxy
+# container reaches the app from a Docker bridge network. LAN browsers come
+# from 192.168.x.x, so they can't spoof their address to dodge the rate limit.
+TRUSTED_PROXIES = [
+    ipaddress.ip_network(n.strip())
+    for n in os.environ.get("PP_TRUSTED_PROXIES", "172.16.0.0/12,127.0.0.1/32").split(",")
+    if n.strip()
+]
+
+
+def _ip(text: str | None):
+    try:
+        return ipaddress.ip_address((text or "").strip())
+    except ValueError:
+        return None
+
+
+def from_trusted_proxy(peer: str | None) -> bool:
+    ip = _ip(peer)
+    return bool(ip) and any(ip in n for n in TRUSTED_PROXIES)
+
+
+def client_ip(peer: str | None, headers) -> str:
+    """The browser's address: the proxy's X-Real-IP (or last X-Forwarded-For hop)
+    when the request came through the trusted proxy, else the socket peer."""
+    if from_trusted_proxy(peer):
+        real = _ip(headers.get("x-real-ip"))
+        if real:
+            return str(real)
+        hops = [h for h in (headers.get("x-forwarded-for") or "").split(",") if h.strip()]
+        if hops and _ip(hops[-1]):
+            return str(_ip(hops[-1]))
+    return peer or "?"
+
+
+def is_https(scheme: str, peer: str | None, headers) -> bool:
+    if scheme == "https":
+        return True
+    return from_trusted_proxy(peer) and headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def is_private(ip: str) -> bool:
+    a = _ip(ip)
+    return bool(a) and (a.is_private or a.is_loopback)
+
+
+class LoginLimiter:
+    """Slows password guessing from the internet.
+
+    Each address gets PER_IP wrong passwords per WINDOW seconds, then is locked
+    out until the oldest one ages out. If wrong passwords from all public
+    addresses together reach GLOBAL in a window (a spread-out attack), public
+    addresses are locked out for that window; home-network addresses still get in.
+    """
+
+    PER_IP = int(os.environ.get("PP_LOGIN_MAX_FAILS", "5"))
+    GLOBAL = int(os.environ.get("PP_LOGIN_MAX_FAILS_ALL", "30"))
+    WINDOW = 15 * 60
+
+    def __init__(self):
+        self._fails: dict[str, list[float]] = {}
+        self._public: list[float] = []
+        self._lock = threading.Lock()
+
+    def _trim(self, now: float):
+        cut = now - self.WINDOW
+        for ip in list(self._fails):
+            self._fails[ip] = [t for t in self._fails[ip] if t > cut]
+            if not self._fails[ip]:
+                del self._fails[ip]
+        self._public = [t for t in self._public if t > cut]
+
+    def retry_after(self, ip: str, now: float | None = None) -> int:
+        """Seconds until this address may try again, 0 if it may now."""
+        now = now or time.time()
+        with self._lock:
+            self._trim(now)
+            waits = []
+            fails = self._fails.get(ip, [])
+            if len(fails) >= self.PER_IP:
+                waits.append(fails[-self.PER_IP] + self.WINDOW - now)
+            if not is_private(ip) and len(self._public) >= self.GLOBAL:
+                waits.append(self._public[-self.GLOBAL] + self.WINDOW - now)
+            return int(max(waits)) + 1 if waits else 0
+
+    def failed(self, ip: str, now: float | None = None):
+        now = now or time.time()
+        with self._lock:
+            self._fails.setdefault(ip, []).append(now)
+            if not is_private(ip):
+                self._public.append(now)
+
+    def succeeded(self, ip: str):
+        with self._lock:
+            self._fails.pop(ip, None)
