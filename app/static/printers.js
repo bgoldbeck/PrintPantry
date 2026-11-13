@@ -72,8 +72,51 @@ function tempsHtml(st) {
   return st.temps.map((t) => `<span class="temp${t.target ? " hot" : ""}"><b>${esc(t.name)}</b> ${fmtTemp(t.current)}${t.target ? ` / ${fmtTemp(t.target)}` : ""}</span>`).join("");
 }
 function toolsHtml(st) {
-  return st.toolheads.map((t) => `<span class="tool${t.active ? " active" : ""}${t.loaded === false ? " empty" : ""}" title="${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Unknown")}">
-      <i style="--c:${esc(t.color || "transparent")}"></i>T${t.index + 1} ${esc(t.loaded === false ? "empty" : t.type || "?")}</span>`).join("");
+  return st.toolheads.map((t) => `<button type="button" data-tool="${t.index}" class="tool${t.active ? " active" : ""}${t.loaded === false ? " empty" : ""}"
+      title="${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Unknown")}${t.custom_color ? " (colour set by hand)" : ""}. Click to set the colour.">
+      <i style="--c:${esc(t.color || "transparent")}"></i>T${t.index + 1} ${esc(t.loaded === false ? "empty" : t.type || "?")}${t.custom_color ? " ✎" : ""}</button>`).join("");
+}
+
+const FILAMENT_COLORS = [
+  ["White", "#FFFFFF"], ["Black", "#1A1A1A"], ["Grey", "#8A8D8F"], ["Silver", "#C0C0C0"],
+  ["Yellow", "#FFD400"], ["Orange", "#FF7A00"], ["Red", "#D7263D"], ["Pink", "#F49AC2"],
+  ["Purple", "#7B4FBF"], ["Blue", "#1F5FBF"], ["Light blue", "#6EC1E4"], ["Green", "#2E9E44"],
+  ["Lime", "#A4D233"], ["Brown", "#7A4E2D"], ["Beige", "#E8D5B0"], ["Gold", "#C9A227"],
+];
+
+// Pick the colour shown for a toolhead. Saved in Print Pantry; it resets by itself
+// when the printer reports a different spool for that toolhead.
+function colorDialog(p, t, onSaved) {
+  const dlg = document.createElement("dialog");
+  dlg.innerHTML = `<h2>T${t.index + 1} colour</h2>
+    <p class="sub" style="margin-bottom:12px">${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Filament")} on ${esc(p.name)}.
+      This only changes what Print Pantry shows. It resets when you load a different spool.</p>
+    <div class="colors big">${FILAMENT_COLORS.map(([n, c]) =>
+      `<button type="button" style="--c:${c}" data-color="${c}" title="${n}" aria-label="${n}" aria-pressed="${c === (t.color || "").toUpperCase()}"></button>`).join("")}</div>
+    <div class="dialog-row"><label>Other colour <input type="color" data-custom value="${esc(t.color || "#FFFFFF")}"></label></div>
+    <div class="dialog-actions">
+      ${t.custom_color ? `<button type="button" class="ghost" data-reset>Use the printer's colour</button>` : ""}
+      <button type="button" class="ghost" data-close>Cancel</button></div>`;
+  document.body.appendChild(dlg);
+  const save = async (color) => {
+    try {
+      const res = await api(`/api/printers/${p.id}/toolheads/${t.index}/color`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ color }),
+      });
+      dlg.close();
+      onSaved(res);
+    } catch (e) { alert(e.message); }
+  };
+  dlg.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.color) save(b.dataset.color);
+    else if ("reset" in b.dataset) save(null);
+    else if ("close" in b.dataset) dlg.close();
+  });
+  dlg.querySelector("[data-custom]").addEventListener("change", (e) => save(e.target.value.toUpperCase()));
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.showModal();
 }
 
 function cardBody(p) {
@@ -119,7 +162,9 @@ export async function printersPage(view) {
       </section>`).join("")}</div>`;
 
   const stops = [];
+  const latest = new Map(list.map((p) => [p.id, p]));
   function paint(p) {
+    latest.set(p.id, p);
     const card = view.querySelector(`.printer-card[data-id="${p.id}"]`);
     if (!card) return;
     const st = p.status;
@@ -131,6 +176,13 @@ export async function printersPage(view) {
   list.forEach(paint);
 
   const onClick = async (e) => {
+    const chip = e.target.closest("[data-tool]");
+    if (chip) {
+      const p = latest.get(chip.closest(".printer-card").dataset.id);
+      const t = p?.status.toolheads.find((x) => x.index === Number(chip.dataset.tool));
+      if (t) colorDialog(p, t, paint);
+      return;
+    }
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const card = b.closest(".printer-card");

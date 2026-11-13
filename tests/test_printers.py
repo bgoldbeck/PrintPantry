@@ -289,3 +289,29 @@ def test_light_toggle(pclient, fake, u1):
     assert r.status_code == 200 and r.json()["status"]["light"] is True
     assert fake.gcode == ["SET_LED LED=cavity_led WHITE=1"]
     assert pclient.post("/api/printers/u1/light_off").json()["status"]["light"] is False
+
+
+def test_hand_set_colour_sticks_until_spool_changes(tmp_path, fake, u1):
+    u1.load_colors(tmp_path / "colors-u1.json")
+    u1.refresh()
+    u1.set_color(1, "#ffd400")
+    t1 = u1.status.toolheads[1]
+    assert t1.color == "#FFD400" and t1.custom_color
+    # survives a restart
+    again = MoonrakerPrinter(U1, "http://u1.test:7125", transport=httpx.MockTransport(fake.handler), wake_camera=lambda: None)
+    again.load_colors(tmp_path / "colors-u1.json")
+    assert again.refresh().toolheads[1].color == "#FFD400"
+    # a different spool on the printer drops the override
+    fake.types = ["PLA", "PETG", "PLA", "TPU"]
+    fake.types[1] = "PETG-CF"
+    assert not u1.refresh().toolheads[1].custom_color
+    assert u1.status.toolheads[1].color == "#00FF00"
+
+
+def test_colour_api(pclient, u1):
+    u1.refresh()
+    r = pclient.put("/api/printers/u1/toolheads/0/color", json={"color": "#123456"})
+    assert r.status_code == 200 and r.json()["status"]["toolheads"][0]["color"] == "#123456"
+    assert pclient.put("/api/printers/u1/toolheads/0/color", json={"color": "yellow"}).status_code == 400
+    r = pclient.put("/api/printers/u1/toolheads/0/color", json={"color": None})
+    assert r.json()["status"]["toolheads"][0]["custom_color"] is False

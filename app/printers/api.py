@@ -14,6 +14,10 @@ from . import IDLE_STATES, PrinterError, PrinterHub
 log = logging.getLogger("printpantry.printers")
 
 
+class ColorRequest(BaseModel):
+    color: str | None = None  # "#RRGGBB", or null to go back to the printer's colour
+
+
 class PrintRequest(BaseModel):
     file_id: str
     bed_clear: bool = False
@@ -152,6 +156,15 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
             return {"ok": True, "printer": p.to_json()}
         finally:
             lock.release()
+
+    @router.put("/{printer_id}/toolheads/{index}/color")
+    def set_color(printer_id: str, index: int, req: ColorRequest):
+        p = get(printer_id)
+        try:
+            p.set_color(index, req.color)
+        except PrinterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return p.to_json()
 
     @router.post("/{printer_id}/{action}")
     def action(printer_id: str, action: str):
