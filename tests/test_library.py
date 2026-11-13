@@ -304,3 +304,11 @@ def test_prune_thumbs(tmp_path):
     stl = SimpleNamespace(id="abc", mtime=100.7, size=5)
     assert prune_thumbs(tmp_path, [stl]) == 2
     assert [p.name for p in tmp_path.iterdir()] == ["abc-100-5.png"]
+
+
+def test_gcode_object_names_keep_spaces(tmp_path):
+    g = tmp_path / "clip_U1.gcode"
+    g.write_text("; HEADER_BLOCK_START\n; HEADER_BLOCK_END\n"
+                 "EXCLUDE_OBJECT_DEFINE NAME=Pot_Ladle_Clip.stl_id_0_copy_0 CENTER=1,2\n"
+                 "; printing object Pot Ladle Clip.stl id:0 copy 0\nG1 X1\n")
+    assert formats.read_info(g).plates[0].objects == ["Pot Ladle Clip.stl"]

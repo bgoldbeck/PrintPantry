@@ -7,6 +7,7 @@
 import { createViewer, renderThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
+import { swatchHtml } from "./filament.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -177,27 +178,31 @@ async function searchPage(q) {
   hydrateStlCovers(view);
 }
 
-function plateHtml(f, p, multi) {
+// "Pot Ladle Clip_U1_plate_2.gcode" -> "Pot Ladle Clip"
+const sourceName = (name) => name.replace(/(\.gcode)?(\.3mf)?$/i, "").replace(/_(U1|P1S)(_plate_\d+)?$/i, "");
+
+function plateHtml(f, p, count, fallback) {
+  // Headless slicing writes no thumbnail, so use the model's own picture.
   const thumb = p.has_thumbnail
-    ? `<img loading="lazy" alt="Plate ${p.index}" src="/api/files/${f.id}/thumb?plate=${p.index}">`
-    : `<div class="noimg"></div>`;
+    ? `<img loading="lazy" alt="" src="/api/files/${f.id}/thumb?plate=${p.index}">`
+    : fallback;
   const facts = [fmtTime(p.seconds), fmtGrams(p.grams)].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
-  const sw = p.filaments.map((fl) =>
-    `<span class="swatch" title="Slot ${fl.slot}"><i style="--c:${esc(fl.color || "#999")}"></i>${esc(fl.type || "?")}${fl.grams ? ` ${fmtGrams(fl.grams)}` : ""}</span>`).join("");
-  return `<div class="plate">${thumb}<div>
-      <div class="title">${multi ? `Plate ${p.index}` : "Plate"}</div>
+  const sw = p.filaments.map((fl) => swatchHtml(fl.type, fl.color, fl.grams ? fmtGrams(fl.grams) : "", `Toolhead ${fl.slot}`)).join("");
+  const title = [sourceName(f.name), printer(f.printer)?.name, count > 1 ? `Plate ${p.index} of ${count}` : ""].filter(Boolean).join(" · ");
+  return `<div class="plate${thumb ? "" : " no-thumb"}">${thumb}<div>
+      <div class="title">${esc(title)}</div>
       <div class="facts">${facts || "<span>No time or weight info</span>"}</div>
       ${sw ? `<div class="swatches">${sw}</div>` : ""}
     </div></div>`;
 }
 
-function slicedFileHtml(f) {
-  const multi = (f.plates || []).length > 1;
+function slicedFileHtml(f, fallback = "") {
+  const count = (f.plates || []).length;
   const sub = [f.printer_model || "Unknown printer", f.slicer, fmtSize(f.size)].filter(Boolean).map(esc).join(" · ");
   return `<div class="file">
     <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
     <div class="file-sub">${sub}${f.error ? ` · <span style="color:#c0392b">${esc(f.error)}</span>` : ""}</div>
-    ${(f.plates || []).length ? `<div class="plates">${f.plates.map((p) => plateHtml(f, p, multi)).join("")}</div>` : ""}
+    ${(f.plates || []).length ? `<div class="plates">${f.plates.map((p) => plateHtml(f, p, count, fallback)).join("")}</div>` : ""}
     <div class="file-actions">
       ${canPrintOn(f.printer) ? `<button class="small" data-print="${f.id}" data-printer="${f.printer}">Print on ${esc(printer(f.printer)?.name || f.printer)}</button>` : ""}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a></div>
@@ -286,6 +291,9 @@ async function modelPage(id) {
   const sliced = m.files.filter((f) => f.kind === "sliced3mf" || f.kind === "gcode");
   const images = m.files.filter((f) => f.kind === "image");
 
+  // Picture for print files without their own thumbnail.
+  const plateFallback = m.cover ? coverHtml(m).replace(/^<span class="ph">.*$/s, "") : "";
+
   // Group print files by printer, known printers first.
   const groups = new Map();
   for (const p of LIB.printers) groups.set(p.id, []);
@@ -294,7 +302,7 @@ async function modelPage(id) {
   const printPanels = [...groups.entries()].filter(([, fs]) => fs.length).map(([pid, fs]) => {
     const p = printer(pid);
     return `<section class="panel"><h2>${p ? `<span class="badge printer" style="--c:${p.color}">${esc(p.name)}</span>` : "Other printers"}
-      <span class="n">${plural(fs.length, "file")}</span></h2>${fs.map(slicedFileHtml).join("")}</section>`;
+      <span class="n">${plural(fs.length, "file")}</span></h2>${fs.map((f) => slicedFileHtml(f, plateFallback)).join("")}</section>`;
   }).join("");
 
   view.innerHTML = `
@@ -320,6 +328,7 @@ async function modelPage(id) {
       </div>
     </div>`;
 
+  hydrateStlCovers(view);
   view.querySelectorAll("[data-print]").forEach((b) =>
     b.addEventListener("click", () => openPrintDialog(b.dataset.print, b.dataset.printer)));
   view.querySelector(".model-layout").addEventListener("click", (e) => {

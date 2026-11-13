@@ -187,12 +187,14 @@ h2 { font-size: 1.25rem; margin: 32px 0 12px; }
 
 .plates { display: grid; gap: 10px; margin-top: 12px; }
 .plate { display: grid; grid-template-columns: 76px 1fr; gap: 12px; align-items: center; background: var(--surface-2); border-radius: 14px; padding: 8px; }
-.plate img, .plate .noimg { width: 76px; height: 76px; border-radius: 10px; object-fit: contain; background: var(--viewer-bg); }
+.plate.no-thumb { grid-template-columns: 1fr; }
+.plate img { width: 76px; height: 76px; border-radius: 10px; object-fit: contain; background: var(--viewer-bg); }
 .plate .title { font-weight: 700; }
 .plate .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: .88rem; }
 .swatches { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .swatch { display: inline-flex; align-items: center; gap: 5px; font-size: .8rem; color: var(--ink-2); }
 .swatch i { width: 14px; height: 14px; border-radius: 50%; background: var(--c); border: 1px solid rgb(0 0 0 / 20%); }
+.swatch i.any { background: none; border: 1.5px dashed var(--ink-2); }
 
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
 .gallery img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 12px; }

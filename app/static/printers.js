@@ -1,4 +1,5 @@
 // Printer pages: live status cards (#/printers) and the "Print on ..." dialog.
+import { swatchHtml } from "./filament.js";
 import { calibrationDialog, calibrationHtml, flowSection, flowWizard } from "./calibration.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -257,9 +258,7 @@ export async function printersPage(view) {
 }
 
 // ---------------------------------------------------------------- print dialog
-function swatch(type, color) {
-  return `<span class="swatch"><i style="--c:${esc(color || "#999")}"></i>${esc(type || "?")}</span>`;
-}
+const swatch = (type, color) => swatchHtml(type, color);
 
 export async function openPrintDialog(fileId, printerId) {
   const dlg = document.createElement("dialog");
