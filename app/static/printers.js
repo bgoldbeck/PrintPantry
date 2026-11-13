@@ -38,9 +38,68 @@ const headName = (t) => t.label || `T${t.index + 1}`;
 let PRINTERS = null;
 export async function loadPrinters() {
   try { PRINTERS = (await api("/api/printers")).printers; } catch { PRINTERS = PRINTERS || []; }
+  paintStrip();
   return PRINTERS;
 }
 export const canPrintOn = (id) => !!PRINTERS?.find((p) => p.id === id && p.can_print);
+export const printerById = (id) => PRINTERS?.find((p) => p.id === id);
+
+// ---------------------------------------------------------------- one word for what a printer is doing
+// kind: ok (free), busy, warn (needs a look), bad (can't print), off (not set up).
+function heating(st) {
+  return st.temps.some((t) => t.target > 0 && t.current != null && t.current < t.target - 3);
+}
+export function printerState(p) {
+  const st = p?.status || {};
+  const pct = st.progress != null ? Math.round(st.progress * 100) : null;
+  const withPct = (label) => (pct != null ? `${label} ${pct}%` : label);
+  if (!p || !p.configured) return { key: "not_set_up", kind: "off", label: "Not set up", free: false };
+  if (!st.online) return { key: "offline", kind: "bad", label: "Offline", free: false, detail: st.message };
+  if (p.calibrating?.state === "running") {
+    return { key: "calibrating", kind: "busy", label: "Calibrating", free: false, detail: p.calibrating.name };
+  }
+  const temps = st.temps || [];
+  switch (st.state) {
+    case "printing": return { key: "printing", kind: "busy", label: heating({ temps }) && !pct ? "Heating" : withPct("Printing"), free: false, detail: st.file };
+    case "paused": return { key: "paused", kind: "warn", label: withPct("Paused"), free: false, detail: st.file };
+    case "starting": return { key: "starting", kind: "busy", label: heating({ temps }) ? "Heating" : "Starting", free: false, detail: st.file || st.message };
+    case "error": return { key: "error", kind: "bad", label: "Error", free: false, detail: st.message };
+    case "failed": return { key: "failed", kind: "warn", label: "Failed", free: true, detail: st.message || st.file };
+    case "complete": return { key: "complete", kind: "ok", label: "Finished", free: true, detail: st.file };
+    case "cancelled": return { key: "cancelled", kind: "ok", label: "Cancelled", free: true, detail: st.file };
+    case "idle": return heating({ temps })
+      ? { key: "heating", kind: "busy", label: "Heating", free: true }
+      : { key: "idle", kind: "ok", label: "Idle", free: true };
+    default: return { key: st.state, kind: "warn", label: STATE_LABEL[st.state] || st.state, free: false };
+  }
+}
+export function stateBadge(p, withName = false) {
+  const s = printerState(p);
+  const title = [p?.name, s.label, s.detail].filter(Boolean).join(" · ");
+  return `<span class="pstate ${s.kind}" data-pstate="${esc(s.key)}" title="${esc(title)}"><i></i>${withName ? `<b>${esc(p.name.split(" ").pop())}</b> ` : ""}${esc(s.label)}</span>`;
+}
+
+// Strip in the top bar on every page: each printer's state, refreshed in the background
+// (and whenever any page loads the printers).
+let stripEl = null;
+function paintStrip() {
+  if (!stripEl) return;
+  const list = (PRINTERS || []).filter((p) => p.configured);
+  stripEl.innerHTML = list.map((p) => `<a href="#/printers" class="strip-item">${stateBadge(p, true)}</a>`).join("");
+  stripEl.hidden = !list.length;
+  window.dispatchEvent(new CustomEvent("printers:update"));
+}
+export function startPrinterStrip(el) {
+  if (!el || stripEl) return;
+  stripEl = el;
+  (async function loop() {
+    for (;;) {
+      if (!document.hidden) await loadPrinters();
+      const busy = (PRINTERS || []).some((p) => ["busy", "warn"].includes(printerState(p).kind));
+      await new Promise((r) => setTimeout(r, busy ? 5000 : 15000));
+    }
+  })();
+}
 
 // ---------------------------------------------------------------- camera
 // Swap frames only once loaded so the picture never flashes blank.
@@ -185,7 +244,7 @@ export async function printersPage(view) {
     <div class="printer-grid">${list.map((p) => `
       <section class="panel printer-card" data-id="${p.id}" style="--c:${p.color}">
         <div class="printer-head"><h2><span class="badge printer" style="--c:${p.color}">${esc(p.name)}</span></h2>
-          <span class="state" data-state></span></div>
+          <span data-state></span></div>
         ${p.can_camera ? `<div class="cam"><img alt="${esc(p.name)} camera" class="nocam"><span class="cam-age" data-age></span></div>` : ""}
         <div data-body></div>
       </section>`).join("")}</div>
@@ -199,8 +258,7 @@ export async function printersPage(view) {
     if (!card) return;
     const st = p.status;
     const s = card.querySelector("[data-state]");
-    s.textContent = STATE_LABEL[st.state] || st.state;
-    s.dataset.state = st.state;
+    s.innerHTML = stateBadge(p);
     card.querySelector("[data-body]").innerHTML = cardBody(p);
   }
   list.forEach(paint);
@@ -326,7 +384,7 @@ export async function openPrintDialog(fileId, printerId) {
   }
 
   dlg.innerHTML = `
-    <h2>Print on ${esc(p.name)}</h2>
+    <h2 class="with-state">Print on ${esc(p.name)} ${stateBadge(p)}</h2>
     <p class="sub" style="margin-bottom:12px"><strong>${esc(f.name)}</strong>${plate.seconds ? ` · about ${fmtDur(plate.seconds)}` : ""}</p>
     ${p.can_camera ? `<div class="cam"><img alt="Camera" class="nocam"><span class="cam-age" data-age>Getting a fresh picture...</span></div>` : ""}
     <div data-checks>${checksHtml()}</div>

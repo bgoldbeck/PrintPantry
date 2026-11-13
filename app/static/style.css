@@ -466,3 +466,25 @@ p.sub .tag-cloud { display: inline-flex; margin: 0 0 0 6px; vertical-align: midd
 .cost-settings label, .spool-form label:not(.check) { display: grid; gap: 4px; font-size: .9rem; color: var(--ink-2); }
 .cost-settings input, .spool-form input, dialog select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; }
 .hint { color: var(--ink-2); font-size: .85rem; }
+
+/* Printer state badges: top bar strip, Printers cards, print and slice dialogs */
+.pstate { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: .85rem; line-height: 1;
+  padding: 5px 10px; border-radius: 999px; background: var(--surface-2); color: var(--ink); white-space: nowrap; }
+.pstate i { width: 8px; height: 8px; border-radius: 50%; background: var(--k, #8a8d8f); flex: none; }
+.pstate b { font-weight: 700; }
+.pstate.ok { --k: #4cb944; }
+.pstate.busy { --k: #2e86ab; background: color-mix(in srgb, #2e86ab 18%, var(--surface-2)); }
+.pstate.busy i { animation: pstate-pulse 1.6s ease-in-out infinite; }
+.pstate.warn { --k: #f2a900; background: color-mix(in srgb, #f2a900 22%, var(--surface-2)); }
+.pstate.bad { --k: #c0392b; background: color-mix(in srgb, #c0392b 18%, var(--surface-2)); }
+.pstate.off { --k: transparent; opacity: .7; }
+@keyframes pstate-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pstate.busy i { animation: none; } }
+.printer-strip { display: flex; gap: 6px; align-items: center; }
+.printer-strip[hidden] { display: none; }
+.printer-strip a { text-decoration: none; }
+.printer-strip a:hover .pstate { filter: brightness(1.08); }
+h2.with-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+h2.with-state .pstate { font-size: .8rem; }
+.print-state { display: inline-flex; vertical-align: middle; }
+@media (max-width: 720px) { .printer-strip { order: 10; width: 100%; } }
