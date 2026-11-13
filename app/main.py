@@ -19,6 +19,8 @@ from .auth import COOKIE, MAX_AGE, Auth
 from .calibration import CalibrationStore
 from .calibration import make_router as calibration_router
 from .config import Settings
+from .history import History
+from .history import make_router as history_router
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
 from .scanner import Scanner
@@ -68,6 +70,8 @@ def create_app(
     scanner = Scanner(settings, store)
     auth = Auth(settings.password, settings.data)
     hub = printers or PrinterHub(settings.printers, data=settings.data)
+    history = History(settings.data / "printpantry.db", settings.data / "history", hub,
+                      lambda: scanner.library, store)
     icon_names = set()
     try:
         import json
@@ -92,17 +96,20 @@ def create_app(
         if background_scan:
             threading.Thread(target=loop, name="scanner", daemon=True).start()
             hub.start()
+            history.start()
         else:
             scan_and_tidy()
         yield
         stop.set()
         hub.stop()
+        history.stop()
 
     app = FastAPI(title="Print Pantry", version=__version__, lifespan=lifespan)
     app.state.scanner = scanner
     app.state.store = store
     app.state.settings = settings
     app.state.printers = hub
+    app.state.history = history
 
     # ------------------------------------------------------------ caching
     @app.middleware("http")
@@ -341,7 +348,8 @@ def create_app(
         return {"ok": True}
 
     # ------------------------------------------------------------ printers
-    app.include_router(printers_router(hub, resolve))
+    app.include_router(printers_router(hub, resolve, on_start=history.record_start))
+    app.include_router(history_router(history))
 
     # ------------------------------------------------------------ slicing and calibration
     slicer = slicer or client_from_env()

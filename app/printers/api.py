@@ -133,8 +133,9 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools, "tool_map": chosen}
 
 
-def make_router(hub: PrinterHub, resolve) -> APIRouter:
-    """``resolve(file_id)`` returns (LibFile, Path) or raises 404."""
+def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
+    """``resolve(file_id)`` returns (LibFile, Path) or raises 404.
+    ``on_start(printer_id, file, remote_name, tool_map)`` is told about each print started."""
     router = APIRouter(prefix="/api/printers")
     starting = hub.starting
 
@@ -200,9 +201,14 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
                 raise HTTPException(409, "Confirm the toolhead warnings first: " + "; ".join(pre["warnings"]))
             log.info("starting %s on %s", f.relpath, printer_id)
             try:
-                p.start_print(path, f.name, tool_map=pre["tool_map"])
+                remote = p.start_print(path, f.name, tool_map=pre["tool_map"])
             except PrinterError as exc:
                 raise HTTPException(502, str(exc)) from exc
+            if on_start:
+                try:
+                    on_start(printer_id, f, remote, pre["tool_map"])
+                except Exception:  # noqa: BLE001 - the print is running; history is secondary
+                    log.exception("couldn't record the print start")
             return {"ok": True, "printer": p.to_json()}
         finally:
             lock.release()

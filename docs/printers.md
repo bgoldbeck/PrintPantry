@@ -44,3 +44,17 @@ Shown as "Not set up" until Developer Mode is on. Plan: MQTT/TLS on 8883
 upload to the SD card, JPEG camera stream on port 6000, and an AMS slot
 mapping step in the same print dialog. Settings will be `PP_P1S_HOST`,
 `PP_P1S_SERIAL`, `PP_P1S_ACCESS_CODE` (`app/printers/bambu.py`).
+
+## Print history
+
+Every print shows up on the **History** page and on its model's page, with when it ran, on which printer and
+toolheads, how long it took, filament used and the outcome.
+
+- The U1's Moonraker job history is read every few minutes (and right away when a print starts or ends), so prints
+  started from the touchscreen or from a desktop slicer are logged too. The first sync imports all past jobs.
+- A job is linked to a model by its file name; prints started from Print Pantry carry their file, model and toolhead map.
+- When a print ends, the printer camera takes a picture of the result. You can add or replace the picture
+  (phone upload or a new camera shot), change the outcome (for example mark a "completed" print as failed) and add
+  a note by clicking the print. A status set by hand is kept even when the printer says otherwise.
+- `grams` and `cost` are filled in by spool tracking through `history.on_finish(fn)` / `history.set_usage(...)`.
+- Pictures are stored in the data volume under `history/`.
