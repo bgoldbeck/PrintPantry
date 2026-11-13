@@ -186,7 +186,8 @@ class Printer:
         """Latest camera JPEG and the time it was taken (None if unknown)."""
         raise PrinterError("This printer has no camera support yet")
 
-    def start_print(self, path: Path, name: str, tool_map: dict[int, int] | None = None) -> None:
+    def start_print(self, path: Path, name: str, tool_map: dict[int, int] | None = None) -> str | None:
+        """Send and start a file; returns the name it got on the printer."""
         raise PrinterError("Starting prints isn't supported on this printer yet")
 
     def action(self, name: str) -> None:

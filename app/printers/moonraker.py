@@ -289,7 +289,7 @@ class MoonrakerPrinter(Printer):
             return self._snap
 
     # ------------------------------------------------------------ printing
-    def start_print(self, path: Path, name: str, tool_map: dict[int, int] | None = None) -> None:
+    def start_print(self, path: Path, name: str, tool_map: dict[int, int] | None = None) -> str:
         st = self.refresh()
         if not st.online:
             raise PrinterError(f"{self.profile.name} is offline: {st.message or 'no answer'}")
@@ -316,6 +316,22 @@ class MoonrakerPrinter(Printer):
             self.forget_old_uploads(remote)
         except Exception as exc:  # noqa: BLE001 - the print started; cleanup can wait
             log.warning("couldn't clean up old uploads on %s: %s", self.profile.name, exc)
+        return remote
+
+    # ------------------------------------------------------------ job history
+    def job_history(self, limit: int = 50) -> list[dict]:
+        """Moonraker's job history, newest first (every print, however it was started)."""
+        jobs: list[dict] = []
+        start = 0
+        while len(jobs) < limit:
+            page = min(50, limit - len(jobs))
+            res = self._get("/server/history/list", limit=page, start=start, order="desc") or {}
+            got = res.get("jobs") or []
+            jobs.extend(got)
+            if len(got) < page:
+                break
+            start += len(got)
+        return jobs
 
     def _start_mapped(self, remote: str, tool_map: dict[int, int]) -> None:
         """Start the way Snapmaker Orca does: tell the U1 which head prints each of
