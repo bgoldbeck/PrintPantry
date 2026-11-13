@@ -4,10 +4,12 @@
 //   #/m/<model id>     model page with 3D viewer and print files
 //   #/search/<query>   search results
 //   #/printers         live printer status and cameras
+//   #/history          every print, on every printer
 import { createViewer, renderThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { swatchHtml } from "./filament.js";
+import { historyPage, historyPanel } from "./history.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -281,6 +283,18 @@ function projectFileHtml(f) {
     </div></div>`;
 }
 
+// What history rows need from the rest of the UI.
+async function historyCtx(models) {
+  const printers = await loadPrinters();
+  const byId = new Map((models || []).map((m) => [m.id, m]));
+  return {
+    printers: LIB?.printers || [],
+    printerBadge,
+    model: (id) => byId.get(id),
+    canCamera: (id) => !!printers.find((p) => p.id === id && p.can_camera),
+  };
+}
+
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
   const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs(), loadSlicer()]);
@@ -323,12 +337,14 @@ async function modelPage(id) {
           : "Slice the model and save"} the <code>.gcode.3mf</code> (P1S) or <code>.gcode</code> (U1) into this model's folder.</p></section>`}
         ${!stls.length && projects.length ? `<section class="panel"><h2>Editable source <span class="n">project 3MF</span></h2>
           <div class="panel-tools">${slicerPicker()}</div>${projects.map(projectFileHtml).join("")}</section>` : ""}
+        <section class="panel" id="history" hidden></section>
         ${images.length ? `<section class="panel"><h2>Pictures</h2><div class="gallery">${images.map((f) =>
           `<a href="${fileUrl(f.id)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(f.name)}" src="${fileUrl(f.id)}"></a>`).join("")}</div></section>` : ""}
       </div>
     </div>`;
 
   hydrateStlCovers(view);
+  historyCtx([m]).then((ctx) => historyPanel(document.getElementById("history"), m.id, ctx));
   view.querySelectorAll("[data-print]").forEach((b) =>
     b.addEventListener("click", () => openPrintDialog(b.dataset.print, b.dataset.printer)));
   view.querySelector(".model-layout").addEventListener("click", (e) => {
@@ -453,6 +469,12 @@ async function route() {
     else if (kind === "m" && arg) await modelPage(arg);
     else if (kind === "search" && arg) await searchPage(arg);
     else if (kind === "printers") cleanup = await printersPage(view);
+    else if (kind === "history") {
+      setTitle("History");
+      if (!LIB) await refreshLibrary();
+      const models = (await api("/api/models?limit=1000")).models;
+      cleanup = await historyPage(view, await historyCtx(models));
+    }
     else await homePage();
   } catch (e) {
     if (e.message === "login") return;
