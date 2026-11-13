@@ -95,6 +95,20 @@ const FILAMENT_COLORS = [
   ["Lime", "#A4D233"], ["Brown", "#7A4E2D"], ["Beige", "#E8D5B0"], ["Gold", "#C9A227"],
 ];
 
+// Closest everyday name for a colour, e.g. "#FFD200" -> "Yellow".
+function colorName(hex) {
+  const rgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  if (!/^#[0-9a-f]{6}$/i.test(hex || "")) return "";
+  const [r, g, b] = rgb(hex);
+  let best = "", dist = Infinity;
+  for (const [n, c] of FILAMENT_COLORS) {
+    const [R, G, B] = rgb(c);
+    const d = (r - R) ** 2 * 0.3 + (g - G) ** 2 * 0.59 + (b - B) ** 2 * 0.11;
+    if (d < dist) { dist = d; best = n; }
+  }
+  return best;
+}
+
 // Pick the colour shown for a toolhead. Saved in Print Pantry; it resets by itself
 // when the printer reports a different spool for that toolhead.
 function colorDialog(p, t, onSaved) {
@@ -280,16 +294,23 @@ export async function openPrintDialog(fileId, printerId) {
   }
   const p = chk.printer, f = chk.file;
   const plate = (f.plates || [])[0] || {};
-  const heads = p.status.toolheads || [];
+  const heads = () => chk.printer.status.toolheads || [];
   let map = { ...chk.tool_map };  // file filament -> toolhead, as the server suggested
 
-  const headLabel = (h) => `T${h.index + 1} · ${h.loaded === false ? "empty" : [h.type || "?", h.vendor].filter(Boolean).join(" ")}`;
+  // One button per toolhead, showing its colour, so you can see which spool you're picking.
+  const headChip = (t, h) => {
+    const empty = h.loaded === false;
+    const what = empty ? "empty" : [h.type || "?", h.vendor].filter(Boolean).join(" ");
+    const cname = !empty && h.color ? colorName(h.color) : "";
+    return `<button type="button" class="headpick${empty ? " empty" : ""}" data-map="${t.file_index}" data-head="${h.index}"
+        aria-pressed="${h.index === t.index}" title="T${h.index + 1}: ${esc([cname, what].filter(Boolean).join(" "))}${h.custom_color ? " (colour set by hand)" : ""}">
+        <i style="--c:${esc(empty ? "transparent" : h.color || "#999")}"></i>
+        <span><b>T${h.index + 1}</b> ${esc(cname)}<small>${esc(what)}</small></span></button>`;
+  };
   function checksHtml() {
     const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
         <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
-        <td>${heads.length > 1 ? `<span class="pick"><i class="dot" style="--c:${esc(t.loaded?.color || "transparent")}"></i>
-            <select data-map="${t.file_index}" aria-label="Toolhead for filament ${t.file_index + 1}">${heads.map((h) =>
-              `<option value="${h.index}"${h.index === t.index ? " selected" : ""}>${esc(headLabel(h))}</option>`).join("")}</select></span>`
+        <td>${heads().length > 1 ? `<div class="headpicks" role="group" aria-label="Toolhead for filament ${t.file_index + 1}">${heads().map((h) => headChip(t, h)).join("")}</div>`
           : `T${t.index + 1} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
         <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
     return `
@@ -314,11 +335,11 @@ export async function openPrintDialog(fileId, printerId) {
   const ack = () => checks.querySelector("[data-ack]");
   const update = () => { go.disabled = !!chk.blockers.length || !bed.checked || (ack() && !ack().checked); };
   bed.onchange = update;
-  checks.addEventListener("change", async (e) => {
-    if (e.target.matches("[data-ack]")) return update();
-    const sel = e.target.closest("[data-map]");
-    if (!sel) return;
-    map[sel.dataset.map] = Number(sel.value);
+  checks.addEventListener("change", (e) => { if (e.target.matches("[data-ack]")) update(); });
+  checks.addEventListener("click", async (e) => {
+    const sel = e.target.closest("[data-head]");
+    if (!sel || sel.getAttribute("aria-pressed") === "true") return;
+    map[sel.dataset.map] = Number(sel.dataset.head);
     const q = Object.entries(map).map(([k, v]) => `${k}:${v}`).join(",");
     try {
       chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}&map=${q}`);

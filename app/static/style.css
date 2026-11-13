@@ -354,3 +354,11 @@ small.hint { display: block; color: var(--ink-2); margin-top: 4px; }
 .toolmap .pick { display: inline-flex; align-items: center; gap: 6px; }
 .toolmap .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--c); border: 1px solid rgb(0 0 0 / 25%); flex: none; }
 .print-dialog .hint, .muted { color: var(--ink-2); font-size: .8rem; margin: 0 0 8px; }
+.headpicks { display: flex; flex-wrap: wrap; gap: 6px; }
+.headpick { background: var(--surface-2); color: var(--ink); border: 2px solid transparent; padding: 6px 10px; border-radius: 12px;
+  font-weight: 500; gap: 8px; text-align: left; }
+.headpick i { width: 18px; height: 18px; border-radius: 50%; background: var(--c); border: 1px solid rgb(0 0 0 / 30%); flex: none; }
+.headpick span { display: flex; flex-direction: column; line-height: 1.15; font-size: .85rem; }
+.headpick small { color: var(--ink-2); font-size: .75rem; }
+.headpick[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.headpick.empty { opacity: .55; }
