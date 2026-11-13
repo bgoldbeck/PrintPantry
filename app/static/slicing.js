@@ -21,6 +21,20 @@ export const slicerPrinters = () => (STATUS?.available ? STATUS.printers || [] :
 
 const option = (value, label, selected) =>
   `<option value="${esc(value)}"${selected ? " selected" : ""}>${esc(label ?? value)}</option>`;
+// The last choices per printer, kept in this browser.
+const LAST_KEY = "pp.slice.last";
+function loadLast(printerId) {
+  try { return JSON.parse(localStorage.getItem(LAST_KEY) || "{}")[printerId] || {}; } catch { return {}; }
+}
+function saveLast(printerId, choice) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LAST_KEY) || "{}");
+    const prev = all[printerId] || {};
+    all[printerId] = { ...choice, byType: { ...(prev.byType || {}), ...choice.byType } };
+    localStorage.setItem(LAST_KEY, JSON.stringify(all));
+  } catch { /* private mode: nothing to remember */ }
+}
+
 const swatch = (c) => (c ? `<i class="dot" style="--c:${esc(c)}"></i>` : "");
 
 export async function openSliceDialog(file, printerId, onDone) {
@@ -43,7 +57,14 @@ export async function openSliceDialog(file, printerId, onDone) {
   }
 
   const proj = o.project;
-  const d = o.defaults;
+  const last = loadLast(printerId);
+  const has = (list, v) => v && list.includes(v);
+  const machineNames = o.machines.map((m) => m.name);
+  const d = { ...o.defaults };
+  if (o.project_matches && (last.mode === "project" || last.mode === "presets")) d.mode = last.mode;
+  if (has(machineNames, last.machine)) d.machine = last.machine;
+  if (has((o.processes[d.machine] || {}).names || [], last.process)) d.process = last.process;
+  if (has(o.bed_types.map((b) => b.name), last.bed_type)) d.bed_type = last.bed_type;
   const slots = proj.filaments.length ? proj.filaments : [{ type: "PLA", colour: "" }];
   const tooMany = slots.length > o.printer.max_filaments;
   const plates = proj.plates > 1
@@ -67,7 +88,7 @@ export async function openSliceDialog(file, printerId, onDone) {
       <label class="field"><span>Bed plate</span><select data-bed>${o.bed_types.map((b) =>
         option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
       <div class="field"><span>Filaments</span><div class="fil-rows">${slots.map((s, i) => `
-        <label class="fil-row"><span class="slot">${swatch(s.colour)}T${i}${s.type ? ` · ${esc(s.type)}` : ""}</span>
+        <label class="fil-row"><span class="slot">${swatch(s.colour)}T${i + 1}${s.type ? ` · ${esc(s.type)}` : ""}</span>
           <select data-fil="${i}"></select></label>`).join("")}</div></div>
     </div>
     ${plates}
@@ -89,7 +110,14 @@ export async function openSliceDialog(file, printerId, onDone) {
     const fils = o.filaments[machine] || [];
     filSels.forEach((sel, i) => {
       const prev = keep ? sel.value : "";
-      const want = fils.some((f) => f.name === prev) ? prev : (d.filaments[i] || "");
+      // Last time's pick for this toolhead if it's the same material, then the
+      // last pick for this material, then the slicer's suggestion.
+      const typeOf = (n) => fils.find((f) => f.name === n)?.type || "";
+      const slotType = (slots[i].type || "").toUpperCase();
+      const lastHere = last.filaments?.[i];
+      const remembered = lastHere && (!slotType || typeOf(lastHere).toUpperCase() === slotType) ? lastHere : last.byType?.[slotType];
+      const want = fils.some((f) => f.name === prev) ? prev
+        : fils.some((f) => f.name === remembered) ? remembered : (d.filaments[i] || "");
       const pick = fils.some((f) => f.name === want) ? want : (fils.find((f) => f.type === slots[i].type)?.name || fils[0]?.name);
       sel.innerHTML = fils.map((f) => option(f.name, `${f.name}${f.user ? " (yours)" : ""}`, f.name === pick)).join("");
     });
@@ -124,6 +152,10 @@ export async function openSliceDialog(file, printerId, onDone) {
       machine: machineSel.value, process: processSel.value, bed_type: bedSel.value,
       filaments: filSels.map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
     };
+    const byType = {};
+    body.filaments.forEach((n, i) => { if (slots[i].type) byType[slots[i].type.toUpperCase()] = n; });
+    saveLast(printerId, { mode: o.project_matches ? body.mode : last.mode, machine: body.machine,
+      process: body.process, bed_type: body.bed_type, filaments: body.filaments, byType });
     progress.innerHTML = `<div class="notice">Sending to the slicer...</div>`;
     let job;
     try {
