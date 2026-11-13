@@ -119,7 +119,9 @@ def test_print_dialog_warns_when_spool_is_short(sp):
 
 def test_api_roundtrip(tmp_path, library):  # noqa: F811
     settings = Settings(library=library, data=tmp_path / "data", password="", scan_interval=0)
-    with TestClient(create_app(settings, background_scan=False)) as c:
+    app = create_app(settings, background_scan=False)
+    assert len(app.state.history._listeners) == 1  # finished prints reach the spools
+    with TestClient(app) as c:
         r = c.post("/api/spools", json={"material": "pla", "color": "#ff0000", "total_g": 1000, "price": 18})
         assert r.status_code == 200, r.text
         s = r.json()
