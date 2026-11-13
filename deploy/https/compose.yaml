@@ -1,0 +1,32 @@
+# TrueNAS custom app "printpantry-https": nginx in front of Print Pantry for
+# access from the internet. Installed and updated by `truenas.sh https`.
+services:
+  https:
+    image: nginx@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
+    pull_policy: missing
+    entrypoint: ["nginx"]
+    command: ["-c", "/etc/nginx/nginx.conf", "-g", "daemon off;"]
+    user: "__UID__:__UID__"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    restart: unless-stopped
+    ports:
+      - "8486:8486"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - __CERT_DIR__/public.crt:/etc/printpantry/tls.crt:ro
+      - __CERT_DIR__/public.key:/etc/printpantry/tls.key:ro
+      - __ROOT__/https/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t", "-q", "-c", "/etc/nginx/nginx.conf"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

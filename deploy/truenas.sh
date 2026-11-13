@@ -2,6 +2,7 @@
 # Runs ON TrueNAS (copied over and started by scripts\deploy-truenas.cmd).
 #   bash truenas.sh setup   create datasets, clone the repo, install the app
 #   bash truenas.sh update  pull the latest code and rebuild/restart the app
+#   bash truenas.sh https   install the HTTPS proxy for access from the internet
 # Uses TrueNAS's middleware (midclt), which works for the admin user without sudo.
 set -euo pipefail
 ROOT="${PP_NAS_ROOT:-/mnt/testpool/printpantry}"
@@ -110,6 +111,35 @@ PY
   rm -f "$IMG_LEDGER.query"
 }
 
+# -- HTTPS front door for the internet (app "printpantry-https") --------------
+HTTPS_APP=printpantry-https
+CERT_DIR="${PP_CERT_DIR:-/mnt/testpool/sparkfall-patches-config}"
+
+https_json() {
+  sed -e "s|__ROOT__|$ROOT|g" -e "s|__CERT_DIR__|$CERT_DIR|g" -e "s|__UID__|$ME_UID|g" \
+    "$ROOT/src/repo/deploy/https/compose.yaml" | python3 -c '
+import json, sys
+text = sys.stdin.read()
+if sys.argv[1] == "create":
+    print(json.dumps({"app_name": "printpantry-https", "custom_app": True, "custom_compose_config_string": text}))
+else:
+    print(json.dumps({"custom_compose_config_string": text}))' "$1"
+}
+
+ensure_https() {
+  # Installs or refreshes the proxy. Only runs once installed with `truenas.sh https`.
+  [ "${1:-}" = install ] || midclt call app.query "[[\"name\",\"=\",\"$HTTPS_APP\"]]" | grep -q '"name"' || return 0
+  mkdir -p "$ROOT/https"
+  install -m 644 "$ROOT/src/repo/deploy/https/nginx.conf" "$ROOT/https/nginx.conf"
+  if midclt call app.query "[[\"name\",\"=\",\"$HTTPS_APP\"]]" | grep -q '"name"'; then
+    quiet midclt call -j app.update "$HTTPS_APP" "$(https_json update)"
+    quiet midclt call -j app.redeploy "$HTTPS_APP"
+  else
+    quiet midclt call -j app.create "$(https_json create)"
+  fi
+  echo "HTTPS proxy: https://animalfarm.duckdns.org:8484/ (NAS port 8486)"
+}
+
 wait_healthy() {
   for _ in $(seq 1 60); do
     if python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8484/healthz',timeout=3)" 2>/dev/null; then
@@ -148,7 +178,13 @@ case "${1:-update}" in
     quiet midclt call -j app.update "$APP" "$(compose_json update)"
     quiet midclt call -j app.redeploy "$APP"
     wait_healthy
+    ensure_https
     prune_images
+    ;;
+  https)
+    # Install/refresh the HTTPS proxy for access from the internet.
+    checkout
+    ensure_https install
     ;;
   password)
     # show the password, or set a new one:  truenas.sh password NEW-PASSWORD
@@ -169,5 +205,5 @@ case "${1:-update}" in
     prune_images
     ;;
   *)
-    echo "usage: truenas.sh setup|update|password [new]|prune"; exit 2 ;;
+    echo "usage: truenas.sh setup|update|https|password [new]|prune"; exit 2 ;;
 esac

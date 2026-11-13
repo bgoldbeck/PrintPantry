@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -10,6 +11,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
@@ -23,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__, formats
-from .auth import COOKIE, MAX_AGE, Auth
+from .auth import COOKIE, MAX_AGE, Auth, LoginLimiter, client_ip, is_https
 from .calibration import CalibrationStore
 from .calibration import make_router as calibration_router
 from .config import Settings
@@ -160,12 +162,29 @@ def create_app(
         return response
 
     # ------------------------------------------------------------ auth
+    limiter = LoginLimiter()
+    app.state.login_limiter = limiter
+    # Exact paths that work without a login, plus prefixes that check their own token.
+    open_exact = {"/login", "/healthz", "/static/style.css", "/static/favicon.svg"}
+    open_prefixes = ("/api/dl/",)  # slicers fetch these with a signed link, no cookie
+    unsafe = {"POST", "PUT", "PATCH", "DELETE"}
+
+    def peer(request: Request) -> str | None:
+        return request.client.host if request.client else None
+
     @app.middleware("http")
     async def require_login(request: Request, call_next):
         path = request.url.path
-        # /api/dl/ checks its own signed token: slicers fetch it without a cookie.
-        open_paths = ("/login", "/healthz", "/static/style.css", "/static/favicon.svg", "/api/dl/")
-        if auth.enabled and not path.startswith(open_paths) and not auth.valid(request.cookies.get(COOKIE)):
+        # Refuse cross-site writes (CSRF): a browser always sends Origin on these,
+        # and it must name this same host. Requests without Origin aren't from
+        # another site's page.
+        origin = request.headers.get("origin")
+        if request.method in unsafe and origin:
+            host = request.headers.get("host", "")
+            if urlsplit(origin).netloc.lower() != host.lower():
+                return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
+        is_open = path in open_exact or path.startswith(open_prefixes)
+        if auth.enabled and not is_open and not auth.valid(request.cookies.get(COOKIE)):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "login required"}, status_code=401)
             return RedirectResponse("/login", status_code=303)
@@ -174,7 +193,10 @@ def create_app(
     @app.get("/login", response_class=HTMLResponse)
     def login_page(error: str = ""):
         html = (STATIC / "login.html").read_text()
-        msg = '<p class="login-error">Wrong password.</p>' if error else ""
+        msg = {
+            "1": '<p class="login-error">Wrong password.</p>',
+            "wait": '<p class="login-error">Too many wrong passwords. Try again in a few minutes.</p>',
+        }.get(error, "")
         return html.replace("<!--ERROR-->", msg)
 
     @app.post("/login")
@@ -182,15 +204,29 @@ def create_app(
         form = await request.body()
         from urllib.parse import parse_qs
 
-        attempt = parse_qs(form.decode()).get("password", [""])[0]
+        attempt = parse_qs(form.decode(errors="replace")).get("password", [""])[0]
         if not auth.enabled:
             return RedirectResponse("/", status_code=303)
+        ip = client_ip(peer(request), request.headers)
+        wait = limiter.retry_after(ip)
+        if wait:
+            log.warning("login locked out for %s (%ss left)", ip, wait)
+            return RedirectResponse("/login?error=wait", status_code=303, headers={"Retry-After": str(wait)})
         if not auth.check_password(attempt):
-            time.sleep(1)  # slow down guessing
+            limiter.failed(ip)
+            log.warning("wrong password from %s", ip)
+            await asyncio.sleep(1)  # slow down guessing without stalling other requests
             return RedirectResponse("/login?error=1", status_code=303)
+        limiter.succeeded(ip)
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
-            COOKIE, auth.make_cookie(), max_age=MAX_AGE, expires=MAX_AGE, httponly=True, samesite="lax"
+            COOKIE,
+            auth.make_cookie(),
+            max_age=MAX_AGE,
+            expires=MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            secure=is_https(request.url.scheme, peer(request), request.headers),
         )
         return resp
 
