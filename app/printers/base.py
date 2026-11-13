@@ -46,6 +46,7 @@ class Status:
     total_layers: int | None = None
     temps: list[Temp] = field(default_factory=list)
     toolheads: list[Toolhead] = field(default_factory=list)
+    light: bool | None = None  # chamber light on/off; None = printer has none we can see
     updated_at: float = 0.0
 
     def to_json(self) -> dict:

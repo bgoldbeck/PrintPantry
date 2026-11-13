@@ -37,6 +37,7 @@ OBJECTS = (
     "heater_bed",
     "toolhead",
     "print_task_config",
+    "led%20cavity_led",  # the U1's white chamber light
     *EXTRUDERS,
 )
 STATE_MAP = {
@@ -48,6 +49,8 @@ STATE_MAP = {
     "error": "error",
 }
 ACTIONS = {"pause", "resume", "cancel"}
+LIGHT = "cavity_led"
+LIGHT_GCODE = {"light_on": f"SET_LED LED={LIGHT} WHITE=1", "light_off": f"SET_LED LED={LIGHT} WHITE=0"}
 WAKE_EVERY = 20.0  # seconds between camera.start_monitor calls while someone watches
 SNAPSHOT_CACHE = 1.5  # seconds a fetched frame is reused for other viewers
 
@@ -163,6 +166,11 @@ class MoonrakerPrinter(Printer):
         bed = s.get("heater_bed")
         if bed is not None:
             st.temps.append(Temp("Bed", bed.get("temperature"), bed.get("target")))
+
+        led = s.get(f"led {LIGHT}")
+        if led is not None:
+            data = led.get("color_data") or []
+            st.light = any(v and v > 0 for v in (data[0] if data else []))
 
         cfg = s.get("print_task_config") or {}
         types = cfg.get("filament_type") or []
@@ -286,6 +294,11 @@ class MoonrakerPrinter(Printer):
         return removed
 
     def action(self, name: str) -> None:
+        if name in LIGHT_GCODE:
+            # Klipper runs this between moves, so it can wait a few seconds mid-print.
+            self._post("/printer/gcode/script", timeout=20.0, params={"script": LIGHT_GCODE[name]})
+            self.refresh()
+            return
         if name not in ACTIONS:
             raise PrinterError(f"Unknown action '{name}'")
         self._post(f"/printer/print/{name}")

@@ -156,7 +156,7 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
     @router.post("/{printer_id}/{action}")
     def action(printer_id: str, action: str):
         p = get(printer_id)
-        if action not in ("pause", "resume", "cancel"):
+        if action not in ("pause", "resume", "cancel", "light_on", "light_off"):
             raise HTTPException(404, "Unknown action")
         try:
             p.action(action)
