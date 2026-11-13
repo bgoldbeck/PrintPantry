@@ -179,7 +179,7 @@ export async function openSliceDialog(file, printerId, onDone) {
       const secs = Math.round((Date.now() - started) / 1000);
       if (job.state === "done") {
         const warn = job.warnings?.length ? `<div class="notice warn"><ul>${job.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
-        progress.innerHTML = `<div class="notice">Done in ${secs} s. Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}.</div>${warn}`;
+        progress.innerHTML = `<div class="notice success"><span class="notice-icon">✓</span><div class="notice-body"><strong>Done in ${secs} s!</strong> Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}.</div></div>${warn}`;
         go.textContent = "Done";
         $("[data-close]").textContent = "Close";
         dlg.addEventListener("close", () => onDone?.(job), { once: true });

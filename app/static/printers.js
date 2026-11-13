@@ -38,7 +38,7 @@ const headName = (t) => t.label || `T${t.index + 1}`;
 let PRINTERS = null;
 export async function loadPrinters() {
   try { PRINTERS = (await api("/api/printers")).printers; } catch { PRINTERS = PRINTERS || []; }
-  paintStrip();
+  paintDock();
   return PRINTERS;
 }
 export const canPrintOn = (id) => !!PRINTERS?.find((p) => p.id === id && p.can_print);
@@ -79,19 +79,181 @@ export function stateBadge(p, withName = false) {
   return `<span class="pstate ${s.kind}" data-pstate="${esc(s.key)}" title="${esc(title)}"><i></i>${withName ? `<b>${esc(p.name.split(" ").pop())}</b> ` : ""}${esc(s.label)}</span>`;
 }
 
-// Strip in the top bar on every page: each printer's state, refreshed in the background
-// (and whenever any page loads the printers).
-let stripEl = null;
-function paintStrip() {
-  if (!stripEl) return;
+// Floating fleet dock at the bottom corner on every page:
+// compact live pill when idle, expandable into a vertical overview.
+let dockEl = null;
+let dockOpen = false;
+
+function printerIconSvg() {
+  return `<svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+    <path d="M6 14h12v8H6z"/>
+  </svg>`;
+}
+
+function chevronSvg() {
+  return `<svg class="dock-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M18 15l-6-6-6 6"/>
+  </svg>`;
+}
+
+export function updateDockVisibility() {
+  if (!dockEl) return;
+  const isPrintersPage = location.hash === "#/printers";
+  dockEl.classList.toggle("on-printers-page", isPrintersPage);
+  if (isPrintersPage && dockOpen) {
+    dockOpen = false;
+    renderDockPopup();
+  }
+}
+
+function renderDockPopup() {
+  if (!dockEl) return;
+  const popup = dockEl.querySelector(".printer-dock-popup");
+  const pill = dockEl.querySelector(".printer-dock-pill");
+  if (!popup || !pill) return;
+  popup.hidden = !dockOpen;
+  pill.setAttribute("aria-expanded", String(dockOpen));
+}
+
+export function paintDock() {
+  if (!dockEl) return;
   const list = (PRINTERS || []).filter((p) => p.configured);
-  stripEl.innerHTML = list.map((p) => `<a href="#/printers" class="strip-item">${stateBadge(p, true)}</a>`).join("");
-  stripEl.hidden = !list.length;
+  dockEl.hidden = !list.length;
+  if (!list.length) return;
+
+  const states = list.map((p) => ({ printer: p, state: printerState(p) }));
+  const printingCount = states.filter((x) => ["printing", "starting"].includes(x.state.key)).length;
+  const pausedCount = states.filter((x) => x.state.key === "paused").length;
+  const idleCount = states.filter((x) => x.state.kind === "ok").length;
+  const errorCount = states.filter((x) => x.state.kind === "bad").length;
+
+  let overallKind = "ok";
+  if (errorCount) overallKind = "bad";
+  else if (pausedCount) overallKind = "warn";
+  else if (printingCount) overallKind = "busy";
+
+  // Pill Trigger contents
+  let pillBody = "";
+  if (list.length <= 2) {
+    pillBody = `<div class="dock-pill-items">${states.map(({ printer: p, state: s }) => {
+      const shortName = p.name.split(" ").pop();
+      return `<span class="dock-pill-item"><i class="dock-pip ${s.kind}"></i><b>${esc(shortName)}</b> ${esc(s.label)}</span>`;
+    }).join("")}</div>`;
+  } else {
+    const summary = printingCount
+      ? `${printingCount} printing`
+      : (pausedCount ? `${pausedCount} paused` : (errorCount ? `${errorCount} attention` : `${idleCount} idle`));
+    pillBody = `<div class="dock-pill-items">
+      <i class="dock-pip ${overallKind}"></i>
+      <b>${list.length} Printers</b>
+      <span class="dock-pill-sub">${esc(summary)}</span>
+    </div>`;
+  }
+
+  // Popup rows
+  const rows = states.map(({ printer: p, state: s }) => {
+    const st = p.status || {};
+    const pct = st.progress != null ? Math.round(st.progress * 100) : null;
+    const isPrinting = ["printing", "paused", "starting"].includes(st.state);
+    const jobName = st.file ? st.file.replace(/\.gcode(\.3mf)?$/i, "") : "";
+
+    let jobHtml = "";
+    if (isPrinting && st.file) {
+      jobHtml = `<div class="dock-row-job">
+        <div class="dock-job-name" title="${esc(st.file)}">${esc(jobName || st.file)}</div>
+        ${pct != null ? `<div class="dock-bar"><i style="width:${pct}%"></i></div>` : ""}
+        <div class="dock-job-meta">
+          ${pct != null ? `<span><b>${pct}%</b></span>` : ""}
+          ${st.eta_seconds != null && st.state === "printing" ? `<span>about ${fmtDur(st.eta_seconds)} left</span>` : ""}
+          ${st.layer && st.total_layers ? `<span>Layer ${st.layer}/${st.total_layers}</span>` : ""}
+        </div>
+      </div>`;
+    } else if (st.state === "complete" && st.file) {
+      jobHtml = `<div class="dock-row-sub">Finished: ${esc(jobName || st.file)}</div>`;
+    } else if (st.temps && st.temps.length) {
+      const tDesc = st.temps.map((t) => `${t.name} ${fmtTemp(t.current)}`).join(" · ");
+      jobHtml = `<div class="dock-row-sub">${esc(tDesc)}</div>`;
+    }
+
+    return `<a href="#/printers" class="dock-row" data-id="${esc(p.id)}">
+      <div class="dock-row-head">
+        <span class="dock-printer-name">${esc(p.name)}</span>
+        ${stateBadge(p, false)}
+      </div>
+      ${jobHtml}
+    </a>`;
+  }).join("");
+
+  dockEl.innerHTML = `
+    <div class="printer-dock-popup" ${dockOpen ? "" : "hidden"}>
+      <div class="dock-popup-head">
+        <div class="dock-popup-title">
+          ${printerIconSvg()}
+          <span>Printers <span class="dock-count">(${list.length})</span></span>
+        </div>
+        <button type="button" class="dock-close" aria-label="Close printer overview">✕</button>
+      </div>
+      <div class="dock-popup-list">${rows}</div>
+      <div class="dock-popup-foot">
+        <a href="#/printers" class="dock-footer-link">
+          <span>All printers &amp; cameras</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+      </div>
+    </div>
+    <button type="button" class="printer-dock-pill" aria-expanded="${dockOpen}" title="Fleet status · Click for printer overview">
+      ${printerIconSvg()}
+      ${pillBody}
+      ${chevronSvg()}
+    </button>
+  `;
+
+  updateDockVisibility();
   window.dispatchEvent(new CustomEvent("printers:update"));
 }
-export function startPrinterStrip(el) {
-  if (!el || stripEl) return;
-  stripEl = el;
+
+export function startPrinterDock(el) {
+  if (!el || dockEl) return;
+  dockEl = el;
+
+  dockEl.addEventListener("click", (e) => {
+    const closeBtn = e.target.closest(".dock-close");
+    if (closeBtn) {
+      dockOpen = false;
+      renderDockPopup();
+      return;
+    }
+    const link = e.target.closest("a");
+    if (link) {
+      dockOpen = false;
+      renderDockPopup();
+      return;
+    }
+    const pill = e.target.closest(".printer-dock-pill");
+    if (pill) {
+      dockOpen = !dockOpen;
+      renderDockPopup();
+      return;
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (dockOpen && !dockEl.contains(e.target)) {
+      dockOpen = false;
+      renderDockPopup();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (dockOpen && e.key === "Escape") {
+      dockOpen = false;
+      renderDockPopup();
+    }
+  });
+
+  window.addEventListener("hashchange", updateDockVisibility);
+
   (async function loop() {
     for (;;) {
       if (!document.hidden) await loadPrinters();
@@ -100,6 +262,11 @@ export function startPrinterStrip(el) {
     }
   })();
 }
+
+export function startPrinterStrip(el) {
+  startPrinterDock(el);
+}
+
 
 // ---------------------------------------------------------------- camera
 // Swap frames only once loaded so the picture never flashes blank.
@@ -218,8 +385,23 @@ function cardBody(p) {
   ].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
   const buttons = [];
   if (st.online && st.light != null) {
-    buttons.push(`<button class="small ghost light${st.light ? " on" : ""}" data-act="${st.light ? "light_off" : "light_on"}"
-      aria-pressed="${st.light}">${st.light ? "Light off" : "Light on"}</button>`);
+    const isLit = !!st.light;
+    const isAuto = !!p.light_auto;
+    const bulbTitle = isLit ? "Chamber light is on · Click to turn off" : "Chamber light is off · Click to turn on";
+    const autoTitle = isAuto ? "Auto mode is ON (turns on while printing, off when idle) · Click to turn off" : "Auto mode is OFF · Click to turn on automatically while printing";
+    buttons.push(`
+      <div class="light-control-group">
+        <button type="button" class="small ghost light-btn${isLit ? " on" : ""}" data-act="${isLit ? "light_off" : "light_on"}"
+          aria-pressed="${isLit}" aria-label="${isLit ? "Turn light off" : "Turn light on"}" title="${bulbTitle}">
+          <svg class="light-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path class="bulb-glass" d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5Z"/>
+            <path d="M9 18h6"/>
+            <path d="M10 22h4"/>
+          </svg>
+        </button>
+        <button type="button" class="small ghost light-auto-btn${isAuto ? " active" : ""}" data-act="${isAuto ? "light_auto_off" : "light_auto_on"}"
+          aria-pressed="${isAuto}" title="${autoTitle}">Auto</button>
+      </div>`);
   }
   if (st.state === "printing") buttons.push(`<button class="small ghost" data-act="pause">Pause</button>`);
   if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);

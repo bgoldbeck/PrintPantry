@@ -7,7 +7,7 @@
 //   #/history          every print, on every printer
 //   #/spools           spool inventory and cost settings
 import { createViewer, renderThumbnail } from "./viewer.js";
-import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterStrip, stateBadge } from "./printers.js";
+import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterDock, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { swatchHtml } from "./filament.js";
 import { historyPage, historyPanel } from "./history.js";
@@ -119,6 +119,37 @@ function hydrateStlCovers(root) {
   });
 }
 
+// ---------------------------------------------------------------- prompt dialog
+function promptDialog({ title, label, value = "", placeholder = "", actionLabel = "Save" }) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog";
+    dlg.innerHTML = `
+      <h2>${esc(title)}</h2>
+      <form method="dialog">
+        <label for="prompt-input" style="display:block;margin-bottom:6px;font-weight:600">${esc(label)}</label>
+        <input id="prompt-input" type="text" style="width:100%;margin-bottom:16px;padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg)" value="${esc(value)}" placeholder="${esc(placeholder)}" required>
+        <div class="dialog-actions">
+          <button type="button" class="ghost" data-cancel>Cancel</button>
+          <button type="submit">${esc(actionLabel)}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dlg);
+    const input = dlg.querySelector("#prompt-input");
+    dlg.querySelector("[data-cancel]").onclick = () => { dlg.close(); resolve(null); };
+    dlg.querySelector("form").onsubmit = (e) => {
+      e.preventDefault();
+      const val = input.value.trim();
+      dlg.close();
+      resolve(val || null);
+    };
+    dlg.addEventListener("close", () => dlg.remove());
+    dlg.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
 // ---------------------------------------------------------------- tags
 const tagHref = (t) => `#/search/${encodeURIComponent(`tag:${t.replaceAll(" ", "_")}`)}`;
 function tagCloud(list, active = []) {
@@ -141,10 +172,23 @@ function tagEditor(m, holder) {
   }
   function draw(focus) {
     const suggestions = known.filter((t) => !tags.includes(t));
+    const selectHtml = suggestions.length
+      ? `<select class="tag-select" aria-label="Add existing tag">
+          <option value="">+ Add existing tag...</option>
+          ${suggestions.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
+         </select>`
+      : "";
     holder.innerHTML = `${tags.map((t) => `<span class="tag">
         <a href="${tagHref(t)}">${esc(t)}</a><button type="button" class="x" data-untag="${esc(t)}" aria-label="Remove tag ${esc(t)}">×</button></span>`).join("")}
-      <form class="tag-add"><input list="tag-list" placeholder="${tags.length ? "Add tag" : "Add tags, like kitchen or gift"}" aria-label="Add a tag" maxlength="40">
+      ${selectHtml}
+      <form class="tag-add"><input list="tag-list" placeholder="${tags.length ? "New tag..." : "New tag, like kitchen or gift"}" aria-label="Add a tag" maxlength="40">
         <datalist id="tag-list">${suggestions.map((t) => `<option value="${esc(t)}">`).join("")}</datalist></form>`;
+    const sel = holder.querySelector(".tag-select");
+    if (sel) {
+      sel.onchange = () => {
+        if (sel.value) save([...tags, sel.value]);
+      };
+    }
     const input = holder.querySelector("input");
     holder.querySelector("form").onsubmit = (e) => {
       e.preventDefault();
@@ -264,7 +308,10 @@ function slicedFileHtml(f, fallback = "") {
   const count = (f.plates || []).length;
   const sub = [f.printer_model || "Unknown printer", f.slicer, fmtSize(f.size)].filter(Boolean).map(esc).join(" · ");
   return `<div class="file">
-    <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
+    <div class="file-head">
+      <span class="file-name">${esc(f.name)}</span>
+      <button type="button" class="ghost icon-btn rename-btn" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename file">✎</button>
+    </div>
     <div class="file-sub">${sub}${f.error ? ` · <span style="color:#c0392b">${esc(f.error)}</span>` : ""}</div>
     ${(f.plates || []).length ? `<div class="plates">${f.plates.map((p) => plateHtml(f, p, count, fallback)).join("")}</div>` : ""}
     <div class="file-actions">
@@ -337,7 +384,10 @@ function sliceButtons(f) {
 
 function projectFileHtml(f) {
   return `<div class="file">
-    <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
+    <div class="file-head">
+      <span class="file-name">${esc(f.name)}</span>
+      <button type="button" class="ghost icon-btn rename-btn" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename 3MF file">✎</button>
+    </div>
     <div class="file-sub">${[f.slicer, plural((f.plates || []).length || 1, "plate"), fmtSize(f.size)].filter(Boolean).map(esc).join(" · ")}</div>
     <div class="file-actions">
       ${sliceButtons(f)}
@@ -382,9 +432,24 @@ async function modelPage(id) {
       <span class="n">${plural(fs.length, "file")}</span></h2>${fs.map((f) => slicedFileHtml(f, plateFallback)).join("")}</section>`;
   }).join("");
 
+  const cats = (LIB.categories || []);
   view.innerHTML = `
-    <div class="crumbs"><a href="#/">All categories</a> / <a href="#/c/${encodeURIComponent(m.category)}">${esc(m.category)}</a></div>
-    <h1>${esc(m.name)}</h1>
+    <div class="model-head-bar">
+      <div class="crumbs"><a href="#/">All categories</a> / <a href="#/c/${encodeURIComponent(m.category)}">${esc(m.category)}</a></div>
+      <div class="model-category-picker">
+        <label for="cat-select" class="muted">Category:</label>
+        <select id="cat-select" aria-label="Change category">
+          ${cats.map((c) => `<option value="${esc(c.name)}"${c.name === m.category ? " selected" : ""}>${esc(c.name)}</option>`).join("")}
+        </select>
+        <button type="button" class="small ghost" id="btn-add-cat" title="Create a new category and move this model to it">+ New Category</button>
+      </div>
+    </div>
+    <div class="model-title-row">
+      <h1>${esc(m.name)}</h1>
+      ${!m.path.startsWith("#") ? `<button type="button" class="ghost icon-btn rename-btn" id="btn-rename-model" title="Rename model" aria-label="Rename model">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      </button>` : ""}
+    </div>
     <p class="sub">${esc(m.path.replace(/#.*/, ""))}${m.source ? ` · from <a href="${esc(m.source.url)}" target="_blank" rel="noopener">${esc(m.source.site)}</a>${m.source.author ? ` by ${esc(m.source.author)}` : ""}${m.source.license ? ` · ${esc(m.source.license)}` : ""}` : ""}</p>
     <div class="tags-edit" id="tags"></div>
     ${m.source?.summary ? `<details class="source-summary"><summary>Description from ${esc(m.source.site)}</summary><p>${esc(m.source.summary).replaceAll("\n", "<br>")}</p></details>` : ""}
@@ -418,6 +483,86 @@ async function modelPage(id) {
     if (!b) return;
     const f = m.files.find((x) => x.id === b.dataset.slice);
     if (f) openSliceDialog(f, b.dataset.printer, async () => { await refreshLibrary(); route(); });
+  });
+
+  const catSelect = document.getElementById("cat-select");
+  if (catSelect) {
+    catSelect.onchange = async () => {
+      const newCat = catSelect.value;
+      if (!newCat || newCat === m.category) return;
+      try {
+        const r = await api(`/api/models/${m.id}/category`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category: newCat }),
+        });
+        await refreshLibrary();
+        location.hash = `#/m/${r.id}`;
+      } catch (err) {
+        alert(err.message);
+        catSelect.value = m.category;
+      }
+    };
+  }
+
+  const addCatBtn = document.getElementById("btn-add-cat");
+  if (addCatBtn) {
+    addCatBtn.onclick = async () => {
+      const newCat = await promptDialog({
+        title: "New Category", label: "Category name", value: "", placeholder: "e.g. Workshop", actionLabel: "Create & Move",
+      });
+      if (!newCat) return;
+      try {
+        const r = await api(`/api/models/${m.id}/category`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category: newCat }),
+        });
+        await refreshLibrary();
+        location.hash = `#/m/${r.id}`;
+      } catch (err) {
+        alert(err.message);
+      }
+    };
+  }
+
+  const renameModelBtn = document.getElementById("btn-rename-model");
+  if (renameModelBtn) {
+    renameModelBtn.onclick = async () => {
+      const newName = await promptDialog({
+        title: "Rename Model", label: "Model name", value: m.name, actionLabel: "Rename",
+      });
+      if (!newName || newName === m.name) return;
+      try {
+        const r = await api(`/api/models/${m.id}/rename`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newName }),
+        });
+        await refreshLibrary();
+        location.hash = `#/m/${r.id}`;
+      } catch (err) {
+        alert(err.message);
+      }
+    };
+  }
+
+  view.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-rename-file]");
+    if (!btn) return;
+    const fileId = btn.dataset.renameFile;
+    const oldName = btn.dataset.fileName;
+    const newName = await promptDialog({
+      title: "Rename File", label: "File name", value: oldName, actionLabel: "Rename",
+    });
+    if (!newName || newName === oldName) return;
+    try {
+      await api(`/api/files/${fileId}/rename`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName }),
+      });
+      await refreshLibrary();
+      route();
+    } catch (err) {
+      alert(err.message);
+    }
   });
 
   const holder = document.getElementById("viewer");
@@ -464,6 +609,7 @@ async function modelPage(id) {
     loading.textContent = `Loading ${f.name} (${fmtSize(f.size)})...`;
     actions.innerHTML = `<button class="small" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
+      <button type="button" class="small ghost" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename this STL file">Rename STL</button>
       ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>`;
     showSources(f);
@@ -665,6 +811,11 @@ async function route() {
   const hash = decodeURIComponent(location.hash.slice(1) || "/");
   const [, kind, ...rest] = hash.split("/");
   const arg = rest.join("/");
+  document.querySelectorAll(".top-nav a").forEach((a) => a.classList.remove("active"));
+  if (kind === "printers") document.getElementById("nav-printers")?.classList.add("active");
+  else if (kind === "history") document.getElementById("nav-history")?.classList.add("active");
+  else if (kind === "spools") document.getElementById("nav-spools")?.classList.add("active");
+  else if (!kind || kind === "c" || kind === "m") document.getElementById("nav-library")?.classList.add("active");
   try {
     if (kind === "c" && arg) await categoryPage(arg);
     else if (kind === "m" && arg) await modelPage(arg);
@@ -737,5 +888,5 @@ window.addEventListener("printers:update", () => {
 (async () => {
   ICONS = await fetch("/static/icons.json").then((r) => r.json()).catch(() => ({}));
   route();
-  startPrinterStrip(document.getElementById("printer-strip"));
+  startPrinterDock(document.getElementById("printer-dock"));
 })();

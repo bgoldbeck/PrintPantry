@@ -19,18 +19,21 @@
       <img src="/static/favicon.svg" alt="" width="32" height="32">
       <span>Print Pantry</span>
     </a>
+    <nav class="top-nav" aria-label="Main navigation">
+      <a class="button ghost" href="#/" id="nav-library">Library</a>
+      <a class="button ghost" href="#/printers" id="nav-printers">Printers</a>
+      <a class="button ghost" href="#/history" id="nav-history">History</a>
+      <a class="button ghost" href="#/spools" id="nav-spools">Spools</a>
+    </nav>
     <form class="search" id="search-form" role="search">
       <input id="search" type="search" placeholder="Search models and files" autocomplete="off" aria-label="Search">
     </form>
     <button class="ghost" id="import" title="Add a model from a Printables or MakerWorld link">Import</button>
-    <nav class="printer-strip" id="printer-strip" aria-label="Printer status" hidden></nav>
-    <a class="button ghost" href="#/printers" id="nav-printers">Printers</a>
-    <a class="button ghost" href="#/history" id="nav-history">History</a>
-    <a class="button ghost" href="#/spools" id="nav-spools">Spools</a>
     <button class="ghost" id="rescan" title="Look for new and changed files">Rescan</button>
   </header>
   <main id="view" tabindex="-1"></main>
   <footer class="status" id="status"></footer>
+  <div class="printer-dock" id="printer-dock" aria-label="Printer fleet status" hidden></div>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

@@ -287,6 +287,15 @@ class History:
                 self._db.commit()
         return self.get(print_id)
 
+    def migrate_ids(self, models: dict[str, str], files: dict[str, str]) -> None:
+        """Point past prints at a model's new ids after its files moved."""
+        with self._lock:
+            for old, new in models.items():
+                self._db.execute("UPDATE prints SET model_id = ? WHERE model_id = ?", (new, old))
+            for old, new in files.items():
+                self._db.execute("UPDATE prints SET file_id = ? WHERE file_id = ?", (new, old))
+            self._db.commit()
+
     def save_photo(self, print_id: int, data: bytes) -> dict:
         if data.startswith(b"\xff\xd8"):
             ext = "jpg"

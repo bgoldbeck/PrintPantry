@@ -312,3 +312,63 @@ def test_gcode_object_names_keep_spaces(tmp_path):
                  "EXCLUDE_OBJECT_DEFINE NAME=Pot_Ladle_Clip.stl_id_0_copy_0 CENTER=1,2\n"
                  "; printing object Pot Ladle Clip.stl id:0 copy 0\nG1 X1\n")
     assert formats.read_info(g).plates[0].objects == ["Pot Ladle Clip.stl"]
+
+
+# ---------------------------------------------------------------- moving models
+
+
+def test_recategorize_loose_files_makes_model_folder(tmp_path):
+    """Loose files (Brandon's type-folder layout) get their own folder when moved."""
+    lib = tmp_path / "lib"
+    stl = "Pot Ladle Clip-Pot Ladle Clip.stl"
+    demo.write_stl(lib / "stls" / stl, demo.SHAPES["cube"]())
+    demo.write_project_3mf(lib / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf", [stl], (1, 2, 3))
+    demo.write_stl(lib / "stls" / "other thing.stl", demo.SHAPES["cube"]())
+    (lib / "Kitchen").mkdir()
+    settings = Settings(library=lib, data=tmp_path / "d", password="", scan_interval=0)
+    with TestClient(create_app(settings, background_scan=False)) as c:
+        m = next(x for x in c.get("/api/models").json()["models"] if "Ladle" in x["name"])
+        files = c.get(f"/api/models/{m['id']}").json()["files"]
+        stl_id = next(f["id"] for f in files if f["kind"] == "stl")
+        c.put(f"/api/models/{m['id']}/tags", json={"tags": ["kitchen"]})
+        hist = c.app.state.history
+        with hist._lock:
+            hist._db.execute(
+                "INSERT INTO prints (printer, file, file_id, model_id, status, created) VALUES ('u1', 'x', ?, ?, 'success', 0)",
+                (stl_id, m["id"]))
+            hist._db.commit()
+        thumbs = settings.data / "thumbs"
+        thumbs.mkdir(parents=True, exist_ok=True)
+        (thumbs / f"{stl_id}-1-2.png").write_bytes(b"png")
+
+        r = c.put(f"/api/models/{m['id']}/category", json={"category": "Kitchen"})
+        assert r.status_code == 200, r.text
+        new_id = r.json()["id"]
+        folder = lib / "Kitchen" / "Pot Ladle Clip"
+        assert (folder / "stls" / stl).is_file() and (folder / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf").is_file()
+        assert not (lib / "stls" / stl).exists() and (lib / "stls" / "other thing.stl").exists()
+
+        moved = c.get(f"/api/models/{new_id}").json()
+        assert moved["category"] == "Kitchen" and moved["name"] == "Pot Ladle Clip"
+        assert moved["tags"] == ["kitchen"]
+        new_stl = next(f["id"] for f in moved["files"] if f["kind"] == "stl")
+        row = hist._db.execute("SELECT file_id, model_id FROM prints").fetchone()
+        assert tuple(row) == (new_stl, new_id)
+        assert (thumbs / f"{new_stl}-1-2.png").exists()
+
+        # moving again (now a folder model) and renaming both work
+        r = c.put(f"/api/models/{new_id}/category", json={"category": "Tools"})
+        assert r.status_code == 200 and (lib / "Tools" / "Pot Ladle Clip" / "stls" / stl).is_file()
+        r = c.put(f"/api/models/{r.json()['id']}/rename", json={"name": "Ladle Clip"})
+        assert r.status_code == 200 and (lib / "Tools" / "Ladle Clip" / "stls" / stl).is_file()
+        # a model can't be dropped into the library root
+        r = c.put(f"/api/models/{r.json()['id']}/category", json={"category": "Uncategorized"})
+        assert r.status_code == 400
+
+
+def test_rename_loose_file_in_category(client, library):
+    label = by_name(client, "plant label")
+    r = client.put(f"/api/models/{label['id']}/rename", json={"name": "Plant Label"})
+    assert r.status_code == 200, r.text
+    m = client.get(f"/api/models/{r.json()['id']}").json()
+    assert m["name"] == "Plant Label" and m["path"] == f"{m['category']}/Plant Label"
