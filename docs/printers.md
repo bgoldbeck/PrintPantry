@@ -26,6 +26,13 @@ files). Stock firmware needs no login.
   re-checks the printer is idle, uploads the `.gcode` to the `gcodes` root
   without starting it, checks again, and calls `/printer/print/start`.
   Files sliced for another printer, or a busy/offline printer, are refused.
+* **Which toolhead prints what:** the dialog suggests a toolhead for each of the
+  file's filaments (its own slot if the material matches, else a free loaded head
+  with that material) and lets you change it. The start then goes the way
+  Snapmaker Orca does it: `SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=<file> MAP_EXTRUDER=<head>`
+  per filament, `SET_PRINT_USED_EXTRUDERS EXTRUDERS=<heads>`, then the websocket call
+  `server.files.start_local_print` with the same `map_table` (firmware older than 1.3.0
+  falls back to `/printer/print/start`).
 * **Controls:** pause, resume, cancel (with a confirm).
 * **Calibration:** bed mesh, input shaper, toolhead offsets and a filament
   flow ratio test; see [calibration.md](calibration.md).

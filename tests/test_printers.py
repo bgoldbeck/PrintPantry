@@ -29,6 +29,7 @@ class FakeMoonraker:
         self.started: list[str] = []
         self.deleted: list[str] = []
         self.wakes = 0
+        self.rpc_calls = []
         self.light = 0.0
         self.gcode: list[str] = []
 
@@ -59,6 +60,21 @@ class FakeMoonraker:
             },
         }
 
+    rpc_calls: list = []
+    old_firmware = False
+
+    def rpc(self, method, params, timeout=5.0):
+        from app.printers.moonraker import RpcError
+
+        self.rpc_calls.append((method, params))
+        if method == "server.files.start_local_print":
+            if self.old_firmware:
+                raise RpcError("Method not found", -32601)
+            self.started.append(params["path"])
+            self.state = "printing"
+            return {"state": "success"}
+        return None
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.calls.append(f"{request.method} {path}")
@@ -79,7 +95,8 @@ class FakeMoonraker:
         if path == "/printer/gcode/script":
             script = request.url.params["script"]
             self.gcode.append(script)
-            self.light = 1.0 if "WHITE=1" in script else 0.0
+            if script.startswith("SET_LED"):
+                self.light = 1.0 if "WHITE=1" in script else 0.0
             return httpx.Response(200, json={"result": "ok"})
         if path == "/printer/print/start":
             self.started.append(request.url.params["filename"])
@@ -101,7 +118,8 @@ def u1(fake):
     def wake():
         fake.wakes += 1
 
-    return MoonrakerPrinter(U1, "http://u1.test:7125", transport=httpx.MockTransport(fake.handler), wake_camera=wake)
+    return MoonrakerPrinter(U1, "http://u1.test:7125", transport=httpx.MockTransport(fake.handler), wake_camera=wake,
+                            rpc=fake.rpc)
 
 
 @pytest.fixture()
@@ -218,9 +236,47 @@ def test_print_uploads_then_starts(pclient, fake):
     r = pclient.post("/api/printers/u1/print", json=body)
     assert r.status_code == 200, r.text
     assert fake.uploaded and fake.started == ["bin_2x1_U1_4color.gcode"]
-    order = [c for c in fake.calls if "upload" in c or "start" in c]
-    assert order == ["POST /server/files/upload", "POST /printer/print/start"]
+    order = [c for c in fake.calls if "upload" in c or "start" in c or "script" in c]
+    assert order == ["POST /server/files/upload", "POST /printer/gcode/script"]
+    assert fake.gcode[-1].startswith("SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=0 MAP_EXTRUDER=0")
+    assert "SET_PRINT_USED_EXTRUDERS EXTRUDERS=" in fake.gcode[-1]
+    method, params = fake.rpc_calls[-1]
+    assert method == "server.files.start_local_print"
+    assert params["options"]["map_table"][0] == [0, 0]
     assert r.json()["printer"]["status"]["state"] == "printing"
+
+
+def test_single_filament_goes_to_matching_head(pclient, fake):
+    """A PLA file sliced for T1, with PETG in T1 and PLA in T2: suggest T2."""
+    fake.types = ["PETG", "PLA", "", ""]
+    fake.exist = [True, True, False, False]
+    lib = pclient.get("/api/models", params={"printer": "u1"}).json()["models"]
+    single = None
+    for mm in lib:
+        for f in pclient.get(f"/api/models/{mm['id']}").json()["files"]:
+            fils = (f.get("plates") or [{}])[0].get("filaments", [])
+            if f["printer"] == "u1" and len(fils) == 1 and fils[0]["slot"] == 1 and fils[0]["type"].upper().startswith("PLA"):
+                single = f
+    assert single, "demo library needs a 1-filament PLA U1 file"
+    chk = pclient.get("/api/printers/u1/check", params={"file_id": single["id"]}).json()
+    assert chk["tool_map"] == {"0": 1} and not chk["warnings"]
+    # The user can still force T1, and then gets the material warning.
+    chk = pclient.get("/api/printers/u1/check", params={"file_id": single["id"], "map": "0:0"}).json()
+    assert chk["tool_map"] == {"0": 0} and "PETG" in chk["warnings"][0]
+    r = pclient.post("/api/printers/u1/print", json={"file_id": single["id"], "bed_clear": True, "tool_map": {"0": 1}})
+    assert r.status_code == 200, r.text
+    assert "SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=0 MAP_EXTRUDER=1" in fake.gcode[-1]
+    assert fake.gcode[-1].endswith("SET_PRINT_USED_EXTRUDERS EXTRUDERS=1")
+
+
+def test_old_firmware_falls_back_to_plain_start(pclient, fake):
+    fake.types = ["PLA", "PLA", "PLA", "PLA"]
+    fake.exist = [True, True, True, True]
+    fake.old_firmware = True
+    f = u1_file(pclient, "Wrench Holder")
+    r = pclient.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True, "accept_warnings": True})
+    assert r.status_code == 200, r.text
+    assert "POST /printer/print/start" in fake.calls
 
 
 def test_print_refused_while_busy(pclient, fake):
