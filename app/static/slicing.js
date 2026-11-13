@@ -91,7 +91,7 @@ export async function openSliceDialog(file, printerId, onDone) {
       <label class="field"><span>Bed plate</span><select data-bed>${o.bed_types.map((b) =>
         option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
       <div class="field"><span>Filaments</span><div class="fil-rows">${slots.map((s, i) => `
-        <label class="fil-row"><span class="slot">${swatch(s.colour)}T${i + 1}${s.type ? ` · ${esc(s.type)}` : ""}</span>
+        <label class="fil-row"><span class="slot" title="What the project file was set up with. The preset on the right is what gets sliced.">${slots.length > 1 ? `<b>${i + 1}</b>` : ""}${s.type || s.colour ? `${swatch(s.colour)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}</span>
           <select data-fil="${i}"></select></label>`).join("")}</div>${Object.keys(o.calibrated || {}).length
         ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
     </div>
