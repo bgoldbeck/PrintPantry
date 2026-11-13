@@ -102,6 +102,18 @@ def create_app(
     app.state.settings = settings
     app.state.printers = hub
 
+    # ------------------------------------------------------------ caching
+    @app.middleware("http")
+    async def revalidate_ui(request: Request, call_next):
+        """Make browsers re-check our own JS/CSS on each load (a cheap 304 when
+        unchanged), so a deploy shows up without a hard refresh. Vendored
+        libraries keep normal caching."""
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/static/") and not path.startswith("/static/vendor/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     # ------------------------------------------------------------ auth
     @app.middleware("http")
     async def require_login(request: Request, call_next):
