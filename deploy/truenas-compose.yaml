@@ -23,6 +23,11 @@ services:
     volumes:
       - /mnt/testpool/printpantry/library:/library:ro
       - /mnt/testpool/printpantry/data:/data
+    logging:                 # cap container logs at 3 x 10 MB
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
@@ -44,6 +49,11 @@ services:
     volumes:
       - /mnt/testpool/printpantry/library:/library
       - /mnt/testpool/printpantry/config:/config:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:

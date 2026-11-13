@@ -280,6 +280,34 @@ def test_publish_names_plates(svc, tmp_path):
     assert (svc / written[1]).read_text() == "plate 2"
 
 
+def test_full_reslice_replaces_outdated_outputs(svc, tmp_path):
+    src = make_3mf(svc / "Tools" / "Hook" / "hook.3mf", {})
+    sliced = svc / "Tools" / "Hook" / "sliced"
+    sliced.mkdir(parents=True)
+    for name in ("hook_U1_plate_1.gcode", "hook_U1_plate_3.gcode", "hook_P1S.gcode.3mf", "other_U1.gcode"):
+        (sliced / name).write_text("old")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "plate_1.gcode").write_text("new")
+    job = service.Job(id="j", path="Tools/Hook/hook.3mf", printer="u1", mode="project")
+    service.publish(job, service.PRINTERS["u1"], src, out)
+    assert sorted(p.name for p in sliced.iterdir()) == ["hook_P1S.gcode.3mf", "hook_U1.gcode", "other_U1.gcode"]
+
+    # Slicing one plate leaves the other outputs alone.
+    (sliced / "hook_U1_plate_2.gcode").write_text("old")
+    (out / "plate_1.gcode").rename(out / "plate_3.gcode")
+    job.plate = 3
+    service.publish(job, service.PRINTERS["u1"], src, out)
+    assert {"hook_U1.gcode", "hook_U1_plate_2.gcode", "hook_U1_plate_3.gcode"} <= {p.name for p in sliced.iterdir()}
+
+
+def test_sweep_work_removes_leftovers(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "WORK", tmp_path / "pp-slicer")
+    (service.WORK / "abc-123" / "out").mkdir(parents=True)
+    service.sweep_work()
+    assert list(service.WORK.iterdir()) == []
+
+
 # ---------------------------------------------------------------- app routes
 
 class FakeSlicer(SlicerClient):

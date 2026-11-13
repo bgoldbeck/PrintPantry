@@ -27,6 +27,7 @@ class FakeMoonraker:
         self.calls: list[str] = []
         self.uploaded: list[tuple[str, int]] = []
         self.started: list[str] = []
+        self.deleted: list[str] = []
         self.wakes = 0
 
     def status(self):
@@ -69,6 +70,9 @@ class FakeMoonraker:
             assert b'name="print"\r\n\r\nfalse' in body
             self.uploaded.append(("bin.gcode", len(body)))
             return httpx.Response(201, json={"result": {"item": {"path": "bin_2x1_U1_4color.gcode", "root": "gcodes"}}})
+        if request.method == "DELETE" and path.startswith("/server/files/gcodes/"):
+            self.deleted.append(path.split("/server/files/gcodes/", 1)[1])
+            return httpx.Response(200, json={"result": {"item": {}}})
         if path == "/printer/print/start":
             self.started.append(request.url.params["filename"])
             self.state = "printing"
@@ -244,3 +248,27 @@ def test_unconfigured_u1_from_env():
 def test_json_roundtrip(u1):
     u1.refresh()
     json.dumps(u1.to_json())
+
+
+def test_old_uploads_are_removed(fake, tmp_path):
+    ledger = tmp_path / "uploads-u1.json"
+    ledger.write_text(json.dumps(["a.gcode", "b c.gcode", "bin_2x1_U1_4color.gcode"]))
+    p = MoonrakerPrinter(U1, "http://u1.test:7125", transport=httpx.MockTransport(fake.handler),
+                         wake_camera=lambda: None, ledger=ledger, keep_files=2)
+    src = tmp_path / "x.gcode"
+    src.write_text("G28")
+    p.start_print(src, "bin.gcode")
+    # Re-uploading a name moves it to the newest end; only our two newest stay.
+    assert fake.deleted == ["a.gcode"]
+    assert json.loads(ledger.read_text()) == ["b c.gcode", "bin_2x1_U1_4color.gcode"]
+    p.forget_old_uploads("new.gcode")
+    assert fake.deleted == ["a.gcode", "b c.gcode"]
+
+
+def test_keep_all_uploads_when_zero(fake, tmp_path):
+    ledger = tmp_path / "uploads-u1.json"
+    p = MoonrakerPrinter(U1, "http://u1.test:7125", transport=httpx.MockTransport(fake.handler),
+                         wake_camera=lambda: None, ledger=ledger, keep_files=0)
+    for n in range(4):
+        p.forget_old_uploads(f"{n}.gcode")
+    assert fake.deleted == [] and len(json.loads(ledger.read_text())) == 4
