@@ -281,27 +281,53 @@ export async function openPrintDialog(fileId, printerId) {
   }
   const p = chk.printer, f = chk.file;
   const plate = (f.plates || [])[0] || {};
-  const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
-      <td>T${t.index + 1}</td><td>${swatch(t.file.type, t.file.color)}</td>
-      <td>${t.loaded ? (t.loaded.loaded === false ? "<em>empty</em>" : `${swatch(t.loaded.type, t.loaded.color)} <small>${esc(t.loaded.vendor)}</small>`) : "<em>unknown</em>"}</td>
-      <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
+  const heads = p.status.toolheads || [];
+  let map = { ...chk.tool_map };  // file filament -> toolhead, as the server suggested
+
+  const headLabel = (h) => `T${h.index + 1} · ${h.loaded === false ? "empty" : [h.type || "?", h.vendor].filter(Boolean).join(" ")}`;
+  function checksHtml() {
+    const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
+        <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
+        <td>${heads.length > 1 ? `<span class="pick"><i class="dot" style="--c:${esc(t.loaded?.color || "transparent")}"></i>
+            <select data-map="${t.file_index}" aria-label="Toolhead for filament ${t.file_index + 1}">${heads.map((h) =>
+              `<option value="${h.index}"${h.index === t.index ? " selected" : ""}>${esc(headLabel(h))}</option>`).join("")}</select></span>`
+          : `T${t.index + 1} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
+        <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
+    return `
+      ${chk.blockers.length ? `<div class="notice error"><strong>Can't start:</strong><ul>${chk.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : ""}
+      ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="hint">The file's colour is whatever the slicer had set; only the material is checked.</p>` : ""}
+      ${chk.warnings.length ? `<div class="notice warn"><ul>${chk.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
+        <label class="check"><input type="checkbox" data-ack> I've checked the toolheads and want to print anyway</label>` : ""}`;
+  }
+
   dlg.innerHTML = `
     <h2>Print on ${esc(p.name)}</h2>
     <p class="sub" style="margin-bottom:12px"><strong>${esc(f.name)}</strong>${plate.seconds ? ` · about ${fmtDur(plate.seconds)}` : ""}</p>
     ${p.can_camera ? `<div class="cam"><img alt="Camera" class="nocam"><span class="cam-age" data-age>Getting a fresh picture...</span></div>` : ""}
-    ${chk.blockers.length ? `<div class="notice error"><strong>Can't start:</strong><ul>${chk.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : ""}
-    ${rows ? `<table class="toolmap"><thead><tr><th>Tool</th><th>File needs</th><th>Loaded now</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : ""}
-    ${chk.warnings.length ? `<div class="notice warn"><ul>${chk.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
-      <label class="check"><input type="checkbox" data-ack> I've checked the toolheads and want to print anyway</label>` : ""}
+    <div data-checks>${checksHtml()}</div>
     <label class="check"><input type="checkbox" data-bed> The bed is clear and the build plate is in place</label>
     <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button data-go disabled>Start print</button></div>`;
 
   const go = dlg.querySelector("[data-go]");
   const bed = dlg.querySelector("[data-bed]");
-  const ack = dlg.querySelector("[data-ack]");
-  const update = () => { go.disabled = !!chk.blockers.length || !bed.checked || (ack && !ack.checked); };
+  const checks = dlg.querySelector("[data-checks]");
+  const ack = () => checks.querySelector("[data-ack]");
+  const update = () => { go.disabled = !!chk.blockers.length || !bed.checked || (ack() && !ack().checked); };
   bed.onchange = update;
-  if (ack) ack.onchange = update;
+  checks.addEventListener("change", async (e) => {
+    if (e.target.matches("[data-ack]")) return update();
+    const sel = e.target.closest("[data-map]");
+    if (!sel) return;
+    map[sel.dataset.map] = Number(sel.value);
+    const q = Object.entries(map).map(([k, v]) => `${k}:${v}`).join(",");
+    try {
+      chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}&map=${q}`);
+      map = { ...chk.tool_map };
+      checks.innerHTML = checksHtml();
+    } catch (err) { alert(err.message); }
+    update();
+  });
   dlg.querySelector("[data-close]").onclick = () => dlg.close();
 
   if (p.can_camera) {
@@ -317,7 +343,7 @@ export async function openPrintDialog(fileId, printerId) {
     try {
       await api(`/api/printers/${printerId}/print`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_id: fileId, bed_clear: bed.checked, accept_warnings: !!ack?.checked }),
+        body: JSON.stringify({ file_id: fileId, bed_clear: bed.checked, accept_warnings: !!ack()?.checked, tool_map: map }),
       });
       dlg.close();
       location.hash = "#/printers";

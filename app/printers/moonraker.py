@@ -85,8 +85,16 @@ WAKE_EVERY = 20.0  # seconds between camera.start_monitor calls while someone wa
 SNAPSHOT_CACHE = 1.5  # seconds a fetched frame is reused for other viewers
 
 
-def default_wake_camera(base_url: str, api_key: str = "", timeout: float = 5.0) -> None:
-    """Ask the U1 to keep refreshing camera/monitor.jpg (Snapmaker websocket method)."""
+class RpcError(PrinterError):
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+def ws_rpc(base_url: str, method: str, params: dict, api_key: str = "", timeout: float = 5.0,
+           need_reply: bool = False):
+    """One JSON-RPC call over Moonraker's websocket. Some Snapmaker methods
+    (camera.*, server.files.start_local_print) only exist on this transport."""
     from websockets.sync.client import connect
 
     parts = urlsplit(base_url)
@@ -94,7 +102,7 @@ def default_wake_camera(base_url: str, api_key: str = "", timeout: float = 5.0) 
     url = f"{scheme}://{parts.netloc}/websocket"
     if api_key:
         url += f"?token={api_key}"
-    msg = {"jsonrpc": "2.0", "method": "camera.start_monitor", "params": {"domain": "lan", "interval": 0}, "id": 4242}
+    msg = {"jsonrpc": "2.0", "method": method, "params": params, "id": 4242}
     with connect(url, open_timeout=timeout, close_timeout=1) as ws:
         ws.send(json.dumps(msg))
         deadline = time.monotonic() + timeout
@@ -105,8 +113,18 @@ def default_wake_camera(base_url: str, api_key: str = "", timeout: float = 5.0) 
                 break
             if reply.get("id") == 4242:
                 if "error" in reply:
-                    raise PrinterError(f"Camera wake refused: {reply['error'].get('message', reply['error'])}")
-                return
+                    err = reply["error"]
+                    text = err.get("message", err) if isinstance(err, dict) else err
+                    raise RpcError(f"{method} refused: {text}", err.get("code") if isinstance(err, dict) else None)
+                return reply.get("result")
+    if need_reply:
+        raise PrinterError(f"No answer to {method} from the printer")
+    return None
+
+
+def default_wake_camera(base_url: str, api_key: str = "", timeout: float = 5.0) -> None:
+    """Ask the U1 to keep refreshing camera/monitor.jpg (Snapmaker websocket method)."""
+    ws_rpc(base_url, "camera.start_monitor", {"domain": "lan", "interval": 0}, api_key, timeout)
 
 
 def _color(value) -> str:
@@ -131,7 +149,7 @@ class MoonrakerPrinter(Printer):
     calibrations = U1_CALIBRATIONS
 
     def __init__(self, profile, base_url: str, api_key: str = "", transport=None, wake_camera=None,
-                 ledger: Path | None = None, keep_files: int = 5):
+                 ledger: Path | None = None, keep_files: int = 5, rpc=None):
         super().__init__(profile)
         self.ledger = ledger
         self.keep_files = keep_files
@@ -140,6 +158,9 @@ class MoonrakerPrinter(Printer):
         headers = {"X-Api-Key": api_key} if api_key else {}
         self.http = httpx.Client(base_url=self.base_url, headers=headers, timeout=5.0, transport=transport)
         self._wake = wake_camera or (lambda: default_wake_camera(self.base_url, api_key))
+        self._rpc = rpc or (lambda method, params, timeout=5.0: ws_rpc(
+            self.base_url, method, params, api_key, timeout, need_reply=True))
+        self._task_cfg: dict = {}
         self._woke_at = 0.0
         self._snap: tuple[bytes, float | None] | None = None
         self._snap_at = 0.0
@@ -204,6 +225,7 @@ class MoonrakerPrinter(Printer):
             st.light = any(v and v > 0 for v in (data[0] if data else []))
 
         cfg = s.get("print_task_config") or {}
+        self._task_cfg = cfg
         types = cfg.get("filament_type") or []
         count = max(len(types), sum(1 for n in EXTRUDERS if n in s))
         for i in range(count):
@@ -267,7 +289,7 @@ class MoonrakerPrinter(Printer):
             return self._snap
 
     # ------------------------------------------------------------ printing
-    def start_print(self, path: Path, name: str) -> None:
+    def start_print(self, path: Path, name: str, tool_map: dict[int, int] | None = None) -> None:
         st = self.refresh()
         if not st.online:
             raise PrinterError(f"{self.profile.name} is offline: {st.message or 'no answer'}")
@@ -285,12 +307,48 @@ class MoonrakerPrinter(Printer):
         st = self.refresh()
         if st.state not in IDLE_STATES:
             raise PrinterError(f"File uploaded, but {self.profile.name} is now {st.state}, so it wasn't started")
-        self._post("/printer/print/start", params={"filename": remote})
+        if tool_map:
+            self._start_mapped(remote, tool_map)
+        else:
+            self._post("/printer/print/start", params={"filename": remote})
         self.refresh()
         try:
             self.forget_old_uploads(remote)
         except Exception as exc:  # noqa: BLE001 - the print started; cleanup can wait
             log.warning("couldn't clean up old uploads on %s: %s", self.profile.name, exc)
+
+    def _start_mapped(self, remote: str, tool_map: dict[int, int]) -> None:
+        """Start the way Snapmaker Orca does: tell the U1 which head prints each of
+        the file's filaments and which heads are used (its start G-code only loads
+        and primes used heads), then server.files.start_local_print with the map.
+        The firmware applies the map to every T/M104/M109 in the file and resets
+        it after the print. Firmware before 1.3.0 lacks start_local_print, so
+        fall back to Moonraker's plain start there."""
+        pairs = sorted((int(f), int(h)) for f, h in tool_map.items() if 0 <= int(h) <= 3 and 0 <= int(f) <= 31)
+        used = sorted({h for _, h in pairs})
+        script = "\n".join(
+            [f"SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER={f} MAP_EXTRUDER={h}" for f, h in pairs]
+            + [f"SET_PRINT_USED_EXTRUDERS EXTRUDERS={','.join(map(str, used))}"]
+        )
+        self._post("/printer/gcode/script", timeout=30.0, params={"script": script})
+        cfg = self._task_cfg
+        options = {
+            "bed_level": int(cfg.get("auto_bed_leveling") is True),
+            "flow_calibrate": int(cfg.get("flow_calibrate") is True),
+            "time_lapse_camera": int(cfg.get("time_lapse_camera") is True),
+            "map_table": [list(p) for p in pairs],
+        }
+        params = {"type": "gcode", "path": remote, "print_plate": 1, "options": options}
+        try:
+            res = self._rpc("server.files.start_local_print", params, timeout=60.0)
+        except RpcError as exc:
+            if exc.code != -32601:
+                raise
+            log.info("start_local_print missing on %s; using plain start", self.profile.name)
+            self._post("/printer/print/start", params={"filename": remote})
+            return
+        if isinstance(res, dict) and res.get("state") not in (None, "success"):
+            raise PrinterError(f"{self.profile.name} refused the print: {res.get('message') or res}")
 
     # ------------------------------------------------------------ cleanup
     def _read_ledger(self) -> list[str]:

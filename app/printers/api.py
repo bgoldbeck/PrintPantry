@@ -26,6 +26,8 @@ class PrintRequest(BaseModel):
     file_id: str
     bed_clear: bool = False
     accept_warnings: bool = False
+    # file filament (0-based) -> toolhead (0-based); missing = Print Pantry's default pick
+    tool_map: dict[int, int] | None = None
 
 
 def _material(value: str) -> str:
@@ -40,7 +42,32 @@ def same_material(a: str, b: str) -> bool:
     return x.startswith(y) or y.startswith(x)
 
 
-def preflight(printer, f, filaments=None) -> dict:
+def default_tool_map(file_fils, heads: dict) -> dict[int, int]:
+    """Pick a toolhead for each of the file's filaments. Its own slot when that
+    holds the right material; otherwise a loaded head with that material that no
+    other filament of this file is using (so colours of a multi-colour print
+    stay apart); otherwise its own slot, and the check warns."""
+    def fits(fl, h):
+        return h is not None and h.loaded is not False and bool(h.type) and same_material(fl.type, h.type)
+
+    out: dict[int, int] = {}
+    for fl in file_fils:
+        if fits(fl, heads.get(fl.slot - 1)):
+            out[fl.slot - 1] = fl.slot - 1
+    taken = set(out.values()) | {fl.slot - 1 for fl in file_fils}
+    for fl in file_fils:
+        i = fl.slot - 1
+        if i in out:
+            continue
+        spare = next((h.index for h in sorted(heads.values(), key=lambda h: h.index)
+                      if h.index not in taken and fits(fl, h)), None)
+        out[i] = spare if spare is not None else i
+        if spare is not None:
+            taken.add(spare)
+    return out
+
+
+def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None) -> dict:
     """Everything that should be true before a print starts. Blockers stop it,
     warnings need a tick from the user."""
     blockers: list[str] = []
@@ -73,11 +100,18 @@ def preflight(printer, f, filaments=None) -> dict:
         plates = f.info.plates if f.info else []
         file_fils = plates[0].filaments if plates else []
     heads = {t.index: t for t in st.toolheads}
+    # Library files get a suggested toolhead per filament; calibration prints
+    # (f is None) are sliced for one specific toolhead and stay on it.
+    chosen = default_tool_map(file_fils, heads) if f is not None else {fl.slot - 1: fl.slot - 1 for fl in file_fils}
+    if tool_map:
+        chosen.update({int(k): int(v) for k, v in tool_map.items() if int(k) in chosen})
     for fl in file_fils:
-        idx = fl.slot - 1
+        file_idx = fl.slot - 1
+        idx = chosen.get(file_idx, file_idx)
         t = heads.get(idx)
         row = {
             "index": idx,
+            "file_index": file_idx,
             "file": {"type": fl.type, "color": fl.color, "grams": fl.grams},
             "loaded": None,
             "ok": True,
@@ -96,7 +130,7 @@ def preflight(printer, f, filaments=None) -> dict:
                     warnings.append(f"T{idx + 1} has {t.type}, but the file was sliced for {fl.type}")
                     row["ok"] = False
         tools.append(row)
-    return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools}
+    return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools, "tool_map": chosen}
 
 
 def make_router(hub: PrinterHub, resolve) -> APIRouter:
@@ -135,12 +169,17 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
         return Response(data, media_type="image/jpeg", headers=headers)
 
     @router.get("/{printer_id}/check")
-    def check(printer_id: str, file_id: str):
+    def check(printer_id: str, file_id: str, map: str = ""):
+        """``map`` is optional "0:1,1:2" (file filament:toolhead, 0-based)."""
         p = get(printer_id)
         f, _ = resolve(file_id)
         if p.configured:
             p.refresh()
-        return {**preflight(p, f), "printer": p.to_json(), "file": f.to_json()}
+        try:
+            tool_map = {int(a): int(b) for a, b in (pair.split(":") for pair in map.split(",") if pair)}
+        except ValueError as exc:
+            raise HTTPException(400, "map must look like 0:1,1:2") from exc
+        return {**preflight(p, f, tool_map=tool_map), "printer": p.to_json(), "file": f.to_json()}
 
     @router.post("/{printer_id}/print")
     def start_print(printer_id: str, req: PrintRequest):
@@ -154,14 +193,14 @@ def make_router(hub: PrinterHub, resolve) -> APIRouter:
         try:
             if p.configured:
                 p.refresh()
-            pre = preflight(p, f)
+            pre = preflight(p, f, tool_map=req.tool_map)
             if pre["blockers"]:
                 raise HTTPException(409, "; ".join(pre["blockers"]))
             if pre["warnings"] and not req.accept_warnings:
                 raise HTTPException(409, "Confirm the toolhead warnings first: " + "; ".join(pre["warnings"]))
             log.info("starting %s on %s", f.relpath, printer_id)
             try:
-                p.start_print(path, f.name)
+                p.start_print(path, f.name, tool_map=pre["tool_map"])
             except PrinterError as exc:
                 raise HTTPException(502, str(exc)) from exc
             return {"ok": True, "printer": p.to_json()}
