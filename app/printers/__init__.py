@@ -12,6 +12,7 @@ one place to change addresses:
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from .base import BUSY_STATES, IDLE_STATES, Printer, PrinterError, Status
@@ -47,6 +48,8 @@ class PrinterHub:
                     p, env.get("PP_P1S_HOST", ""), env.get("PP_P1S_SERIAL", ""), env.get("PP_P1S_ACCESS_CODE", "")
                 )
 
+        # Held while a print or calibration is being sent, so two can't start at once.
+        self.starting = {pid: threading.Lock() for pid in self.printers}
         if data:
             for drv in self.printers.values():
                 drv.load_colors(Path(data) / f"colors-{drv.profile.id}.json")

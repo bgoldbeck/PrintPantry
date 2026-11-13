@@ -309,3 +309,42 @@ button.tool { border: 0; color: var(--ink); font-weight: 500; cursor: pointer; }
 button.tool:hover { filter: brightness(0.96); }
 .colors.big button { width: 40px; height: 40px; border: 2px solid var(--line); }
 .colors.big button[aria-pressed="true"] { border-color: var(--ink); }
+
+/* ---------------------------------------------------------------- calibration */
+.calib-buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.calib-buttons > span { color: var(--ink-2); font-size: .85rem; margin-right: 4px; }
+.calib-run { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; border-color: #f2a900; }
+.calib-run button { margin-left: auto; }
+.flow-panel { margin-top: 18px; }
+.flow-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.flow-head h2 { margin: 0; }
+.flow-panel h3 { font-size: .95rem; margin: 18px 0 8px; }
+.flow-panel .sub { margin: 6px 0 0; }
+.flow-tests { list-style: none; padding: 0; margin: 0; }
+.flow-tests li { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--line); }
+.flow-tests small, .flow-table small { color: var(--ink-2); display: block; }
+.flow-tests .file-actions { margin: 0; }
+.flow-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.flow-table th, .flow-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.flow-table td small { display: inline; }
+.flow-table .row-actions { white-space: nowrap; text-align: right; }
+.flow-table .row-actions > * { margin-left: 4px; }
+@media (max-width: 640px) {
+  .flow-table thead { display: none; }
+  .flow-table tr { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .flow-table td { border: 0; padding: 0; }
+  .flow-table .row-actions { grid-column: 1 / -1; text-align: left; white-space: normal; }
+  .flow-table .row-actions > * { margin: 4px 4px 0 0; }
+}
+.pick-tools .tool[aria-pressed="true"] { outline: 2px solid var(--accent); font-weight: 700; }
+.pick-tools .tool .dot { margin-right: 4px; }
+.test-kinds .check { margin: 4px 0; font-weight: 500; }
+.test-kinds small { display: block; color: var(--ink-2); font-weight: 400; }
+.field input.num { width: 110px; justify-self: start; }
+.blocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; margin: 14px 0; }
+.blocks button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; }
+.blocks button b { font-size: 1.1rem; }
+.blocks button small { opacity: .8; }
+.blocks button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+small.hint { display: block; color: var(--ink-2); margin-top: 4px; }

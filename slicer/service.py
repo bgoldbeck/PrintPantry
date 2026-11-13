@@ -8,6 +8,8 @@ only reachable on the compose network. Standard library only.
     POST /jobs                         queue a slice; returns {"id": ...}
     GET  /jobs                         recent jobs
     GET  /jobs/<id>                    one job: state, message, outputs, log tail
+    GET  /calibration/flow             flow ratio tests on offer
+    POST /calibration/flow             queue a flow ratio test print (see calibration.py)
 
 One job runs at a time (the NAS has little free memory). Output files are
 written into the library next to the source, in a "sliced" folder, named
@@ -33,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import calibration as C
 import presets as P
 import project
 
@@ -124,6 +127,13 @@ def _temp(fil: dict, key: str) -> int:
         return 0
 
 
+def _float(v, default: float = 0.0) -> float:
+    try:
+        return float(_first(v))
+    except (TypeError, ValueError):
+        return default
+
+
 def printer_options(printer: Printer) -> dict:
     """Everything the dialog needs for one printer (cached per preset load)."""
     lib = PRESETS.get()
@@ -151,6 +161,7 @@ def printer_options(printer: Printer) -> dict:
             fils.append({
                 "name": f.name,
                 "type": str(_first(flat.get("filament_type", "")) or ""),
+                "flow": _float(flat.get("filament_flow_ratio"), 1.0),
                 "user": f.source == "user",
                 "beds": {b: _temp(flat, k) for b, k, _ in BED_TYPES},
             })
@@ -282,6 +293,8 @@ class Job:
     filaments: list[str] = field(default_factory=list)
     bed_type: str = ""
     plate: int = 0
+    flow_ratios: dict = field(default_factory=dict)  # filament preset -> calibrated filament_flow_ratio
+    calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     state: str = "queued"  # queued | running | done | failed
     message: str = "Waiting for the slicer"
     outputs: list[str] = field(default_factory=list)
@@ -326,7 +339,56 @@ def submit(body: dict) -> Job:
         id=uuid.uuid4().hex[:12], path=path, printer=printer.id, mode=mode,
         machine=str(body.get("machine", "")), process=str(body.get("process", "")),
         filaments=filaments, bed_type=str(body.get("bed_type", "")), plate=max(0, plate),
+        flow_ratios=flow_ratios(body.get("flow_ratios")),
     )
+    return queue_job(job)
+
+
+def flow_ratios(value) -> dict:
+    """{preset name: ratio} from the app, keeping only sane numbers."""
+    out = {}
+    for name, ratio in (value or {}).items() if isinstance(value, dict) else ():
+        r = _float(ratio)
+        if 0.5 <= r <= 1.5:
+            out[str(name)] = round(r, 4)
+    return out
+
+
+def submit_flow(body: dict) -> Job:
+    """Queue a flow ratio test print for one filament on one toolhead."""
+    printer = PRINTERS.get(str(body.get("printer", "")))
+    if not printer:
+        raise BadRequest("Unknown printer")
+    test = C.FLOW_TESTS.get(str(body.get("test") or "yolo"))
+    if not test:
+        raise BadRequest("Unknown flow test")
+    try:
+        toolhead = int(body.get("toolhead") or 1)
+    except (TypeError, ValueError):
+        raise BadRequest("Bad toolhead") from None
+    if not 1 <= toolhead <= printer.max_filaments:
+        raise BadRequest(f"{printer.name} has no toolhead T{toolhead}")
+    filament = str(body.get("filament") or "")
+    if not body.get("machine") or not body.get("process") or not filament:
+        raise BadRequest("Pick a printer preset, a process preset and a filament")
+    base = body.get("flow_ratio")
+    if base is not None:
+        base = _float(base)
+        if not 0.5 <= base <= 1.5:
+            raise BadRequest("The starting flow ratio must be between 0.5 and 1.5")
+    if not flow_test_file(test).is_file():
+        raise BadRequest(f"The slicer has no {test.file} test model")
+    job = Job(
+        id=uuid.uuid4().hex[:12], path=f"calibration/flow/{test.id}", printer=printer.id, mode="presets",
+        machine=str(body["machine"]), process=str(body["process"]), filaments=[filament],
+        bed_type=str(body.get("bed_type", "")),
+        calib={"kind": "flow", "test": test.id, "label": test.label, "linear": test.linear, "toolhead": toolhead,
+               "filament": filament, "type": "", "base": base, "blocks": []},
+    )
+    return queue_job(job)
+
+
+def queue_job(job: Job) -> Job:
     with JOBS_LOCK:
         JOBS[job.id] = job
         # Keep the last 50 jobs.
@@ -367,6 +429,12 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
         fils = [lib.flatten("filament", n, printer.vendor) for n in job.filaments]
     except P.PresetError as exc:
         raise RuntimeError(str(exc)) from exc
+    calibrated = []
+    for f in fils:
+        ratio = job.flow_ratios.get(f["name"])
+        if ratio:
+            f["filament_flow_ratio"] = [f"{ratio:g}"]
+            calibrated.append(f'{f["name"]} flow ratio {ratio:g} (calibrated)')
     if str(machine.get("printer_model", "")).lower() != printer.model.lower():
         raise RuntimeError(f'"{job.machine}" is not a {printer.name} preset')
     # The process file must carry the nozzle sizes, or the slicer crashes while
@@ -386,6 +454,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
     job.log = (f'machine "{machine["name"]}" ({machine.get("from")}, built-in "{machine_system}"); '
                f'process "{process["name"]}" ({process.get("from")}, built-in "{process.get("inherits", "")}", '
                f'compatible {compat})\n')
+    if calibrated:
+        job.log += "; ".join(dict.fromkeys(calibrated)) + "\n"
     bed = job.bed_type if job.bed_type in BED_KEYS else default_bed(machine, fils)
     process["curr_bed_type"] = bed
     job.bed_type = bed
@@ -400,6 +470,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
 
 
 def run_job(job: Job) -> None:
+    if job.calib.get("kind") == "flow":
+        return run_flow_job(job)
     printer = PRINTERS[job.printer]
     src = library_path(job.path)
     info = project.inspect(src)
@@ -465,6 +537,112 @@ def run_job(job: Job) -> None:
         job.message = "Sliced: " + ", ".join(Path(o).name for o in job.outputs)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- calibration
+
+CALIB_DIR = ".calibration"  # in the library; the app's scanner skips dot folders
+CALIB_KEEP = 12  # test prints kept per printer
+ARRANGE = ["--arrange", "0", "--orient", "0"]  # keep OrcaSlicer's layout (centred by build_flow_project)
+
+
+def flow_test_file(test: C.FlowTest) -> Path:
+    return PROFILES.parent / "calib" / "filament_flow" / test.file
+
+
+def _load(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def run_flow_job(job: Job) -> None:
+    """Slice one of OrcaSlicer's flow test plates with the chosen presets.
+
+    One block per flow ratio; see calibration.py. On the U1 the blocks are put
+    on the chosen toolhead. That takes two runs of the slicer: one exports a
+    project with the presets for every toolhead up to that one, the second
+    slices it after the objects are moved to the toolhead.
+    """
+    printer = PRINTERS[job.printer]
+    test = C.FLOW_TESTS[job.calib["test"]]
+    toolhead = int(job.calib.get("toolhead") or 1)
+    slot = toolhead if printer.output == "gcode" else 1  # the P1S maps AMS slots when printing
+    filament = job.filaments[0]
+    WORK.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"{job.id}-", dir=WORK))
+    try:
+        # The U1's machine preset has four of everything (flush volumes etc.);
+        # give it four filaments, or the slicer rejects the project.
+        job.filaments = [filament] * (printer.max_filaments if slot > 1 else 1)
+        settings = build_settings(job, printer, work, project.ProjectInfo(kind="3mf"))
+        machine = _load(work / "machine.json")
+        process = _load(work / "process.json")
+        fil = _load(work / "filament_1.json")
+        blocks = C.build_flow_project(flow_test_file(test), work / "input.3mf", test, 1,
+                                      center=C.bed_center(machine))
+        nozzle = _float(machine.get("nozzle_diameter"), 0.4) or 0.4
+        base = job.calib.get("base") or _float(fil.get("filament_flow_ratio"), 1.0) or 1.0
+        job.calib["base"] = round(base, 4)
+        job.calib["type"] = str(_first(fil.get("filament_type", "")) or "")
+        job.calib["blocks"] = [{**b, "flow": round(base * b["ratio"], 4)} for b in blocks]
+        process.update(C.process_overrides(process, nozzle))
+        process.update(C.speeds(nozzle, _float(process["layer_height"]), _float(fil.get("filament_max_volumetric_speed")),
+                                process, coarse=not test.linear))
+        write_json(work / "process.json", process)
+        for i in range(len(job.filaments)):
+            f = _load(work / f"filament_{i + 1}.json")
+            f["filament_flow_ratio"] = [f"{base:g}"]
+            write_json(work / f"filament_{i + 1}.json", f)
+        job.log += f"flow test {test.file}, T{toolhead}, {filament} starting from flow ratio {base:g}\n"
+
+        common = [BIN, "--allow-newer-file", "--debug", "2"]
+        out = work / "out"
+        out.mkdir()
+        if slot > 1:
+            exported = work / "export"
+            exported.mkdir()
+            args = common + ["--outputdir", str(exported), *ARRANGE, *settings,
+                             "--export-3mf", "project.3mf", str(work / "input.3mf")]
+            proc, result, _ = run_with_retries(job, args, work, exported)
+            job.log = (job.log + (proc.stderr or "")[-3000:])[-LOG_KEEP:]
+            if not (exported / "project.3mf").is_file():
+                raise RuntimeError(f"Slicer failed preparing the test ({result.get('return_code', proc.returncode)}): "
+                                   f"{result.get('error_string') or 'see log'}")
+            C.retarget(exported / "project.3mf", work / "slice.3mf", slot, fil.keys())
+            args = common + ["--slice", "0", "--outputdir", str(out), str(work / "slice.3mf")]
+        else:
+            args = common + ["--slice", "0", "--outputdir", str(out), *ARRANGE, *settings, str(work / "input.3mf")]
+        if printer.output == "gcode.3mf":
+            args[-1:-1] = ["--export-3mf", "result.gcode.3mf"]
+        log.info("job %s: %s", job.id, " ".join(args))
+        proc, result, crashed = run_with_retries(job, args, work, out)
+        job.log = (job.log + (proc.stdout or "")[-2000:] + (proc.stderr or ""))[-LOG_KEEP:]
+        code = result.get("return_code", proc.returncode)
+        if code != 0 or proc.returncode != 0:
+            msg = "the slicer crashed" if crashed else (result.get("error_string") or "see log")
+            raise RuntimeError(f"Slicer failed ({code}): {msg}")
+        produced = out / ("result.gcode.3mf" if printer.output == "gcode.3mf" else "plate_1.gcode")
+        if not produced.is_file():
+            raise RuntimeError("The slicer finished but wrote no file")
+        safe = re.sub(r"[^A-Za-z0-9]+", "-", filament).strip("-")[:40] or "filament"
+        name = f"flow-{test.id}-T{toolhead}-{safe}_{printer.tag}.{printer.output}"
+        job.outputs = [publish_calibration(printer, produced, name)]
+        job.message = f"Test print ready: {name}"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def publish_calibration(printer: Printer, produced: Path, name: str) -> str:
+    dest = LIBRARY / CALIB_DIR / printer.id
+    dest.mkdir(parents=True, exist_ok=True)
+    tmp = dest / f".{name}.part"
+    shutil.copyfile(produced, tmp)
+    os.chmod(tmp, 0o664)
+    os.replace(tmp, dest / name)
+    old = sorted((p for p in dest.iterdir() if p.is_file() and not p.name.startswith(".")),
+                 key=lambda p: p.stat().st_mtime, reverse=True)[CALIB_KEEP:]
+    for p in old:
+        p.unlink(missing_ok=True)
+    return (dest / name).relative_to(LIBRARY).as_posix()
 
 
 CRASH_TRIES = 3
@@ -587,6 +765,12 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and m:
                 job = JOBS.get(m.group(1))
                 return self._send(200, job.to_json()) if job else self._send(404, {"detail": "No such job"})
+            if method == "GET" and url.path == "/calibration/flow":
+                return self._send(200, {"tests": [
+                    {"id": t.id, "label": t.label, "hint": t.hint, "available": flow_test_file(t).is_file()}
+                    for t in C.FLOW_TESTS.values()]})
+            if method == "POST" and url.path == "/calibration/flow":
+                return self._send(202, submit_flow(self._body()).to_json())
             if method == "POST" and url.path == "/jobs":
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > 64 * 1024:
@@ -599,6 +783,15 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, OSError, P.PresetError) as exc:
             log.exception("request failed")
             return self._send(400, {"detail": str(exc)})
+
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 64 * 1024:
+            raise BadRequest("Request too large")
+        body = json.loads(self.rfile.read(length) or b"{}")
+        if not isinstance(body, dict):
+            raise BadRequest("Expected a JSON object")
+        return body
 
     def do_GET(self):
         self._route("GET")

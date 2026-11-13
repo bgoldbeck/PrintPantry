@@ -16,6 +16,8 @@ from pydantic import BaseModel
 
 from . import __version__, formats
 from .auth import COOKIE, MAX_AGE, Auth
+from .calibration import CalibrationStore
+from .calibration import make_router as calibration_router
 from .config import Settings
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
@@ -341,8 +343,11 @@ def create_app(
     # ------------------------------------------------------------ printers
     app.include_router(printers_router(hub, resolve))
 
-    # ------------------------------------------------------------ slicing
-    app.include_router(slicer_router(slicer or client_from_env(), resolve, scanner.scan))
+    # ------------------------------------------------------------ slicing and calibration
+    slicer = slicer or client_from_env()
+    calib = CalibrationStore(settings.data / "calibration.json")
+    app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios))
+    app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
 
     # ------------------------------------------------------------ UI
     app.mount("/static", StaticFiles(directory=STATIC), name="static")

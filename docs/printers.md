@@ -27,6 +27,8 @@ files). Stock firmware needs no login.
   without starting it, checks again, and calls `/printer/print/start`.
   Files sliced for another printer, or a busy/offline printer, are refused.
 * **Controls:** pause, resume, cancel (with a confirm).
+* **Calibration:** bed mesh, input shaper, toolhead offsets and a filament
+  flow ratio test; see [calibration.md](calibration.md).
 
 ## Bambu P1S (next)
 

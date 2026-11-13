@@ -24,7 +24,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from .base import IDLE_STATES, Printer, PrinterError, Status, Temp, Toolhead
+from .base import IDLE_STATES, Calibration, Printer, PrinterError, Status, Temp, Toolhead
 
 log = logging.getLogger("printpantry.moonraker")
 
@@ -51,6 +51,36 @@ STATE_MAP = {
 ACTIONS = {"pause", "resume", "cancel"}
 LIGHT = "cavity_led"
 LIGHT_GCODE = {"light_on": f"SET_LED LED={LIGHT} WHITE=1", "light_off": f"SET_LED LED={LIGHT} WHITE=0"}
+# Calibrations the U1's own firmware provides (checked against its Klipper
+# config, Nov 2026). Klipper runs a script to the end even if nobody waits, so
+# a calibration keeps going if the app restarts.
+U1_CALIBRATIONS = (
+    Calibration(
+        "bed_mesh", "Bed mesh",
+        "Homes, heats the bed, lets it settle for 2 minutes, then probes a 13 × 13 mesh "
+        "(AUTO_BED_MESH_CALIBRATE) and saves it as the default mesh.",
+        "The bed is empty and the build plate is on.", 12,
+        params=[{"id": "bed", "label": "Bed temperature", "unit": "°C", "default": 60, "min": 0, "max": 110}],
+    ),
+    Calibration(
+        "input_shaper", "Input shaper",
+        "Homes, then shakes the toolhead on X and Y to measure resonance (SHAPER_CALIBRATE) "
+        "and saves the best shaper. It is loud for a few minutes.",
+        "Nothing is on the bed and nothing loose is sitting on the printer.", 6,
+    ),
+    Calibration(
+        "toolhead_offsets", "Toolhead offsets (T1–T4)",
+        "Warms all four nozzles to 140 °C, homes, then probes each toolhead to measure its "
+        "X, Y and Z offset (XYZ_OFFSET_CALIBRATE_ALL) so the four toolheads line up.",
+        "The bed is empty and all four nozzle tips are clean, with no blobs of filament.", 12,
+    ),
+)
+CALIBRATION_GCODE = {
+    "bed_mesh": "G28\nAUTO_BED_MESH_CALIBRATE TEMP={bed}\nBED_MESH_PROFILE SAVE=default\nSAVE_CONFIG RESTART=0\nM140 S0",
+    "input_shaper": "G28\nSHAPER_CALIBRATE",
+    "toolhead_offsets": "_EXTRUDER_OFFSET_ACTION_PREHEAT\nG28\nXYZ_OFFSET_CALIBRATE_ALL\n_EXTRUDER_OFFSET_ACTION_EXIT",
+}
+CALIBRATION_TIMEOUT = 3600.0
 WAKE_EVERY = 20.0  # seconds between camera.start_monitor calls while someone watches
 SNAPSHOT_CACHE = 1.5  # seconds a fetched frame is reused for other viewers
 
@@ -98,6 +128,7 @@ def _at(seq, i, default=None):
 class MoonrakerPrinter(Printer):
     can_print = True
     can_camera = True
+    calibrations = U1_CALIBRATIONS
 
     def __init__(self, profile, base_url: str, api_key: str = "", transport=None, wake_camera=None,
                  ledger: Path | None = None, keep_files: int = 5):
@@ -293,7 +324,31 @@ class MoonrakerPrinter(Printer):
             log.info("removed %d old uploads from %s: %s", len(removed), self.profile.name, ", ".join(removed))
         return removed
 
+    # ------------------------------------------------------------ calibration
+    def calibration_script(self, cal: Calibration, values: dict) -> str:
+        return CALIBRATION_GCODE[cal.id].format(**values)
+
+    def run_script(self, script: str) -> None:
+        # Moonraker answers when the whole script has finished.
+        self._post("/printer/gcode/script", timeout=CALIBRATION_TIMEOUT, params={"script": script})
+        self.refresh()
+
+    def emergency_stop(self) -> None:
+        """Stop the motors and heaters now, then restart the firmware so it is usable again."""
+        self._post("/printer/emergency_stop")
+        time.sleep(2)
+        try:
+            self._post("/printer/firmware_restart", timeout=20.0)
+        except PrinterError as exc:
+            log.warning("firmware restart after emergency stop failed: %s", exc)
+        if self.calibrating and self.calibrating.get("state") == "running":
+            self.calibrating.update(state="failed", message="Stopped", finished=time.time())
+        self.refresh()
+
     def action(self, name: str) -> None:
+        if name == "estop":
+            self.emergency_stop()
+            return
         if name in LIGHT_GCODE:
             # Klipper runs this between moves, so it can wait a few seconds mid-print.
             self._post("/printer/gcode/script", timeout=20.0, params={"script": LIGHT_GCODE[name]})
