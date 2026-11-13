@@ -129,7 +129,11 @@ else:
 ensure_https() {
   # Installs or refreshes the proxy. Only runs once installed with `truenas.sh https`.
   [ "${1:-}" = install ] || midclt call app.query "[[\"name\",\"=\",\"$HTTPS_APP\"]]" | grep -q '"name"' || return 0
-  mkdir -p "$ROOT/https"
+  if [ ! -d "$ROOT/https" ]; then
+    # The pool root belongs to root, so create the folder through the middleware.
+    quiet midclt call filesystem.mkdir "{\"path\":\"$ROOT/https\"}"
+    quiet midclt call -j filesystem.setperm "{\"path\":\"$ROOT/https\",\"uid\":$ME_UID,\"gid\":$ME_UID,\"mode\":\"755\"}"
+  fi
   install -m 644 "$ROOT/src/repo/deploy/https/nginx.conf" "$ROOT/https/nginx.conf"
   if midclt call app.query "[[\"name\",\"=\",\"$HTTPS_APP\"]]" | grep -q '"name"'; then
     quiet midclt call -j app.update "$HTTPS_APP" "$(https_json update)"
