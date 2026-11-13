@@ -62,10 +62,19 @@ export function cameraLoop(img, printerId, every, onFrame) {
       } catch (e) { onFrame?.(null, e.message); }
       busy = false;
     }
+    clearTimeout(timer);
     timer = setTimeout(tick, every);
   }
   tick();
-  return () => { alive = false; clearTimeout(timer); };
+  const stop = () => { alive = false; clearTimeout(timer); };
+  // Fetch a new frame after `delay` ms instead of waiting for the next tick
+  // (used after the light is switched, so the picture shows the change).
+  stop.kick = (delay = 0) => {
+    if (!alive) return;
+    clearTimeout(timer);
+    timer = setTimeout(tick, delay);
+  };
+  return stop;
 }
 
 // ---------------------------------------------------------------- status card
@@ -208,18 +217,29 @@ export async function printersPage(view) {
     if (act === "cancel" && !confirm("Cancel this print? It can't be resumed.")) return;
     if (act === "estop" && !confirm("Emergency stop? Motors and heaters stop at once and the printer's firmware restarts.")) return;
     b.disabled = true;
-    try { paint(await api(`/api/printers/${card.dataset.id}/${act}`, { method: "POST" })); }
+    try {
+      paint(await api(`/api/printers/${card.dataset.id}/${act}`, { method: "POST" }));
+      if (act.startsWith("light")) {
+        // The camera writes a frame about every 2 s and its exposure takes a few
+        // seconds to settle, so grab a few quick frames after the switch.
+        const cam = cams.get(card.dataset.id);
+        [800, 2500, 5000].forEach((ms) => setTimeout(() => cam?.kick(), ms));
+      }
+    }
     catch (err) { alert(err.message); b.disabled = false; }
   };
   view.addEventListener("click", onClick);
   stops.push(() => view.removeEventListener("click", onClick));
+  const cams = new Map();
 
   for (const p of list.filter((x) => x.can_camera)) {
     const card = view.querySelector(`.printer-card[data-id="${p.id}"]`);
     const age = card.querySelector("[data-age]");
     let taken = null, err = "";
     const label = () => { age.textContent = err || (taken ? `Picture from ${fmtAge(taken)}` : ""); };
-    stops.push(cameraLoop(card.querySelector(".cam img"), p.id, 3000, (t, e) => { taken = t; err = e; label(); }));
+    const cam = cameraLoop(card.querySelector(".cam img"), p.id, 3000, (t, e) => { taken = t; err = e; label(); });
+    cams.set(p.id, cam);
+    stops.push(cam);
     const ageTimer = setInterval(label, 1000);
     stops.push(() => clearInterval(ageTimer));
   }

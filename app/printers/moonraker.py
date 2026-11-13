@@ -352,6 +352,8 @@ class MoonrakerPrinter(Printer):
         if name in LIGHT_GCODE:
             # Klipper runs this between moves, so it can wait a few seconds mid-print.
             self._post("/printer/gcode/script", timeout=20.0, params={"script": LIGHT_GCODE[name]})
+            self._snap_at = 0.0  # next snapshot request fetches a new frame, not the cached one
+            self._woke_at = 0.0  # and makes sure the camera is awake
             self.refresh()
             return
         if name not in ACTIONS:
