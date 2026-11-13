@@ -4,10 +4,12 @@
 //   #/m/<model id>     model page with 3D viewer and print files
 //   #/search/<query>   search results
 //   #/printers         live printer status and cameras
+//   #/spools           spool inventory and cost settings
 import { createViewer, renderThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { swatchHtml } from "./filament.js";
+import { costHtml, loadPricing, spoolsPage } from "./spools.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -186,7 +188,7 @@ function plateHtml(f, p, count, fallback) {
   const thumb = p.has_thumbnail
     ? `<img loading="lazy" alt="" src="/api/files/${f.id}/thumb?plate=${p.index}">`
     : fallback;
-  const facts = [fmtTime(p.seconds), fmtGrams(p.grams)].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
+  const facts = [fmtTime(p.seconds), fmtGrams(p.grams), costHtml(f.printer, p)].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
   const sw = p.filaments.map((fl) => swatchHtml(fl.type, fl.color, fl.grams ? fmtGrams(fl.grams) : "", `Toolhead ${fl.slot}`)).join("");
   const title = [sourceName(f.name), printer(f.printer)?.name, count > 1 ? `Plate ${p.index} of ${count}` : ""].filter(Boolean).join(" · ");
   return `<div class="plate${thumb ? "" : " no-thumb"}">${thumb}<div>
@@ -283,7 +285,7 @@ function projectFileHtml(f) {
 
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
-  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs(), loadSlicer()]);
+  const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs(), loadSlicer(), loadPricing()]);
   setTitle(m.name);
   const cat = LIB.categories.find((c) => c.id === m.category);
   const stls = m.files.filter((f) => f.kind === "stl");
@@ -453,6 +455,7 @@ async function route() {
     else if (kind === "m" && arg) await modelPage(arg);
     else if (kind === "search" && arg) await searchPage(arg);
     else if (kind === "printers") cleanup = await printersPage(view);
+    else if (kind === "spools") await spoolsPage(view, await loadPrinters());
     else await homePage();
   } catch (e) {
     if (e.message === "login") return;

@@ -12,6 +12,10 @@ from . import IDLE_STATES, PrinterError, PrinterHub
 
 log = logging.getLogger("printpantry.printers")
 
+# Extra print-dialog checks, e.g. "is there enough filament on the spool".
+# Each is fn(printer_id, tools_rows) -> list of warnings; it may add keys to rows.
+EXTRA_CHECKS: list = []
+
 
 class ColorRequest(BaseModel):
     color: str | None = None  # "#RRGGBB", or null to go back to the printer's colour
@@ -130,6 +134,12 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
                     warnings.append(f"T{idx + 1} has {t.type}, but the file was sliced for {fl.type}")
                     row["ok"] = False
         tools.append(row)
+    if st.online and printer.configured:
+        for fn in EXTRA_CHECKS:
+            try:
+                warnings += fn(printer.profile.id, tools)
+            except Exception as exc:  # noqa: BLE001 - a broken extra check mustn't block printing
+                log.warning("extra print check failed: %s", exc)
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools, "tool_map": chosen}
 
 
