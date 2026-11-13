@@ -3,7 +3,7 @@
 #
 # Storage lives on one dataset. To move to another pool later, change only
 # the two paths under `volumes:` (or set PP_ROOT before `docker compose up`).
-#   <root>/library  your models, one folder per category (read-only here)
+#   <root>/library  your models, one folder per category (the app writes only imports here)
 #   <root>/data     the app's own database and preview cache
 services:
   printpantry:
@@ -20,7 +20,7 @@ services:
       PP_SLICER_URL: "http://slicer:8485"    # the slicer below; empty = no Slice buttons
       TZ: "America/Los_Angeles"
     volumes:
-      - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library:ro
+      - ${PP_ROOT:-/mnt/testpool/printpantry}/library:/library      # writable for Import (Printables/MakerWorld links)
       - ${PP_ROOT:-/mnt/testpool/printpantry}/data:/data
     logging:                 # cap container logs at 3 x 10 MB
       driver: json-file
