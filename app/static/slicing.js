@@ -1,6 +1,7 @@
 // "Slice for U1 / P1S" dialog. The slicer runs on the NAS (OrcaSlicer's
 // command line in its own container); new files land in the model's
 // "sliced" folder and show up under Print files.
+import { printerById, stateBadge } from "./printers.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -75,7 +76,7 @@ export async function openSliceDialog(file, printerId, onDone) {
     : "";
 
   dlg.innerHTML = `
-    <h2>Slice for ${esc(o.printer.name)}</h2>
+    <h2 class="with-state">Slice for ${esc(o.printer.name)} ${printerById(o.printer.id) ? stateBadge(printerById(o.printer.id)) : ""}</h2>
     <p class="sub" style="margin-bottom:12px"><strong>${esc(file.name)}</strong>${
       proj.printer_model ? ` · set up for ${esc(proj.printer_model)}` : ""}</p>
     ${tooMany ? `<div class="notice error">This project uses ${slots.length} filaments, but the ${esc(o.printer.name)} has ${o.printer.max_filaments} toolheads.</div>` : ""}

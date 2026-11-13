@@ -7,7 +7,7 @@
 //   #/history          every print, on every printer
 //   #/spools           spool inventory and cost settings
 import { createViewer, renderThumbnail } from "./viewer.js";
-import { canPrintOn, loadPrinters, openPrintDialog, printersPage } from "./printers.js";
+import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { swatchHtml } from "./filament.js";
 import { historyPage, historyPanel } from "./history.js";
@@ -268,7 +268,8 @@ function slicedFileHtml(f, fallback = "") {
     <div class="file-sub">${sub}${f.error ? ` · <span style="color:#c0392b">${esc(f.error)}</span>` : ""}</div>
     ${(f.plates || []).length ? `<div class="plates">${f.plates.map((p) => plateHtml(f, p, count, fallback)).join("")}</div>` : ""}
     <div class="file-actions">
-      ${canPrintOn(f.printer) ? `<button class="small" data-print="${f.id}" data-printer="${f.printer}">Print on ${esc(printer(f.printer)?.name || f.printer)}</button>` : ""}
+      ${canPrintOn(f.printer) ? `<button class="small" data-print="${f.id}" data-printer="${f.printer}">Print on ${esc(printer(f.printer)?.name || f.printer)}</button>
+        <span class="print-state" data-print-state="${esc(f.printer)}">${stateBadge(printerById(f.printer))}</span>` : ""}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a></div>
   </div>`;
 }
@@ -726,7 +727,15 @@ view.addEventListener("change", async (e) => {
 
 window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
 
+// Keep the "Printing 42%" badges next to Print buttons current.
+window.addEventListener("printers:update", () => {
+  document.querySelectorAll("[data-print-state]").forEach((el) => {
+    el.innerHTML = stateBadge(printerById(el.dataset.printState));
+  });
+});
+
 (async () => {
   ICONS = await fetch("/static/icons.json").then((r) => r.json()).catch(() => ({}));
   route();
+  startPrinterStrip(document.getElementById("printer-strip"));
 })();
