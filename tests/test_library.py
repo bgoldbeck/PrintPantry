@@ -372,3 +372,28 @@ def test_rename_loose_file_in_category(client, library):
     assert r.status_code == 200, r.text
     m = client.get(f"/api/models/{r.json()['id']}").json()
     assert m["name"] == "Plant Label" and m["path"] == f"{m['category']}/Plant Label"
+
+
+def test_failed_move_puts_files_back(tmp_path, monkeypatch):
+    lib = tmp_path / "lib"
+    stl = "Pot Ladle Clip-Pot Ladle Clip.stl"
+    demo.write_stl(lib / "stls" / stl, demo.SHAPES["cube"]())
+    demo.write_project_3mf(lib / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf", [stl], (1, 2, 3))
+    settings = Settings(library=lib, data=tmp_path / "d", password="", scan_interval=0)
+    with TestClient(create_app(settings, background_scan=False), raise_server_exceptions=False) as c:
+        m = c.get("/api/models").json()["models"][0]
+        import os as _os
+        real, calls = _os.rename, []
+
+        def flaky(src, dst):
+            calls.append(src)
+            if len(calls) == 2:
+                raise PermissionError(13, "Permission denied")
+            return real(src, dst)
+
+        monkeypatch.setattr("app.main.os.rename", flaky)
+        r = c.put(f"/api/models/{m['id']}/category", json={"category": "Kitchen"})
+        monkeypatch.setattr("app.main.os.rename", real)
+        assert r.status_code == 500 and "Nothing was changed" in r.json()["detail"]
+        assert (lib / "stls" / stl).is_file() and (lib / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf").is_file()
+        assert not (lib / "Kitchen" / "Pot Ladle Clip").exists()

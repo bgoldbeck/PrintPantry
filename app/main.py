@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -393,18 +394,44 @@ def create_app(
         file_map: dict[str, str] = {}
         if "#" in m.relpath:
             cat_dir = root if m.category == UNCATEGORIZED else (root / m.category).resolve()
-            new_dir.mkdir(parents=True)
-            for f in m.files:
-                src = (root / f.relpath).resolve()
-                # keep type subfolders (e.g. "sliced/") the file sat in
-                dst = new_dir / src.relative_to(cat_dir)
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst))
-                file_map[f.relpath] = dst.relative_to(root).as_posix()
+            # keep type subfolders (e.g. "stls/") the files sat in
+            moves = [((root / f.relpath).resolve(), f.relpath) for f in m.files]
+            moves = [(src, new_dir / src.relative_to(cat_dir), rel) for src, rel in moves]
         else:
             old_dir = (root / m.relpath).resolve()
-            new_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(old_dir), str(new_dir))
+            moves = [(old_dir, new_dir, m.relpath)]
+        # Check first, so a folder the app can't write to fails cleanly instead
+        # of leaving half-copied files behind.
+        for src, _, _ in moves:
+            if not os.access(src.parent, os.W_OK | os.X_OK):
+                where = src.parent.relative_to(root).as_posix() or "the library folder"
+                raise HTTPException(403, f"Print Pantry isn't allowed to move files out of '{where}' on the NAS. "
+                                         "Run the deploy again to fix the folder permissions.")
+        created = {d for _, dst, _ in moves for d in dst.parents
+                   if root in d.parents and not d.exists()}
+        done: list[tuple[Path, Path]] = []
+        try:
+            for src, dst, rel in moves:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(src, dst)  # same library volume: an atomic rename
+                done.append((src, dst))
+        except OSError as exc:
+            for src, dst in reversed(done):
+                try:
+                    os.rename(dst, src)
+                except OSError:
+                    log.exception("could not move %s back to %s", dst, src)
+            for d in sorted(created, key=lambda d: len(d.parts), reverse=True):
+                try:
+                    d.rmdir()  # only if empty
+                except OSError:
+                    pass
+            log.exception("moving model %s to %s failed", m.relpath, new_dir)
+            raise HTTPException(500, f"Couldn't move the files: {exc.strerror or exc}. Nothing was changed.") from exc
+        if "#" in m.relpath:
+            for src, dst, rel in moves:
+                file_map[rel] = dst.relative_to(root).as_posix()
+        else:
             new_rel = new_dir.relative_to(root).as_posix()
             for f in m.files:
                 file_map[f.relpath] = new_rel + f.relpath[len(m.relpath):]

@@ -17,6 +17,16 @@ function fmtDur(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
   return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
 }
+// "about 1h 30m left, done ~2:48 PM" (finish time in the browser's local time)
+function etaText(st) {
+  if (st.eta_seconds == null || st.state !== "printing") return "";
+  const base = st.updated_at ? st.updated_at * 1000 : Date.now();
+  const done = new Date(base + st.eta_seconds * 1000);
+  const sameDay = done.toDateString() === new Date().toDateString();
+  const clock = done.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const when = sameDay ? clock : `${done.toLocaleDateString([], { weekday: "short" })} ${clock}`;
+  return `about ${fmtDur(st.eta_seconds)} left, done ~${when}`;
+}
 const fmtTemp = (t) => (t == null ? "–" : `${Math.round(t)}°`);
 export function fmtAge(ts) {
   if (!ts) return "";
@@ -165,7 +175,7 @@ export function paintDock() {
         ${pct != null ? `<div class="dock-bar"><i style="width:${pct}%"></i></div>` : ""}
         <div class="dock-job-meta">
           ${pct != null ? `<span><b>${pct}%</b></span>` : ""}
-          ${st.eta_seconds != null && st.state === "printing" ? `<span>about ${fmtDur(st.eta_seconds)} left</span>` : ""}
+          ${etaText(st) ? `<span>${etaText(st)}</span>` : ""}
           ${st.layer && st.total_layers ? `<span>Layer ${st.layer}/${st.total_layers}</span>` : ""}
         </div>
       </div>`;
@@ -381,7 +391,7 @@ function cardBody(p) {
   const facts = [
     st.layer != null && st.total_layers ? `Layer ${st.layer} / ${st.total_layers}` : "",
     st.print_seconds ? `${fmtDur(st.print_seconds)} elapsed` : "",
-    st.eta_seconds != null && st.state === "printing" ? `about ${fmtDur(st.eta_seconds)} left` : "",
+    etaText(st),
   ].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
   const buttons = [];
   if (st.online && st.light != null) {
