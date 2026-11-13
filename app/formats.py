@@ -375,7 +375,12 @@ def read_gcode(path: Path) -> FileInfo:
         filaments=filaments,
         has_thumbnail=bool(_THUMB_BEGIN.search(head)),
     )
-    objs = re.findall(r"^(?:; printing object |EXCLUDE_OBJECT_DEFINE NAME=)\s*(\S+)", head, re.M)
+    # "; printing object Pot Ladle Clip.stl id:0 copy 0" keeps spaces, so prefer
+    # it; Klipper's "EXCLUDE_OBJECT_DEFINE NAME=Pot_Ladle_Clip.stl_id_0_copy_0" doesn't.
+    objs = [re.sub(r"\s+id:\d+\s+copy\s+\d+$", "", o.strip())
+            for o in re.findall(r"^; printing object (.+?)\s*$", head, re.M)]
+    if not objs:
+        objs = re.findall(r"^EXCLUDE_OBJECT_DEFINE NAME=(\S+)", head, re.M)
     objs = [re.sub(r"_id_\d+_copy_\d+$", "", o) for o in objs]
     plate.objects = list(dict.fromkeys(objs))
     info.objects = plate.objects
