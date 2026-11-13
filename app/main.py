@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -28,11 +29,10 @@ from .calibration import make_router as calibration_router
 from .config import Settings
 from .history import History
 from .history import make_router as history_router
-import shutil
 from .importer import SOURCE_FILE, Importer, ImportError_, safe_name, suggest_category
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
-from .scanner import Scanner, make_id
+from .scanner import UNCATEGORIZED, Scanner, make_id
 from .spools import Spools
 from .spools import make_router as spools_router
 from .slicing import SlicerClient, client_from_env
@@ -342,61 +342,110 @@ def create_app(
             raise HTTPException(404, "No such model")
         return {"tags": tags.set(model_id, body.tags)}
 
+    def unique_dir(parent: Path, name: str) -> Path:
+        path, n = parent / name, 2
+        while path.exists():
+            path, n = parent / f"{name} ({n})", n + 1
+        return path
+
+    def move_model(model_id: str, new_dir: Path) -> str:
+        """Move a model's files into new_dir and carry its tags, history and
+        STL previews over to the new ids. Loose files (sitting directly in a
+        category folder) get their own model folder this way."""
+        m = lib().models[model_id]
+        root = settings.library.resolve()
+        file_map: dict[str, str] = {}
+        if "#" in m.relpath:
+            cat_dir = root if m.category == UNCATEGORIZED else (root / m.category).resolve()
+            new_dir.mkdir(parents=True)
+            for f in m.files:
+                src = (root / f.relpath).resolve()
+                # keep type subfolders (e.g. "sliced/") the file sat in
+                dst = new_dir / src.relative_to(cat_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                file_map[f.relpath] = dst.relative_to(root).as_posix()
+        else:
+            old_dir = (root / m.relpath).resolve()
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_dir), str(new_dir))
+            new_rel = new_dir.relative_to(root).as_posix()
+            for f in m.files:
+                file_map[f.relpath] = new_rel + f.relpath[len(m.relpath):]
+        new_id = make_id(new_dir.relative_to(root).as_posix())
+        tags.migrate_id(model_id, new_id)
+        ids = {make_id(old): make_id(new) for old, new in file_map.items()}
+        history.migrate_ids({model_id: new_id}, ids)
+        thumbs = settings.data / "thumbs"
+        for old, new in ids.items():
+            for t in thumbs.glob(f"{old}-*.png"):
+                t.rename(t.with_name(new + t.name[len(old):]))
+        scanner.scan()
+        return new_id
+
+    def folder_name(name: str) -> str:
+        # Printables names files "Model-Part"; "Pot Ladle Clip-Pot Ladle Clip" -> "Pot Ladle Clip"
+        head, sep, tail = name.partition("-")
+        if sep and head.strip().lower() == tail.strip().lower():
+            name = head
+        return safe_name(name)
+
+    def model_dir(m) -> Path:
+        root = settings.library.resolve()
+        path = (root / m.relpath).resolve()
+        if root not in path.parents or not path.is_dir():
+            raise HTTPException(404, "Model folder not found")
+        return path
+
+    def category_dir(name: str) -> Path:
+        root = settings.library.resolve()
+        if name.lower() == UNCATEGORIZED.lower():
+            # a folder straight in the library would turn into a category
+            raise HTTPException(400, "Pick a category for this model first")
+        path = (root / name).resolve()
+        if root not in path.parents:
+            raise HTTPException(400, "Invalid category name")
+        return path
+
     @app.put("/api/models/{model_id}/rename")
     def rename_model(model_id: str, body: RenameBody):
         m = lib().models.get(model_id)
         if not m:
             raise HTTPException(404, "No such model")
-        new_name = safe_name(body.name)
+        new_name = safe_name(body.name, "")
         if not new_name:
             raise HTTPException(400, "Invalid model name")
-        root = settings.library.resolve()
         if "#" in m.relpath:
-            raise HTTPException(400, "Loose files directly in a category cannot be renamed as a model folder; rename the file directly")
-        old_path = (root / m.relpath).resolve()
-        if not old_path.is_dir() or root not in old_path.parents:
-            raise HTTPException(404, "Model folder not found")
-        new_path = old_path.parent / new_name
-        if new_path != old_path:
-            if new_path.exists():
-                raise HTTPException(409, f"A model named '{new_name}' already exists in category '{m.category}'")
-            old_path.rename(new_path)
-            new_relpath = new_path.relative_to(root).as_posix()
-            new_id = make_id(new_relpath)
-            tags.migrate_id(model_id, new_id)
-            scanner.scan()
-            return {"ok": True, "id": new_id, "name": new_name}
-        return {"ok": True, "id": model_id, "name": m.name}
+            # loose files: give them a model folder with the new name
+            new_dir = unique_dir(category_dir(m.category), new_name)
+        else:
+            old_dir = model_dir(m)
+            if new_name == old_dir.name:
+                return {"ok": True, "id": model_id, "name": m.name}
+            new_dir = old_dir.parent / new_name
+            if new_dir.exists() and new_name.lower() != old_dir.name.lower():
+                raise HTTPException(409, f"A model named '{new_name}' already exists in '{m.category}'")
+        return {"ok": True, "id": move_model(model_id, new_dir), "name": new_dir.name}
 
     @app.put("/api/models/{model_id}/category")
     def change_model_category(model_id: str, body: CategoryChangeBody):
         m = lib().models.get(model_id)
         if not m:
             raise HTTPException(404, "No such model")
-        new_category = safe_name(body.category)
+        new_category = safe_name(body.category, "")
         if not new_category:
             raise HTTPException(400, "Invalid category name")
-        root = settings.library.resolve()
+        if new_category == m.category:
+            return {"ok": True, "id": model_id, "category": m.category}
+        target = category_dir(new_category)
         if "#" in m.relpath:
-            raise HTTPException(400, "Loose files cannot be recategorized directly; move into a model folder first")
-        old_path = (root / m.relpath).resolve()
-        if not old_path.is_dir() or root not in old_path.parents:
-            raise HTTPException(404, "Model folder not found")
-        target_cat_dir = (root / new_category).resolve()
-        if root not in target_cat_dir.parents and target_cat_dir != root:
-            raise HTTPException(400, "Invalid category path")
-        target_cat_dir.mkdir(parents=True, exist_ok=True)
-        new_path = target_cat_dir / old_path.name
-        if new_path != old_path:
-            if new_path.exists():
-                raise HTTPException(409, f"A model named '{old_path.name}' already exists in category '{new_category}'")
-            shutil.move(str(old_path), str(new_path))
-            new_relpath = new_path.relative_to(root).as_posix()
-            new_id = make_id(new_relpath)
-            tags.migrate_id(model_id, new_id)
-            scanner.scan()
-            return {"ok": True, "id": new_id, "category": new_category}
-        return {"ok": True, "id": model_id, "category": m.category}
+            new_dir = unique_dir(target, folder_name(m.name))
+        else:
+            old_dir = model_dir(m)
+            new_dir = target / old_dir.name
+            if new_dir.exists():
+                raise HTTPException(409, f"A model named '{old_dir.name}' already exists in '{new_category}'")
+        return {"ok": True, "id": move_model(model_id, new_dir), "category": new_category}
 
     @app.put("/api/files/{file_id}/rename")
     def rename_file(file_id: str, body: RenameBody):
