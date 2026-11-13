@@ -5,7 +5,7 @@ one place to change addresses:
 
     PP_U1_URL          Moonraker on the Snapmaker U1, e.g. http://192.168.1.52:7125
     PP_U1_API_KEY      only if Moonraker on the U1 requires one (stock doesn't)
-    PP_P1S_HOST / PP_P1S_SERIAL / PP_P1S_ACCESS_CODE   reserved for the P1S
+    PP_P1S_HOST / PP_P1S_SERIAL / PP_P1S_ACCESS_CODE   the P1S in LAN / Developer Mode
     PP_PRINTER_KEEP_FILES  how many files Print Pantry uploaded stay on a printer (default 5, 0 = keep all)
 """
 
@@ -45,7 +45,10 @@ class PrinterHub:
                     self.printers[p.id] = drv
             elif p.id == "p1s":
                 self.printers[p.id] = BambuPrinter(
-                    p, env.get("PP_P1S_HOST", ""), env.get("PP_P1S_SERIAL", ""), env.get("PP_P1S_ACCESS_CODE", "")
+                    p, env.get("PP_P1S_HOST", ""), env.get("PP_P1S_SERIAL", ""), env.get("PP_P1S_ACCESS_CODE", ""),
+                    ledger=Path(data) / f"uploads-{p.id}.json" if data else None,
+                    jobs_file=Path(data) / f"jobs-{p.id}.json" if data else None,
+                    keep_files=int(env.get("PP_PRINTER_KEEP_FILES", "5") or 0),
                 )
 
         # Held while a print or calibration is being sent, so two can't start at once.

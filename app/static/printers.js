@@ -29,8 +29,11 @@ export function fmtAge(ts) {
 
 const STATE_LABEL = {
   offline: "Offline", idle: "Ready", printing: "Printing", paused: "Paused", complete: "Finished",
-  cancelled: "Cancelled", error: "Error", starting: "Starting up", not_set_up: "Not set up",
+  cancelled: "Cancelled", failed: "Failed", error: "Error", starting: "Starting up", not_set_up: "Not set up",
 };
+
+// Toolheads are T1..T4 on the U1; on the P1S they are AMS trays (A1..A4) and "Ext".
+const headName = (t) => t.label || `T${t.index + 1}`;
 
 let PRINTERS = null;
 export async function loadPrinters() {
@@ -85,7 +88,7 @@ function tempsHtml(st) {
 function toolsHtml(st) {
   return st.toolheads.map((t) => `<button type="button" data-tool="${t.index}" class="tool${t.active ? " active" : ""}${t.loaded === false ? " empty" : ""}"
       title="${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Unknown")}${t.custom_color ? " (colour set by hand)" : ""}. Click to set the colour.">
-      <i style="--c:${esc(t.color || "transparent")}"></i>T${t.index + 1} ${esc(t.loaded === false ? "empty" : t.type || "?")}${t.custom_color ? " ✎" : ""}</button>`).join("");
+      <i style="--c:${esc(t.color || "transparent")}"></i>${esc(headName(t))} ${esc(t.loaded === false ? "empty" : t.type || "?")}${t.custom_color ? " ✎" : ""}</button>`).join("");
 }
 
 const FILAMENT_COLORS = [
@@ -113,7 +116,7 @@ function colorName(hex) {
 // when the printer reports a different spool for that toolhead.
 function colorDialog(p, t, onSaved) {
   const dlg = document.createElement("dialog");
-  dlg.innerHTML = `<h2>T${t.index + 1} colour</h2>
+  dlg.innerHTML = `<h2>${esc(headName(t))} colour</h2>
     <p class="sub" style="margin-bottom:12px">${esc([t.vendor, t.type].filter(Boolean).join(" ") || "Filament")} on ${esc(p.name)}.
       This only changes what Print Pantry shows. It resets when you load a different spool.</p>
     <div class="colors big">${FILAMENT_COLORS.map(([n, c]) =>
@@ -147,7 +150,7 @@ function colorDialog(p, t, onSaved) {
 function cardBody(p) {
   const st = p.status;
   if (!p.configured) return `<p class="empty">${esc(p.setup_hint)}</p>`;
-  const job = ["printing", "paused"].includes(st.state) || (st.file && ["complete", "cancelled", "error"].includes(st.state));
+  const job = ["printing", "paused"].includes(st.state) || (st.file && ["complete", "cancelled", "failed", "error"].includes(st.state));
   const pct = st.progress != null ? Math.round(st.progress * 100) : null;
   const facts = [
     st.layer != null && st.total_layers ? `Layer ${st.layer} / ${st.total_layers}` : "",
@@ -163,7 +166,7 @@ function cardBody(p) {
   if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);
   if (["printing", "paused"].includes(st.state)) buttons.push(`<button class="small danger" data-act="cancel">Cancel print</button>`);
   return `
-    ${st.message && (st.state === "error" || st.state === "offline" || st.state === "starting") ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
+    ${st.message && (st.state === "error" || st.state === "failed" || st.state === "offline" || st.state === "starting") ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
     ${job ? `<div class="job">
         <div class="job-file" title="${esc(st.file)}">${esc(st.file)}</div>
         ${pct != null ? `<div class="bar"><i style="width:${pct}%"></i></div><div class="job-facts"><span><b>${pct}%</b></span>${facts}</div>` : ""}
@@ -303,15 +306,15 @@ export async function openPrintDialog(fileId, printerId) {
     const what = empty ? "empty" : [h.type || "?", h.vendor].filter(Boolean).join(" ");
     const cname = !empty && h.color ? colorName(h.color) : "";
     return `<button type="button" class="headpick${empty ? " empty" : ""}" data-map="${t.file_index}" data-head="${h.index}"
-        aria-pressed="${h.index === t.index}" title="T${h.index + 1}: ${esc([cname, what].filter(Boolean).join(" "))}${h.custom_color ? " (colour set by hand)" : ""}">
+        aria-pressed="${h.index === t.index}" title="${esc(headName(h))}: ${esc([cname, what].filter(Boolean).join(" "))}${h.custom_color ? " (colour set by hand)" : ""}">
         <i style="--c:${esc(empty ? "transparent" : h.color || "#999")}"></i>
-        <span><b>T${h.index + 1}</b> ${esc(cname)}<small>${esc(what)}</small></span></button>`;
+        <span><b>${esc(headName(h))}</b> ${esc(cname)}<small>${esc(what)}</small></span></button>`;
   };
   function checksHtml() {
     const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
         <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
         <td>${heads().length > 1 ? `<div class="headpicks" role="group" aria-label="Toolhead for filament ${t.file_index + 1}">${heads().map((h) => headChip(t, h)).join("")}</div>`
-          : `T${t.index + 1} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
+          : `${esc(t.label || `T${t.index + 1}`)} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
         <td>${t.spool ? `<small title="Spool on this toolhead">${esc(t.spool.label)}<br>${Math.round(t.spool.remaining_g)} g left${t.file.grams ? `, needs ${Math.round(t.file.grams)} g` : ""}</small>` : ""}</td>
         <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
     return `

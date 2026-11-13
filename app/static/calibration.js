@@ -207,7 +207,7 @@ export async function flowWizard(printers, want, onChange) {
       <label class="field"><span>Printer</span><select data-printer>${slicerPrinters.map((x) =>
         option(x.id, x.name + (x.can_print ? "" : " (slice only, not connected)"), x.id === printerId)).join("")}</select></label>
       <div class="field"><span>${printerId === "u1" ? "Toolhead" : "Slot"}</span><div class="tools pick-tools">${heads.map((t) =>
-        `<button type="button" class="tool" data-head="${t.index + 1}" aria-pressed="false">${dot(t.color)}T${t.index + 1} ${esc(t.loaded === false ? "empty" : t.type || "")}</button>`).join("")}</div></div>
+        `<button type="button" class="tool" data-head="${t.index + 1}" aria-pressed="false">${dot(t.color)}${esc(t.label || `T${t.index + 1}`)} ${esc(t.loaded === false ? "empty" : t.type || "")}</button>`).join("")}</div></div>
       <label class="field"><span>Printer preset</span><select data-machine>${o.machines.map((m) =>
         option(m.name, m.user ? `${m.name} (yours)` : m.name, m.name === machine)).join("")}</select></label>
       <label class="field"><span>Process</span><select data-process></select></label>

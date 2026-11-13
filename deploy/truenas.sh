@@ -33,12 +33,22 @@ ensure_password() {
 compose_json() {
   ensure_password
   python3 - "$ROOT" "$1" "$PW_FILE" <<'PY'
-import json, sys
+import json, os, sys
 root, mode, pw_file = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(f"{root}/src/repo/deploy/truenas-compose.yaml").read().replace("/mnt/testpool/printpantry", root)
 # The password lives only on the NAS (src/.pp_password), never in the repo.
 password = open(pw_file).read().strip()
 text = text.replace('PP_PASSWORD: ""', "PP_PASSWORD: " + json.dumps(password))
+# The P1S's address, serial and LAN access code live only on the NAS too
+# (src/.pp_p1s: HOST=..., SERIAL=..., ACCESS_CODE=... one per line).
+p1s = {}
+if os.path.exists(f"{root}/src/.pp_p1s"):
+    for line in open(f"{root}/src/.pp_p1s"):
+        k, _, v = line.strip().partition("=")
+        if k and v:
+            p1s[k.strip().upper()] = v.strip()
+for key in ("HOST", "SERIAL", "ACCESS_CODE"):
+    text = text.replace(f'PP_P1S_{key}: ""', f"PP_P1S_{key}: " + json.dumps(p1s.get(key, "")))
 if mode == "create":
     print(json.dumps({"app_name": "printpantry", "custom_app": True, "custom_compose_config_string": text}))
 else:
