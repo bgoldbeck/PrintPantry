@@ -114,6 +114,10 @@ def test_printables_preview_and_import(client, library):  # noqa: F811
 
     job = client.imp.run_sync(p["url"], "Toys & Games", tags=["Gift"])
     assert job.state == "done", job.error
+    j = job.to_json()
+    assert j["phase"] == "done" and j["progress"] == 1.0 and j["pictures_done"] == 1 and j["files_total"] == 2
+    assert j["finished"] >= j["started"]
+    assert client.get("/api/import").json()["jobs"][0]["id"] == job.id
     folder = library / "Toys & Games" / "3D BENCHY"
     assert (folder / "3dbenchy.stl").read_bytes() == b"solid x\n"
     assert (folder / "benchy.3mf").exists()
@@ -183,3 +187,14 @@ def test_import_api_validation(client):
     assert client.post("/api/import", json={"url": "https://example.com/x", "category": "Tools"}).status_code == 400
     assert client.post("/api/import", json={"url": "https://www.printables.com/model/3161", "category": ""}).status_code == 400
     assert client.get("/api/import/nope").status_code == 404
+
+
+def test_job_progress_math():
+    from app.importer import Job
+
+    j = Job(id="x", url="u")
+    assert j.progress() == 0.02
+    j.phase, j.files_total, j.file_index, j.bytes_done, j.bytes_total = "files", 1, 1, 50, 100
+    assert j.progress() == pytest.approx(0.4)
+    j.phase, j.pictures_total, j.pictures_done = "pictures", 4, 2
+    assert j.progress() == pytest.approx(0.85)

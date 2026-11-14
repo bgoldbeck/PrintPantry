@@ -671,7 +671,7 @@ function editCategory(name) {
 }
 
 // ---------------------------------------------------------------- import from Printables / MakerWorld
-function openImport(prefill = "") {
+function openImport(prefill = "", resume = null) {
   const dlg = document.createElement("dialog");
   dlg.className = "import-dialog";
   document.body.appendChild(dlg);
@@ -816,23 +816,43 @@ function openImport(prefill = "") {
     dlg.querySelector("[data-go]").onclick = async (e) => {
       const category = sel.value === "__new" ? newcat.value.trim() : sel.value;
       if (!category) { sel.focus(); return; }
-      e.currentTarget.disabled = true;
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "Starting...";
       try {
         const job = await api("/api/import", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: plan.url, category, name: dlg.querySelector("#imp-name").value.trim() }),
         });
+        watchImports();
         progress(job);
-      } catch (err) { e.currentTarget.disabled = false; flash(esc(err.message || err)); }
+      } catch (err) {
+        // Show it in the dialog: a toast would sit behind the modal.
+        btn.disabled = false;
+        btn.textContent = "Import";
+        let box = dlg.querySelector(".import-error");
+        if (!box) {
+          box = document.createElement("div");
+          box.className = "notice error import-error";
+          dlg.querySelector(".dialog-actions").before(box);
+        }
+        box.textContent = `Couldn't start the import: ${err.message || err}`;
+      }
     };
   }
 
   function progress(job) {
-    const doneHtml = () => `<p>Saved to <code>${esc(job.folder)}</code>${job.done_files.length ? ` with ${plural(job.done_files.length, "file")}` : ""}${job.skipped.length ? ` (${plural(job.skipped.length, "file")} already there)` : ""}.</p>
+    const pct = Math.round((job.progress ?? 0) * 100);
+    const bytes = job.phase === "files" && job.bytes_done
+      ? `${fmtSize(job.bytes_done)}${job.bytes_total ? ` of ${fmtSize(job.bytes_total)}` : ""}` : "";
+    const secs = Math.round(((job.finished || Date.now() / 1000) - job.started));
+    const doneHtml = () => `<p>Saved to <code>${esc(job.folder)}</code>${job.done_files.length ? ` with ${plural(job.done_files.length, "file")}` : ""}${job.pictures_total ? ` and ${plural(job.pictures_total, "picture")}` : ""}${job.skipped.length ? ` (${plural(job.skipped.length, "file")} already there)` : ""} in ${secs}s.</p>
       ${job.note ? `<div class="notice">${esc(job.note)}</div>` : ""}`;
     dlg.innerHTML = `<h2>${job.state === "done" ? "Imported" : job.state === "error" ? "Import failed" : "Importing..."}</h2>
-      <p><strong>${esc(job.title || plan.title)}</strong></p>
-      ${job.state === "running" ? `<p class="muted">${esc(job.step)}</p>` : ""}
+      <p><strong>${esc(job.title || plan?.title || "")}</strong></p>
+      ${job.state === "running" ? `<div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct}%"></span></div>
+        <p class="muted progress-text"><span>${esc(job.step)}</span><span>${bytes ? `${bytes} · ` : ""}${pct}% · ${secs}s</span></p>
+        <p class="muted">You can close this; the import keeps going and the Import button shows its progress.</p>` : ""}
       ${job.state === "error" ? `<div class="notice error">${esc(job.error)}</div>` : ""}
       ${job.state === "done" ? doneHtml() : ""}
       <div class="dialog-actions" style="margin-top:16px">
@@ -842,7 +862,7 @@ function openImport(prefill = "") {
     if (job.state === "running") {
       timer = setTimeout(async () => {
         try { progress(await api(`/api/import/${job.id}`)); } catch { timer = setTimeout(() => progress(job), 2000); }
-      }, 1000);
+      }, 700);
       return;
     }
     if (job.state === "done") {
@@ -852,11 +872,26 @@ function openImport(prefill = "") {
     }
   }
 
-  step1();
+  if (resume) progress(resume); else step1();
   dlg.showModal();
 }
 
-document.getElementById("import").addEventListener("click", () => openImport());
+// The Import button shows a running import's progress, and reopens it when clicked.
+const importBtn = document.getElementById("import");
+let importWatch = null, runningImport = null;
+async function watchImports() {
+  clearTimeout(importWatch);
+  try {
+    const { jobs } = await api("/api/import");
+    runningImport = jobs.find((j) => j.state === "running") || null;
+  } catch { runningImport = null; }
+  importBtn.textContent = runningImport ? `Importing ${Math.round(runningImport.progress * 100)}%` : "Import";
+  importBtn.classList.toggle("busy", !!runningImport);
+  if (runningImport) importWatch = setTimeout(watchImports, 1500);
+}
+
+importBtn.addEventListener("click", () => openImport("", runningImport));
+watchImports();
 
 // ---------------------------------------------------------------- router
 async function route() {

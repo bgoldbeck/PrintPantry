@@ -633,6 +633,10 @@ def create_app(
             raise HTTPException(400, str(exc)) from None
         return job.to_json()
 
+    @app.get("/api/import")
+    def import_jobs():
+        return {"jobs": imp.recent()}
+
     @app.get("/api/import/{job_id}")
     def import_status(job_id: str):
         job = imp.jobs.get(job_id)
