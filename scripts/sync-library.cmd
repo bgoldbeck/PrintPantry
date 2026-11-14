@@ -9,6 +9,10 @@ if "%SRC%"=="" set "SRC=%PP_LOCAL_LIBRARY%"
 if not exist "%SRC%\" (echo Folder not found: %SRC% & exit /b 1)
 echo Copying "%SRC%" to %PP_SSH_HOST%:%PP_NAS_ROOT%/library ...
 scp -r -q "%SRC%\." %PP_SSH_HOST%:"%PP_NAS_ROOT%/library/" || exit /b 1
-rem Windows files arrive with odd modes; make them readable by the app (apps user), not world-writable.
-ssh %PP_SSH_HOST% "chmod -R u+rwX,g+rwX,o+rX,o-w '%PP_NAS_ROOT%/library'" || exit /b 1
+rem Windows files arrive with odd modes and this user's own group. Give the
+rem library to the apps group, group-writable, so the app can write into synced
+rem folders (renders, slices, moves). chmod can't do that for folders the app
+rem created, so this goes through TrueNAS's middleware (deploy\truenas.sh perms).
+scp -q "%~dp0..\deploy\truenas.sh" %PP_SSH_HOST%:printpantry-truenas.sh || exit /b 1
+ssh %PP_SSH_HOST% "sed -i 's/\r$//' ~/printpantry-truenas.sh && PP_NAS_ROOT=%PP_NAS_ROOT% bash ~/printpantry-truenas.sh perms" || exit /b 1
 echo Done. Print Pantry picks up new files within 5 minutes, or press Rescan.

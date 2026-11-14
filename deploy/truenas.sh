@@ -214,10 +214,14 @@ case "${1:-update}" in
     fi
     echo "Login password: $(cat "$PW_FILE")"
     ;;
+  perms)
+    # Let the app (apps group) write into folders synced in from Windows.
+    fix_library_perms
+    ;;
   prune)
     # Delete old Print Pantry images now (also runs after every deploy).
     prune_images
     ;;
   *)
-    echo "usage: truenas.sh setup|update|https|password [new]|prune"; exit 2 ;;
+    echo "usage: truenas.sh setup|update|https|password [new]|perms|prune"; exit 2 ;;
 esac

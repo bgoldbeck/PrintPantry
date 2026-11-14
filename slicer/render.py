@@ -11,6 +11,7 @@ holding every part in one multi-colour object, when asked).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ import threading
 from pathlib import Path
 
 import fonts
+
+log = logging.getLogger("slicer.render")
 
 OPENSCAD = os.environ.get("OPENSCAD_BIN", "/opt/openscad/AppRun")
 FREECAD = os.environ.get("FREECAD_BIN", "/opt/freecad/usr/bin/freecadcmd")
@@ -49,9 +52,13 @@ def _version(kind: str) -> str:
                                    capture_output=True, text=True, timeout=120, env=tool_env())
                 m = re.search(r"V=(\S+)", p.stdout)
                 v = m.group(1) if m else ""
-        except (OSError, subprocess.SubprocessError, IndexError):
+        except (OSError, subprocess.SubprocessError, IndexError) as exc:
+            log.warning("%s check failed: %s", kind, exc)
             v = ""
-        _versions[kind] = v
+        if v:
+            _versions[kind] = v  # a failed check is retried next time
+        else:
+            log.warning("%s is not usable here (%s)", kind, OPENSCAD if kind == "openscad" else FREECAD)
         return v
 
 
