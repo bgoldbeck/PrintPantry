@@ -54,6 +54,28 @@ as a container on **TrueNAS SCALE**.
     picks the print profile that gets downloaded.
   * Imported files exist only on the NAS (scripts\sync-library.cmd copies PC
     to NAS, not back). The app's library mount is writable for this.
+* **Parametric models.** Drop an OpenSCAD `.scad` file or a FreeCAD `.FCStd`
+  file into a model folder and its page gets a **Customize** button: a form
+  with sliders, boxes, drop-downs and check boxes, one per parameter. **Make
+  STL** renders it on the NAS (in the slicer container, one job at a time,
+  shared with slicing) into the model's `generated/` folder as
+  `<file> - <name>.stl`, where it can be viewed and sliced like any STL.
+  Reusing a name replaces the last render.
+  * OpenSCAD: the Customizer comments that MakerWorld and Printables use
+    (`width = 40; // [10:1:200]`, `style = "a"; // [a, b]`, `/* [Group] */`,
+    `/* [Hidden] */`). Parameter sets are saved in OpenSCAD's own
+    `<file>.json`, so the desktop Customizer sees them too. Libraries used with
+    `use <...>` go in the config folder's `openscad` directory.
+  * FreeCAD: every spreadsheet cell with an alias and a plain value is a
+    parameter (formulas are left alone); the cell left of it is its label and
+    the one right of it its description. Parts are the visible solids nothing
+    else is built from. Each ticked part becomes an STL; tick two or more under
+    "Multi-colour 3MF" to also get one 3MF with part 1 on filament 1, part 2 on
+    filament 2, and so on. Parameter sets go in `<file>.FCStd.params.json`.
+  * Fonts: models made on Windows name fonts like `C:/Windows/Fonts/arialbd.ttf`.
+    Copy the font files into `D:\PrintPantry\config\fonts` and run
+    `scripts\sync-config.cmd`; missing ones fall back to a look-alike
+    (Liberation for Arial/Times/Courier) and the render says so.
 
 ![Model page](docs/screenshots/model.png)
 

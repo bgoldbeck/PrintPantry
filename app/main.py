@@ -33,6 +33,7 @@ from .config import Settings
 from .history import History
 from .history import make_router as history_router
 from .importer import SOURCE_FILE, Importer, ImportError_, safe_name, suggest_category
+from .parametric import make_router as parametric_router
 from .printers import PrinterHub
 from .printers.api import make_router as printers_router
 from .scanner import UNCATEGORIZED, Scanner, make_id
@@ -565,6 +566,7 @@ def create_app(
             "project3mf": "model/3mf",
             "sliced3mf": "model/3mf",
             "gcode": "text/x-gcode",
+            "scad": "text/plain; charset=utf-8",
         }.get(f.kind)
         return FileResponse(
             path,
@@ -715,6 +717,8 @@ def create_app(
     calib = CalibrationStore(settings.data / "calibration.json")
     app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios))
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
+    # OpenSCAD / FreeCAD models are rendered by the slicer container too.
+    app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))
 
     # ------------------------------------------------------------ UI
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
