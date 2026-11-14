@@ -72,6 +72,12 @@ def parse_link(url: str) -> tuple[str, str]:
     raise ImportError_("Paste a Printables (printables.com/model/...) or MakerWorld (makerworld.com/.../models/...) link.")
 
 
+def link_profile(url: str) -> str:
+    """MakerWorld '...#profileId-4079808' -> '4079808' (the print profile picked on the page)."""
+    m = re.search(r"profileId[-=_](\d+)", url or "")
+    return m.group(1) if m else ""
+
+
 def safe_name(name: str, fallback: str = "model") -> str:
     """A file or folder name that works on Windows and Linux."""
     name = html.unescape(str(name or ""))
@@ -112,6 +118,8 @@ class Plan:
     files: list[RemoteFile] = field(default_factory=list)
     pictures: list[str] = field(default_factory=list)
     note: str = ""  # shown to the user, e.g. why no files
+    profile: str = ""  # MakerWorld print profile being imported
+    needs_login: bool = False
 
     def preview(self) -> dict:
         return {
@@ -128,6 +136,8 @@ class Plan:
             "pictures": self.pictures[:1],
             "picture_count": len(self.pictures),
             "note": self.note,
+            "profile": self.profile,
+            "needs_login": self.needs_login,
         }
 
 
@@ -212,9 +222,11 @@ class MakerWorld:
         self.token = token.strip()
 
     def _get(self, path: str, auth: bool = False) -> httpx.Response:
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Referer": "https://makerworld.com/"}
         if auth and self.token:
+            # The website sends the token as a cookie; the apps send it as a bearer header.
             headers["Authorization"] = f"Bearer {self.token}"
+            headers["Cookie"] = f"token={self.token}"
         return self.http.get(MAKERWORLD_API + path, headers=headers)
 
     def plan(self, design_id: str, url: str) -> Plan:
@@ -243,20 +255,34 @@ class MakerWorld:
             pictures=pics,
         )
         instances = d.get("instances") or []
-        inst = next((i for i in instances if i.get("id") == d.get("defaultInstanceId")), instances[0] if instances else None)
+        want = link_profile(url)
+        inst = None
+        if want:
+            # The page's "#profileId-N" is really the instance id; accept a profile id too.
+            inst = next((i for i in instances if str(i.get("id")) == want), None) or next(
+                (i for i in instances if str(i.get("profileId")) == want), None)
+        inst = inst or next((i for i in instances if i.get("id") == d.get("defaultInstanceId")), None)
+        inst = inst or (instances[0] if instances else None)
+        if inst:
+            plan.profile = inst.get("title") or ""
+            plan.url += f"#profileId-{inst['id']}"
+        if want and inst and str(inst.get("profileId")) != want and str(inst.get("id")) != want:
+            plan.profile += " (the profile in the link wasn't found; using the default)"
         model_files = ext.get("model_files") or []
         name = safe_name(plan.title) + ".3mf"
-        if model_files and model_files[0].get("modelName", "").lower().endswith(".3mf"):
+        if len(instances) > 1 and plan.profile:
+            name = safe_name(f"{plan.title} - {inst.get('title')}") + ".3mf"
+        elif model_files and model_files[0].get("modelName", "").lower().endswith(".3mf"):
             name = safe_name(model_files[0]["modelName"])
         if inst and self.token:
             plan.files.append(RemoteFile(
-                name=name, size=int((model_files[0] if model_files else {}).get("modelSize") or 0),
+                name=name, size=0,
                 resolve=lambda iid=inst["id"]: self._link(iid),
             ))
         elif inst:
-            plan.note = ("MakerWorld only gives files to logged-in accounts, so this imports the details, tags and "
-                         "pictures. Add a MakerWorld token (Import > MakerWorld login) to fetch the 3MF too, or drop "
-                         "the downloaded 3MF into the model's folder.")
+            plan.note = ("MakerWorld only gives files to signed-in accounts. Press \"Sign in to MakerWorld\" once "
+                         "and the 3MF comes along. Importing now brings the details, tags and pictures only.")
+            plan.needs_login = True
         else:
             plan.note = "This MakerWorld model has no print profile to download."
         return plan
@@ -268,12 +294,61 @@ class MakerWorld:
         except ValueError:
             body = {}
         if r.status_code in (401, 403):
-            raise ImportError_("MakerWorld refused the download: " + (body.get("error") or f"HTTP {r.status_code}")
-                               + ". The saved MakerWorld token may have expired.")
+            raise ImportError_("MakerWorld refused the download (" + (body.get("error") or f"HTTP {r.status_code}")
+                               + "). The MakerWorld sign-in has probably expired: press Sign in to MakerWorld "
+                               "in the Import dialog and try again.")
         link = body.get("url") or (body.get("data") or {}).get("url") if isinstance(body, dict) else None
         if r.status_code != 200 or not link:
             raise ImportError_(f"MakerWorld gave no download link (HTTP {r.status_code}).")
         return link
+
+
+# ------------------------------------------------------------------ MakerWorld sign-in
+#
+# MakerWorld uses the Bambu Lab account. Signing in goes through the same login
+# API that Bambu Studio and Bambu Handy use: email + password, and, when Bambu
+# asks for it, a code they email (or a 2-factor code from an authenticator app).
+# Only the resulting access token is stored (on the NAS); the password is not.
+
+BAMBU_API = "https://api.bambulab.com/v1/user-service"
+
+
+class SignInStep(Exception):
+    """Bambu wants one more step; ``kind`` is 'code' (emailed) or 'tfa'."""
+
+    def __init__(self, kind: str, message: str, tfa_key: str = ""):
+        super().__init__(message)
+        self.kind, self.tfa_key = kind, tfa_key
+
+
+def bambu_sign_in(http: httpx.Client, email: str, password: str = "", code: str = "",
+                  tfa_key: str = "", tfa_code: str = "") -> dict:
+    """Returns {'token', 'refresh', 'expires'} or raises SignInStep / ImportError_."""
+    if tfa_key and tfa_code:
+        r = http.post("https://bambulab.com/api/sign-in/tfa", json={"tfaKey": tfa_key, "tfaCode": tfa_code.strip()})
+        token = r.cookies.get("token") or (r.json().get("accessToken") if r.headers.get("content-type", "").startswith("application/json") else "")
+        if r.status_code != 200 or not token:
+            raise ImportError_("That authenticator code didn't work. Try a fresh one.")
+        return {"token": token, "refresh": r.cookies.get("refreshToken", ""), "expires": 0}
+    body = {"account": email.strip(), "code": code.strip()} if code else {"account": email.strip(), "password": password}
+    r = http.post(f"{BAMBU_API}/user/login", json=body)
+    try:
+        d = r.json()
+    except ValueError:
+        raise ImportError_(f"Bambu's sign-in answered with HTTP {r.status_code} (maybe a bot check). Try again later.") from None
+    if d.get("accessToken"):
+        return {"token": d["accessToken"], "refresh": d.get("refreshToken", ""),
+                "expires": time.time() + int(d.get("expiresIn") or 0) if d.get("expiresIn") else 0}
+    kind = d.get("loginType") or ""
+    if kind == "verifyCode":
+        http.post(f"{BAMBU_API}/user/sendemail/code", json={"email": email.strip(), "type": "codeLogin"})
+        raise SignInStep("code", f"Bambu emailed a code to {email.strip()}. Enter it to finish signing in.")
+    if kind == "tfa":
+        raise SignInStep("tfa", "Enter the code from your authenticator app.", d.get("tfaKey", ""))
+    msg = d.get("error") or d.get("message") or f"HTTP {r.status_code}"
+    if code:
+        raise ImportError_(f"That code didn't work ({msg}). Codes expire after a few minutes; ask for a new one.")
+    raise ImportError_(f"Bambu didn't accept that email and password ({msg}).")
 
 
 # ------------------------------------------------------------------ jobs
@@ -331,6 +406,26 @@ class Importer:
     def makerworld_token(self) -> str:
         return (self.store.get("import_settings", {}) or {}).get("makerworld_token", "")
 
+    def makerworld_status(self) -> dict:
+        st = self.store.get("import_settings", {}) or {}
+        return {"makerworld_token": bool(st.get("makerworld_token")), "makerworld_account": st.get("makerworld_account", "")}
+
+    def makerworld_sign_in(self, email: str, password: str = "", code: str = "", tfa_key: str = "", tfa_code: str = "") -> dict:
+        """Returns the status, or {'step': 'code'|'tfa', 'message', 'tfa_key'} when Bambu wants more."""
+        if not email.strip():
+            raise ImportError_("Enter the email of your MakerWorld / Bambu Lab account.")
+        try:
+            got = bambu_sign_in(self.http, email, password, code, tfa_key, tfa_code)
+        except SignInStep as step:
+            return {"step": step.kind, "message": str(step), "tfa_key": step.tfa_key}
+        except httpx.HTTPError as exc:
+            raise ImportError_(f"Couldn't reach Bambu's sign-in: {exc}") from None
+        self.set_makerworld_token(got["token"])
+        st = self.store.get("import_settings", {}) or {}
+        st.update(makerworld_account=email.strip(), makerworld_refresh=got.get("refresh", ""))
+        self.store.set("import_settings", st)
+        return self.makerworld_status()
+
     def set_makerworld_token(self, token: str) -> None:
         s = self.store.get("import_settings", {}) or {}
         token = token.strip()
@@ -339,7 +434,8 @@ class Importer:
         if token:
             s["makerworld_token"] = token
         else:
-            s.pop("makerworld_token", None)
+            for k in ("makerworld_token", "makerworld_refresh", "makerworld_account"):
+                s.pop(k, None)
         self.store.set("import_settings", s)
 
     # -- planning
@@ -378,6 +474,7 @@ class Importer:
                 self._do(job, category, name, extra_tags)
                 job.state = "done"
                 job.step = "Done"
+                log.info("imported %s into %s (%d files)", job.url, job.folder, len(job.done_files))
             except ImportError_ as exc:
                 job.state, job.error = "error", str(exc)
             except httpx.HTTPError as exc:
@@ -387,6 +484,21 @@ class Importer:
             except Exception as exc:  # pragma: no cover - keep the job readable
                 log.exception("import failed")
                 job.state, job.error = "error", f"Import failed: {exc}"
+            if job.state == "error":
+                log.warning("import of %s failed: %s", job.url, job.error)
+                self._remove_if_empty(job)
+
+    def _remove_if_empty(self, job: Job) -> None:
+        """Don't leave an empty model folder behind after a failed import."""
+        if not job.folder:
+            return
+        folder = self.library / job.folder
+        try:
+            for sub in (folder / "images", folder):
+                if sub.is_dir() and not any(sub.iterdir()):
+                    sub.rmdir()
+        except OSError:
+            pass
 
     def _do(self, job: Job, category: str, name: str, extra_tags: list[str]) -> None:
         plan = self.plan(job.url)

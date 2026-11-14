@@ -47,9 +47,11 @@ as a container on **TrueNAS SCALE**.
   category is guessed from the site's own category when one of yours matches.
   * Printables: STL and 3MF files, pictures, tags, author, licence. No login.
   * MakerWorld: details, tags and pictures work without login, but MakerWorld
-    only gives files to logged-in accounts. Paste your MakerWorld `token`
-    cookie under Import > MakerWorld login (stored only on the NAS) and the
-    3MF comes along too. Without it, drop the 3MF into the folder yourself.
+    only gives files to signed-in accounts. Press **Sign in to MakerWorld** in
+    the Import dialog once (Bambu Lab account email, password and the code
+    Bambu emails); only the token is kept, on the NAS. Pasting the `token`
+    cookie still works as a fallback. The `#profileId-N` in a MakerWorld link
+    picks the print profile that gets downloaded.
   * Imported files exist only on the NAS (scripts\sync-library.cmd copies PC
     to NAS, not back). The app's library mount is writable for this.
 
