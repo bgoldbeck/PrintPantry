@@ -83,6 +83,7 @@ class FileInfo:
 INFO_VERSION = 2
 
 MODEL_EXTS = {".stl"}
+PARAMETRIC_EXTS = {".scad": "scad", ".fcstd": "fcstd"}  # rendered to STL on the NAS
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
@@ -96,6 +97,8 @@ def classify_name(name: str) -> str:
     if low.endswith((".gcode", ".bgcode")):
         return "gcode"
     suffix = Path(low).suffix
+    if suffix in PARAMETRIC_EXTS:
+        return PARAMETRIC_EXTS[suffix]
     if suffix in MODEL_EXTS:
         return "stl"
     if suffix in IMAGE_EXTS:

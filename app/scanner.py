@@ -57,7 +57,7 @@ class LibFile:
     name: str
     size: int
     mtime: float
-    kind: str  # stl | project3mf | sliced3mf | gcode | image | other
+    kind: str  # stl | project3mf | sliced3mf | gcode | scad | fcstd | image | other
     info: formats.FileInfo | None = None
     printer: str = ""  # PrinterProfile.id, for sliced files
 
@@ -129,6 +129,7 @@ class Model:
                 "stl": len(self.by_kind("stl")),
                 "project": len(self.by_kind("project3mf")),
                 "sliced": len(self.by_kind("sliced3mf", "gcode")),
+                "parametric": len(self.by_kind("scad", "fcstd")),
             },
             "printers": printers,
             "cover": self.cover(),
@@ -136,7 +137,7 @@ class Model:
 
     def detail(self) -> dict:
         data = self.summary()
-        order = {"stl": 0, "project3mf": 1, "sliced3mf": 2, "gcode": 3, "image": 4, "other": 5}
+        order = {"stl": 0, "scad": 1, "fcstd": 1, "project3mf": 2, "sliced3mf": 3, "gcode": 4, "image": 5, "other": 6}
         data["files"] = [
             f.to_json() for f in sorted(self.files, key=lambda f: (order.get(f.kind, 9), f.relpath.lower()))
         ]
@@ -395,7 +396,7 @@ class Scanner:
         return cat
 
     def _add_model(self, lib: Library, m: Model, root: Path, overrides: dict) -> None:
-        if not any(f.kind in ("stl", "project3mf", "sliced3mf", "gcode") for f in m.files):
+        if not any(f.kind in ("stl", "project3mf", "sliced3mf", "gcode", "scad", "fcstd") for f in m.files):
             return  # a folder of only pictures is not a model
         lib.models[m.id] = m
         self._category(lib, m.category, root, overrides).models.append(m)
@@ -406,9 +407,9 @@ class Scanner:
         names: dict[str, str] = {}
         # Anchor groups on STLs, then attach project 3MFs (so an STL can have
         # several), then print files and pictures.
-        anchors = [f for f in files if f.kind == "stl"]
+        anchors = [f for f in files if f.kind in ("stl", "scad", "fcstd")]
         others = [f for f in files if f.kind == "project3mf"] + [
-            f for f in files if f.kind not in ("stl", "project3mf")
+            f for f in files if f.kind not in ("stl", "project3mf", "scad", "fcstd")
         ]
         for f in anchors:
             key = group_key(f.name)

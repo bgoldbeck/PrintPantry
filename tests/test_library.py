@@ -120,7 +120,7 @@ def test_model_groups_files(client):
 
 def test_loose_files_grouped_by_name(client):
     planter = by_name(client, "planter")
-    assert planter["counts"] == {"stl": 1, "project": 0, "sliced": 2}
+    assert planter["counts"] == {"stl": 1, "project": 0, "sliced": 2, "parametric": 0}
     assert planter["printers"] == ["p1s", "u1"]
     label = by_name(client, "plant label")
     assert label["counts"]["sliced"] == 0

@@ -86,6 +86,13 @@ def inspect(path: Path) -> ProjectInfo:
             try:
                 root = ET.fromstring(zf.read(MODEL_SETTINGS))
                 info.plates = max(1, len(root.findall("plate")))
+                # A plain 3MF (no project settings, e.g. a multi-colour FreeCAD
+                # render) still says which filament each part uses.
+                if not info.filaments:
+                    used = [int(m.get("value")) for m in root.iter("metadata")
+                            if m.get("key") == "extruder" and str(m.get("value", "")).isdigit()]
+                    for _ in range(max(used, default=0)):
+                        info.filaments.append({"type": "", "colour": "", "preset": ""})
             except ET.ParseError:
                 pass
     return info

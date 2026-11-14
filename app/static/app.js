@@ -9,6 +9,7 @@
 import { createViewer, renderThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterDock, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
+import { openCustomizeDialog } from "./parametric.js";
 import { swatchHtml } from "./filament.js";
 import { historyPage, historyPanel } from "./history.js";
 import { costHtml, loadPricing, spoolsPage } from "./spools.js";
@@ -396,6 +397,19 @@ function projectFileHtml(f) {
     </div></div>`;
 }
 
+// OpenSCAD / FreeCAD sources: the Customize dialog renders STLs on the NAS.
+let SHOW_FILE = null;
+function parametricFileHtml(f) {
+  const tool = f.kind === "scad" ? "OpenSCAD" : "FreeCAD";
+  return `<div class="file">
+    <div class="file-head"><span class="file-name">${esc(f.name)}</span></div>
+    <div class="file-sub">${tool} · ${fmtSize(f.size)}</div>
+    <div class="file-actions">
+      <button class="small" data-customize="${f.id}" title="Change the parameters and make an STL on the NAS">Customize</button>
+      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
+    </div></div>`;
+}
+
 // What history rows need from the rest of the UI.
 async function historyCtx(models) {
   const printers = await loadPrinters();
@@ -417,6 +431,11 @@ async function modelPage(id) {
   const projects = m.files.filter((f) => f.kind === "project3mf");
   const sliced = m.files.filter((f) => f.kind === "sliced3mf" || f.kind === "gcode");
   const images = m.files.filter((f) => f.kind === "image");
+  const parametric = m.files.filter((f) => f.kind === "scad" || f.kind === "fcstd");
+  // Newest generated STL first after a render, else the first one.
+  const wanted = SHOW_FILE && stls.findIndex((f) => f.id === SHOW_FILE);
+  if (wanted > 0) stls.unshift(...stls.splice(wanted, 1));
+  SHOW_FILE = null;
 
   // Picture for print files without their own thumbnail.
   const plateFallback = m.cover ? coverHtml(m).replace(/^<span class="ph">.*$/s, "") : "";
@@ -461,6 +480,8 @@ async function modelPage(id) {
         ${stls.length ? `<div class="file-actions" id="stl-actions"></div>` : ""}
       </div>
       <div>
+        ${parametric.length ? `<section class="panel"><h2>Customizable <span class="n">${parametric.length > 1 ? plural(parametric.length, "source") : parametric[0].kind === "scad" ? "OpenSCAD" : "FreeCAD"}</span></h2>
+          ${parametric.map(parametricFileHtml).join("")}</section>` : ""}
         ${stls.length ? `<section class="panel" id="sources"></section>` : ""}
         ${printPanels || `<section class="panel"><h2>Print files</h2><p class="empty">Nothing sliced yet. ${slicerPrinters().length
           ? "Use a Slice button to slice it here, or save"
@@ -479,6 +500,16 @@ async function modelPage(id) {
   view.querySelectorAll("[data-print]").forEach((b) =>
     b.addEventListener("click", () => openPrintDialog(b.dataset.print, b.dataset.printer)));
   view.querySelector(".model-layout").addEventListener("click", (e) => {
+    const c = e.target.closest("[data-customize]");
+    if (c) {
+      const pf = m.files.find((x) => x.id === c.dataset.customize);
+      if (pf) openCustomizeDialog(pf, async (job) => {
+        SHOW_FILE = job.output_ids?.[0] || null;
+        await refreshLibrary();
+        route();
+      });
+      return;
+    }
     const b = e.target.closest("[data-slice]");
     if (!b) return;
     const f = m.files.find((x) => x.id === b.dataset.slice);
@@ -569,7 +600,7 @@ async function modelPage(id) {
   if (!stls.length) {
     const pic = m.cover && m.cover.type !== "stl"
       ? `<img class="preview-img" alt="" src="/api/files/${m.cover.file}/thumb${m.cover.plate ? `?plate=${m.cover.plate}` : ""}">`
-      : `<div class="loading">No STL in this model</div>`;
+      : `<div class="loading">${parametric.length ? "Press Customize to make an STL" : "No STL in this model"}</div>`;
     holder.innerHTML = pic;
     return;
   }

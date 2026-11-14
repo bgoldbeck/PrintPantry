@@ -1006,3 +1006,43 @@ dialog.prompt-dialog h2 {
 .progress span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .5s ease; }
 .progress-text { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 #import.busy { border-color: var(--accent); color: var(--accent); }
+
+/* ---------------------------------------------------------------- parametric (Customize) */
+.param-dialog { width: min(680px, calc(100vw - 32px)); }
+.param-dialog h2 .muted { font-weight: 500; font-size: .9em; }
+.param-presets { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.param-presets .field { flex: 1 1 320px; margin: 6px 0; }
+.param-presets .preset-tools { display: flex; gap: 6px; }
+.param-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+.param-form { max-height: min(52vh, 560px); overflow: auto; padding-right: 4px; }
+.param-group { border: 0; margin: 0; padding: 0; }
+.param { display: grid; grid-template-columns: minmax(120px, 34%) 1fr; column-gap: 12px; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--line); }
+.param:last-child { border-bottom: 0; }
+.param .param-label { font-weight: 600; }
+.param > small { grid-column: 1 / -1; order: 3; margin-top: 2px; }
+.param > :is(input, select, .range-row) { grid-column: 2; grid-row: 1; min-width: 0; }
+.param input[type="text"], .param select { width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); font: inherit; box-sizing: border-box; }
+.param.bool { display: block; }
+.param.bool .check { margin: 0; }
+.range-row { display: flex; gap: 10px; align-items: center; }
+.range-row input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent, #e9a23b); }
+.range-row input.num { width: 96px; flex: none; padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); font: inherit; }
+.param-dialog .parts-field { align-items: start; }
+.param-dialog [hidden] { display: none !important; }
+.parts-table { border-collapse: collapse; justify-self: start; }
+.parts-table th { font-size: .8rem; font-weight: 600; color: var(--ink-2); padding: 0 14px 4px 0; text-align: center; }
+.parts-table td { padding: 3px 14px 3px 0; text-align: center; }
+.parts-table td:first-child { text-align: left; font-weight: 500; }
+.parts-table input { width: 18px; height: 18px; }
+.param-dialog > .field input[type="text"] { width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); font: inherit; box-sizing: border-box; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: pp-spin .8s linear infinite; vertical-align: -1px; margin-right: 4px; }
+@keyframes pp-spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) {
+  .param { grid-template-columns: 1fr; row-gap: 6px; }
+  .param > :is(input, select, .range-row) { grid-column: 1; grid-row: auto; }
+}

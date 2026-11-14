@@ -38,6 +38,7 @@ from urllib.parse import parse_qs, urlparse
 import calibration as C
 import presets as P
 import project
+import render as R
 
 log = logging.getLogger("slicer")
 
@@ -279,7 +280,7 @@ class BadRequest(Exception):
     pass
 
 
-def library_path(relpath: str) -> Path:
+def library_path(relpath: str, exts: tuple = (".3mf", ".stl")) -> Path:
     rel = Path(relpath)
     if rel.is_absolute() or ".." in rel.parts:
         raise BadRequest("Bad path")
@@ -288,7 +289,7 @@ def library_path(relpath: str) -> Path:
         raise BadRequest("Bad path")
     if not path.is_file():
         raise BadRequest(f"{relpath} not found")
-    if not path.name.lower().endswith((".3mf", ".stl")) or path.name.lower().endswith(".gcode.3mf"):
+    if not path.name.lower().endswith(exts) or path.name.lower().endswith(".gcode.3mf"):
         raise BadRequest("Only project 3MF and STL files can be sliced")
     return path
 
@@ -328,6 +329,7 @@ class Job:
     plate: int = 0
     flow_ratios: dict = field(default_factory=dict)  # filament preset -> calibrated filament_flow_ratio
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
+    render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
     message: str = "Waiting for the slicer"
     outputs: list[str] = field(default_factory=list)
@@ -421,6 +423,26 @@ def submit_flow(body: dict) -> Job:
     return queue_job(job)
 
 
+def submit_render(body: dict) -> Job:
+    """Queue an OpenSCAD / FreeCAD render; the app has checked the values."""
+    path = str(body.get("path", ""))
+    src = library_path(path, (".scad", ".fcstd"))
+    kind = str(body.get("kind", ""))
+    if kind not in ("scad", "fcstd") or src.suffix.lower() != "." + kind:
+        raise BadRequest("Only .scad and .FCStd files can be rendered")
+    values = body.get("values") or {}
+    if not isinstance(values, dict):
+        raise BadRequest("values must be an object")
+    render = {"kind": kind, "variant": str(body.get("variant") or "custom"), "values": values,
+              "parts": [str(p) for p in body.get("parts") or []], "labels": body.get("labels") or {},
+              "cells": body.get("cells") or {}, "combine": [str(p) for p in body.get("combine") or []]}
+    if kind == "fcstd" and not (render["parts"] or render["combine"]):
+        raise BadRequest("Pick at least one part")
+    job = Job(id=uuid.uuid4().hex[:12], path=path, printer="", mode="render", render=render,
+              message="Waiting for the renderer")
+    return queue_job(job)
+
+
 def queue_job(job: Job) -> Job:
     with JOBS_LOCK:
         JOBS[job.id] = job
@@ -437,7 +459,8 @@ def worker():
         job = JOBS.get(QUEUE.get())
         if not job:
             continue
-        job.state, job.started, job.message = "running", time.time(), "Slicing..."
+        job.state, job.started = "running", time.time()
+        job.message = "Rendering..." if job.render else "Slicing..."
         try:
             run_job(job)
             job.state = "done"
@@ -505,6 +528,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
 
 
 def run_job(job: Job) -> None:
+    if job.render:
+        return R.run(job, LIBRARY, WORK)
     if job.calib.get("kind") == "flow":
         return run_flow_job(job)
     printer = PRINTERS[job.printer]
@@ -525,8 +550,8 @@ def run_job(job: Job) -> None:
         args = [BIN, "--allow-newer-file", "--debug", "2", "--slice", str(job.plate or 0), "--outputdir", str(out)]
         if job.mode == "presets":
             args += build_settings(job, printer, work, info)
-        if info.kind == "stl":
-            args += ["--arrange", "1", "--orient", "0"]
+        if info.kind == "stl" or (info.kind == "3mf" and not info.printer_model):
+            args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         if printer.output == "gcode.3mf":
             args += ["--export-3mf", "result.gcode.3mf"]  # relative to --outputdir
         # Presets passed on the command line override the project's own
@@ -804,6 +829,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"tests": [
                     {"id": t.id, "label": t.label, "hint": t.hint, "available": flow_test_file(t).is_file()}
                     for t in C.FLOW_TESTS.values()]})
+            if method == "GET" and url.path == "/render/tools":
+                return self._send(200, R.tools())
+            if method == "POST" and url.path == "/render":
+                return self._send(202, submit_render(self._body()).to_json())
             if method == "POST" and url.path == "/calibration/flow":
                 return self._send(202, submit_flow(self._body()).to_json())
             if method == "POST" and url.path == "/jobs":
