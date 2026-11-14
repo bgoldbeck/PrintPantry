@@ -78,6 +78,14 @@ class ImportSettings(BaseModel):
     makerworld_token: str = ""
 
 
+class SignIn(BaseModel):
+    email: str = ""
+    password: str = ""
+    code: str = ""
+    tfa_key: str = ""
+    tfa_code: str = ""
+
+
 class CategoryPatch(BaseModel):
     icon: str | None = None
     color: str | None = None
@@ -594,12 +602,19 @@ def create_app(
 
     @app.get("/api/import/settings")
     def import_settings():
-        return {"makerworld_token": bool(imp.makerworld_token)}
+        return imp.makerworld_status()
 
     @app.put("/api/import/settings")
     def put_import_settings(body: ImportSettings):
         imp.set_makerworld_token(body.makerworld_token)
         return import_settings()
+
+    @app.post("/api/import/makerworld-login")
+    def makerworld_login(body: SignIn):
+        try:
+            return imp.makerworld_sign_in(body.email, body.password, body.code, body.tfa_key, body.tfa_code)
+        except ImportError_ as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.post("/api/import/preview")
     def import_preview(body: ImportBody):

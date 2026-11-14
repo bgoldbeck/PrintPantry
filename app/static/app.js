@@ -685,7 +685,7 @@ function openImport(prefill = "") {
         <input id="imp-url" type="url" required placeholder="https://www.printables.com/model/..." value="${esc(prefill)}">
         ${err ? `<div class="notice error">${esc(err)}</div>` : ""}
         <div class="dialog-actions" style="margin-top:16px">
-          <button type="button" class="ghost" data-mw>MakerWorld login</button>
+          <button type="button" class="ghost" data-mw>Sign in to MakerWorld</button>
           <span style="flex:1"></span>
           <button type="button" class="ghost" data-close>Cancel</button><button type="submit">Look up</button></div>
       </form>`;
@@ -707,28 +707,78 @@ function openImport(prefill = "") {
     };
   }
 
-  async function mwLogin() {
+  // MakerWorld uses the Bambu Lab account: email + password, then maybe an emailed code.
+  async function mwLogin(back = step1) {
     const st = await api("/api/import/settings").catch(() => ({}));
-    dlg.innerHTML = `<h2>MakerWorld login</h2>
-      <p>MakerWorld only hands out files to logged-in accounts. Print Pantry can use your MakerWorld login token to
-      download the 3MF. Without it, MakerWorld imports bring in the details, tags and pictures only.</p>
-      <p class="muted">To get the token: log in at makerworld.com in your browser, press F12, open
-      Application (Chrome/Edge) or Storage (Firefox) &gt; Cookies &gt; https://makerworld.com, and copy the value of
-      the cookie named <code>token</code>. It is stored only on your NAS. Tokens expire after a few months.</p>
-      <label for="mw-token">Token ${st.makerworld_token ? "(one is saved; paste a new one to replace it)" : ""}</label>
-      <input id="mw-token" type="password" autocomplete="off" placeholder="${st.makerworld_token ? "••••••••" : "Paste the token"}">
-      <div class="dialog-actions" style="margin-top:16px">
-        ${st.makerworld_token ? `<button type="button" class="ghost" data-clear>Forget token</button><span style="flex:1"></span>` : ""}
-        <button type="button" class="ghost" data-back>Back</button><button type="button" data-save>Save</button></div>`;
-    const save = async (token) => {
-      await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ makerworld_token: token }) });
-      flash(token ? "MakerWorld token saved." : "MakerWorld token removed.");
-      step1();
+    let pending = null; // {step, message, tfa_key}
+    let email0 = st.makerworld_account || "";
+    function draw(err = "") {
+      dlg.innerHTML = `<h2>Sign in to MakerWorld</h2>
+        <p class="muted">MakerWorld only gives files to signed-in accounts. Use your MakerWorld / Bambu Lab account.
+        Only the sign-in token is kept (on your NAS), never the password.</p>
+        ${st.makerworld_token ? `<div class="notice">Signed in${email0 ? ` as ${esc(email0)}` : ""}. Sign in again if downloads stop working.</div>` : ""}
+        <form id="mw-form">
+          <label for="mw-email">Email</label>
+          <input id="mw-email" type="email" autocomplete="username" required value="${esc(email0)}" ${pending ? "readonly" : ""}>
+          ${pending ? `<label for="mw-code">${pending.step === "tfa" ? "Authenticator code" : "Code from the email"}</label>
+              <input id="mw-code" inputmode="numeric" autocomplete="one-time-code" required>
+              <p class="hint">${esc(pending.message)}</p>`
+            : `<label for="mw-pass">Password</label><input id="mw-pass" type="password" autocomplete="current-password" required>`}
+          ${err ? `<div class="notice error">${esc(err)}</div>` : ""}
+          <div class="dialog-actions" style="margin-top:16px">
+            ${st.makerworld_token ? `<button type="button" class="ghost" data-clear>Sign out</button>` : ""}
+            <button type="button" class="ghost" data-paste>Paste a token instead</button><span style="flex:1"></span>
+            <button type="button" class="ghost" data-back>Back</button><button type="submit">${pending ? "Finish" : "Sign in"}</button></div>
+        </form>`;
+      (dlg.querySelector("#mw-code") || dlg.querySelector(email0 ? "#mw-pass" : "#mw-email")).focus();
+      dlg.querySelector("[data-back]").onclick = () => back();
+      dlg.querySelector("[data-paste]").onclick = () => pasteToken(back);
+      const clear = dlg.querySelector("[data-clear]");
+      if (clear) clear.onclick = async () => {
+        await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ makerworld_token: "" }) });
+        flash("Signed out of MakerWorld."); back();
+      };
+      dlg.querySelector("form").onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = dlg.querySelector("button[type=submit]");
+        btn.disabled = true; btn.textContent = "Signing in...";
+        const email = dlg.querySelector("#mw-email").value.trim();
+        email0 = email;
+        const body = { email };
+        if (!pending) body.password = dlg.querySelector("#mw-pass").value;
+        else if (pending.step === "tfa") Object.assign(body, { tfa_key: pending.tfa_key, tfa_code: dlg.querySelector("#mw-code").value });
+        else body.code = dlg.querySelector("#mw-code").value;
+        try {
+          const r = await api("/api/import/makerworld-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          if (r.step) { pending = r; draw(); return; }
+          flash(`Signed in to MakerWorld as ${esc(email)}.`);
+          back();
+        } catch (err) { draw(err.message || String(err)); }
+      };
+    }
+    draw();
+  }
+
+  function pasteToken(back) {
+    dlg.innerHTML = `<h2>Paste a MakerWorld token</h2>
+      <p class="muted">Only if signing in doesn't work: log in at makerworld.com, press F12, open Application (Chrome/Edge)
+      or Storage (Firefox) &gt; Cookies &gt; https://makerworld.com and copy the cookie named <code>token</code>.</p>
+      <input id="mw-token" type="password" autocomplete="off" placeholder="Paste the token">
+      <div class="dialog-actions" style="margin-top:16px"><button type="button" class="ghost" data-back>Back</button><button type="button" data-save>Save</button></div>`;
+    dlg.querySelector("[data-back]").onclick = () => mwLogin(back);
+    dlg.querySelector("[data-save]").onclick = async () => {
+      await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ makerworld_token: dlg.querySelector("#mw-token").value.trim() }) });
+      flash("MakerWorld token saved."); back();
     };
-    dlg.querySelector("[data-back]").onclick = () => step1();
-    dlg.querySelector("[data-save]").onclick = () => save(dlg.querySelector("#mw-token").value.trim());
-    const clear = dlg.querySelector("[data-clear]");
-    if (clear) clear.onclick = () => save("");
+  }
+
+  // Look the link up again (after signing in) and show the preview.
+  async function relook() {
+    try {
+      plan = await api("/api/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: prefill }) });
+      step2();
+    } catch (e) { step1(e.message || String(e)); }
   }
 
   function step2() {
@@ -745,7 +795,8 @@ function openImport(prefill = "") {
         </div>
       </div>
       ${plan.files.length ? `<ul class="files">${plan.files.map((f) => `<li>${esc(f.name)}${f.size ? ` (${fmtSize(f.size)})` : ""}</li>`).join("")}</ul>` : ""}
-      ${plan.note ? `<div class="notice">${esc(plan.note)}</div>` : ""}
+      ${plan.profile ? `<p class="muted">Print profile: <strong>${esc(plan.profile)}</strong></p>` : ""}
+      ${plan.note ? `<div class="notice">${esc(plan.note)}${plan.needs_login ? `<div style="margin-top:8px"><button type="button" class="small" data-signin>Sign in to MakerWorld</button></div>` : ""}</div>` : ""}
       <label for="imp-cat">Category</label>
       <select id="imp-cat">
         ${pick ? "" : `<option value="" selected disabled>Pick a category</option>`}
@@ -760,6 +811,8 @@ function openImport(prefill = "") {
     const sel = dlg.querySelector("#imp-cat"), newcat = dlg.querySelector("#imp-newcat");
     sel.onchange = () => { newcat.style.display = sel.value === "__new" ? "" : "none"; if (sel.value === "__new") newcat.focus(); };
     dlg.querySelector("[data-back]").onclick = () => step1();
+    const signin = dlg.querySelector("[data-signin]");
+    if (signin) signin.onclick = () => mwLogin(relook);
     dlg.querySelector("[data-go]").onclick = async (e) => {
       const category = sel.value === "__new" ? newcat.value.trim() : sel.value;
       if (!category) { sel.focus(); return; }
