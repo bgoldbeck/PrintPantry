@@ -83,7 +83,12 @@ def safe_name(name: str, fallback: str = "model") -> str:
     name = html.unescape(str(name or ""))
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
-    return name[:100].strip(" .") or fallback
+    if len(name) <= 100:
+        return name or fallback
+    # Too long: shorten the name but keep the extension (".3mf", ".gcode.3mf").
+    m = re.match(r"(.*?)((?:\.gcode)?\.[A-Za-z0-9]{1,5})$", name)
+    stem, ext = (m.group(1), m.group(2)) if m else (name, "")
+    return (stem[: 100 - len(ext)].strip(" .") + ext) if stem.strip(" .") else fallback
 
 
 def html_to_text(s: str) -> str:

@@ -96,6 +96,9 @@ def test_parse_link():
 def test_safe_name_and_category():
     assert safe_name('a/b:c*?"d.') == "a b c d"
     assert safe_name("") == "model"
+    long = safe_name("Intensiv Reiniger für Gewindespindel dank Gewinde - 2x Gewindespindel Reiniger in bester Druckqualität.3mf")
+    assert long.endswith("Druckqu.3mf") and len(long) == 100
+    assert safe_name("x" * 120 + ".gcode.3mf").endswith("x.gcode.3mf")
     assert suggest_category(["3D Printers", "Test Models"], ["Tools", "Test Models"]) == "Test Models"
     assert suggest_category(["Household", "Kitchen"], ["Kitchen", "Tools"]) == "Kitchen"
     assert suggest_category(["Gadgets", "Tools"], ["Tool", "Toys"]) == "Tool"
