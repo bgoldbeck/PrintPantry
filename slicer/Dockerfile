@@ -59,13 +59,16 @@ COPY --from=extract /opt/orca /opt/orca
 COPY --from=cad /opt/freecad /opt/freecad
 COPY --from=cad /opt/openscad /opt/openscad
 COPY slicer/*.py slicer/fonts.conf /srv/slicer/
+# The service runs as uid 568 (TrueNAS "apps"). FreeCAD asks the user database
+# for its home folder and crashes at start when the uid has no entry, so add one.
+RUN groupadd -g 568 apps && useradd -u 568 -g 568 -d /tmp -M -s /usr/sbin/nologin apps
 # freecadcmd needs the AppImage's environment (Python home, library path).
 RUN printf '#!/bin/sh\nexec /opt/freecad/AppRun freecadcmd "$@"\n' > /usr/local/bin/freecadcmd \
  && chmod 755 /usr/local/bin/freecadcmd \
  # Smoke tests: a failure here is logged but doesn't stop slicing from working.
- && (HOME=/tmp QT_QPA_PLATFORM=offscreen /usr/local/bin/freecadcmd -c "import FreeCAD, Part, Mesh; print('FreeCAD', FreeCAD.Version()[:3])" \
+ && (HOME=/tmp QT_QPA_PLATFORM=offscreen setpriv --reuid 568 --regid 568 --clear-groups /usr/local/bin/freecadcmd -c "import FreeCAD, Part, Mesh; print('FreeCAD', FreeCAD.Version()[:3])" \
      || echo "WARNING: FreeCAD smoke test failed") \
- && (echo 'cube(2);' > /tmp/t.scad && HOME=/tmp /opt/openscad/usr/bin/openscad -o /tmp/t.stl /tmp/t.scad \
+ && (echo 'cube(2);' > /tmp/t.scad && HOME=/tmp setpriv --reuid 568 --regid 568 --clear-groups /opt/openscad/usr/bin/openscad -o /tmp/t.stl /tmp/t.scad \
      && rm -f /tmp/t.scad /tmp/t.stl || echo "WARNING: OpenSCAD smoke test failed") \
  && rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null; true
 
