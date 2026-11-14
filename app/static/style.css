@@ -1002,3 +1002,7 @@ dialog.prompt-dialog h2 {
 @media (max-width: 520px) {
   .set-row { flex-direction: column; align-items: stretch; }
 }
+.progress { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin: 10px 0 6px; }
+.progress span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .5s ease; }
+.progress-text { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+#import.busy { border-color: var(--accent); color: var(--accent); }

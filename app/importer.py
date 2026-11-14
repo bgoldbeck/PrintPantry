@@ -26,6 +26,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -44,7 +45,7 @@ PRINTABLES_MEDIA = "https://media.printables.com/"
 MAKERWORLD_API = "https://makerworld.com/api/v1/design-service"
 MODEL_EXTS = (".stl", ".3mf", ".obj", ".step", ".stp", ".scad", ".f3d", ".zip")
 MAX_FILE_BYTES = 1024 * 1024 * 1024  # 1 GB per file
-MAX_PICTURES = 8
+MAX_PICTURES = 8  # MakerWorld photos are full-size (2-3 MB each)
 
 
 class ImportError_(Exception):
@@ -373,9 +374,32 @@ class Job:
     note: str = ""
     error: str = ""
     started: float = field(default_factory=time.time)
+    # progress, for the dialog's progress bar
+    phase: str = "info"  # info | files | pictures | saving | done
+    files_total: int = 0
+    file_index: int = 0
+    bytes_done: int = 0
+    bytes_total: int = 0  # 0 = unknown
+    pictures_total: int = 0
+    pictures_done: int = 0
+    finished: float = 0
+
+    def progress(self) -> float:
+        """0..1 overall: info 5%, files 5-75%, pictures 75-95%, saving 95-100%."""
+        if self.state != "running":
+            return 1.0
+        if self.phase == "info":
+            return 0.02
+        if self.phase == "files":
+            per = 0.7 / max(self.files_total, 1)
+            part = self.bytes_done / self.bytes_total if self.bytes_total else 0.5 if self.bytes_done else 0
+            return 0.05 + per * (max(self.file_index - 1, 0) + min(part, 1))
+        if self.phase == "pictures":
+            return 0.75 + 0.2 * self.pictures_done / max(self.pictures_total, 1)
+        return 0.97
 
     def to_json(self) -> dict:
-        return {k: v for k, v in vars(self).items()}
+        return {**vars(self), "progress": round(self.progress(), 3)}
 
 
 def suggest_category(site_categories: list[str], existing: list[str]) -> str:
@@ -467,6 +491,12 @@ class Importer:
         threading.Thread(target=self._run, args=(job, category, name, tags or []), daemon=True).start()
         return job
 
+    def recent(self) -> list[dict]:
+        """Running imports and ones finished in the last 10 minutes, newest first."""
+        now = time.time()
+        jobs = [j for j in self.jobs.values() if j.state == "running" or now - (j.finished or now) < 600]
+        return [j.to_json() for j in sorted(jobs, key=lambda j: j.started, reverse=True)]
+
     def run_sync(self, url: str, category: str, name: str = "", tags: list[str] | None = None) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], url=url)
         self.jobs[job.id] = job
@@ -477,7 +507,7 @@ class Importer:
         with self._lock:
             try:
                 self._do(job, category, name, extra_tags)
-                job.state = "done"
+                job.state, job.phase = "done", "done"
                 job.step = "Done"
                 log.info("imported %s into %s (%d files)", job.url, job.folder, len(job.done_files))
             except ImportError_ as exc:
@@ -489,6 +519,7 @@ class Importer:
             except Exception as exc:  # pragma: no cover - keep the job readable
                 log.exception("import failed")
                 job.state, job.error = "error", f"Import failed: {exc}"
+            job.finished = time.time()
             if job.state == "error":
                 log.warning("import of %s failed: %s", job.url, job.error)
                 self._remove_if_empty(job)
@@ -515,31 +546,43 @@ class Importer:
         job.folder = rel
         folder.mkdir(parents=True, exist_ok=True)
 
+        job.phase, job.files_total = "files", len(plan.files)
         for i, f in enumerate(plan.files, 1):
             fname = safe_name(Path(f.name).name, f"file{i}")
             dest = folder / fname
+            job.file_index, job.bytes_done, job.bytes_total = i, 0, f.size
             if dest.exists() and f.size and dest.stat().st_size == f.size:
                 job.skipped.append(fname)
                 continue
-            job.step = f"Downloading {fname} ({i} of {len(plan.files)})"
+            job.step = f"Getting the download link for {fname}"
             link = f.url or f.resolve()
-            self._download(link, dest)
+            job.step = f"Downloading {fname}" + (f" ({i} of {len(plan.files)})" if len(plan.files) > 1 else "")
+            self._download(link, dest, job=job)
             job.done_files.append(fname)
 
+        # Pictures are nice to have: fetch a few at once and never fail the import over them.
         pics = plan.pictures[:MAX_PICTURES]
+        job.phase, job.pictures_total = "pictures", len(pics)
         if pics:
             (folder / "images").mkdir(exist_ok=True)
-        for i, url in enumerate(pics, 1):
-            job.step = f"Saving pictures ({i} of {len(pics)})"
-            ext = Path(urlparse(url).path).suffix.lower()
-            ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
-            dest = folder / "images" / f"{plan.site.lower()}-{i:02d}{ext}"
-            if dest.exists():
-                continue
-            try:
-                self._download(url, dest, limit=50 * 1024 * 1024)
-            except (httpx.HTTPError, ImportError_) as exc:
-                log.warning("picture %s failed: %s", url, exc)
+            job.step = f"Saving pictures (0 of {len(pics)})"
+
+            def fetch(item):
+                i, url = item
+                ext = Path(urlparse(url).path).suffix.lower()
+                ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
+                dest = folder / "images" / f"{plan.site.lower()}-{i:02d}{ext}"
+                try:
+                    if not dest.exists():
+                        self._download(url, dest, limit=50 * 1024 * 1024)
+                except (httpx.HTTPError, ImportError_, OSError) as exc:
+                    log.warning("picture %s failed: %s", url, exc)
+                job.pictures_done += 1
+                job.step = f"Saving pictures ({job.pictures_done} of {len(pics)})"
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(fetch, enumerate(pics, 1)))
+        job.phase = "saving"
 
         meta = {
             "site": plan.site, "id": plan.id, "url": plan.url, "title": plan.title,
@@ -550,7 +593,7 @@ class Importer:
         }
         (folder / SOURCE_FILE).write_text(json.dumps(meta, indent=2, ensure_ascii=False), "utf-8")
 
-        job.step = "Adding to the library"
+        job.step = "Adding it to the library"
         job.model_id = self.make_model_id(rel)
         self.add_tags(job.model_id, list(plan.tags) + list(extra_tags))
         self.rescan()
@@ -570,7 +613,7 @@ class Importer:
                 pass
         raise ImportError_("Too many folders with that name already.")
 
-    def _download(self, url: str, dest: Path, limit: int = MAX_FILE_BYTES) -> None:
+    def _download(self, url: str, dest: Path, limit: int = MAX_FILE_BYTES, job: Job | None = None) -> None:
         if urlparse(url).scheme != "https":
             raise ImportError_("Refusing a non-https download link.")
         tmp = dest.with_name("." + dest.name + ".part")
@@ -579,9 +622,16 @@ class Importer:
                 if r.status_code != 200:
                     raise ImportError_(f"Download of {dest.name} failed: HTTP {r.status_code}")
                 got = 0
+                if job is not None:
+                    try:
+                        job.bytes_total = int(r.headers.get("content-length") or 0) or job.bytes_total
+                    except ValueError:
+                        pass
                 with open(tmp, "wb") as out:
                     for chunk in r.iter_bytes(1024 * 256):
                         got += len(chunk)
+                        if job is not None:
+                            job.bytes_done = got
                         if got > limit:
                             raise ImportError_(f"{dest.name} is bigger than {limit // 1048576} MB; skipped.")
                         out.write(chunk)
