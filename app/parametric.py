@@ -419,6 +419,7 @@ class RenderRequest(BaseModel):
     variant: str = ""
     parts: list[str] = []  # FreeCAD: parts saved as STLs
     combine: list[str] = []  # FreeCAD: parts put together in one multi-colour 3MF
+    replace: bool = True  # remove what earlier renders of this file made
 
 
 class PresetRequest(BaseModel):
@@ -482,7 +483,8 @@ def make_router(client, resolve, rescan, make_id) -> APIRouter:
         f, path = source(req.file_id)
         info = read_params(f, path)
         values = coerce(info["params"], req.values)
-        body = {"path": f.relpath, "kind": f.kind, "variant": safe_variant(req.variant), "values": values}
+        body = {"path": f.relpath, "kind": f.kind, "variant": safe_variant(req.variant), "values": values,
+                "replace": req.replace}
         if f.kind == "fcstd":
             order = [p["name"] for p in info["parts"]]
             parts = [p for p in order if p in req.parts]

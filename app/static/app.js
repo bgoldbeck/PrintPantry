@@ -151,6 +151,22 @@ function promptDialog({ title, label, value = "", placeholder = "", actionLabel 
   });
 }
 
+function confirmDialog({ title, text, actionLabel = "Delete" }) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog";
+    dlg.innerHTML = `<h2>${esc(title)}</h2><p style="margin:0 0 16px">${text}</p>
+      <div class="dialog-actions"><button type="button" class="ghost" data-cancel>Cancel</button>
+      <button type="button" class="danger" data-ok>${esc(actionLabel)}</button></div>`;
+    document.body.appendChild(dlg);
+    let answer = false;
+    dlg.querySelector("[data-cancel]").onclick = () => dlg.close();
+    dlg.querySelector("[data-ok]").onclick = () => { answer = true; dlg.close(); };
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(answer); });
+    dlg.showModal();
+  });
+}
+
 // ---------------------------------------------------------------- tags
 const tagHref = (t) => `#/search/${encodeURIComponent(`tag:${t.replaceAll(" ", "_")}`)}`;
 function tagCloud(list, active = []) {
@@ -318,7 +334,8 @@ function slicedFileHtml(f, fallback = "") {
     <div class="file-actions">
       ${canPrintOn(f.printer) ? `<button class="small" data-print="${f.id}" data-printer="${f.printer}">Print on ${esc(printer(f.printer)?.name || f.printer)}</button>
         <span class="print-state" data-print-state="${esc(f.printer)}">${stateBadge(printerById(f.printer))}</span>` : ""}
-      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a></div>
+      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
+      <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this sliced file (print history stays)">Delete</button></div>
   </div>`;
 }
 
@@ -522,7 +539,7 @@ async function modelPage(id) {
     if (!b) return;
     const f = m.files.find((x) => x.id === b.dataset.slice);
     if (f) openSliceDialog(f, b.dataset.printer, async () => { await refreshLibrary(); route(); },
-      { siblings: f.kind === "stl" ? m.files.filter((x) => x.kind === "stl" && x.id !== f.id) : [] });
+      { siblings: m.files.filter((x) => x.kind === "stl" && x.id !== f.id) });
   });
 
   const catSelect = document.getElementById("cat-select");
@@ -585,6 +602,20 @@ async function modelPage(id) {
   }
 
   view.addEventListener("click", async (e) => {
+    const del = e.target.closest("[data-delete-file]");
+    if (del) {
+      const ok = await confirmDialog({ title: "Delete sliced file?",
+        text: `<strong>${esc(del.dataset.fileName)}</strong> will be deleted from the library. Print history keeps its entries.` });
+      if (!ok) return;
+      try {
+        await api(`/api/files/${del.dataset.deleteFile}`, { method: "DELETE" });
+        await refreshLibrary();
+        route();
+      } catch (err) {
+        alert(err.message);
+      }
+      return;
+    }
     const btn = e.target.closest("[data-rename-file]");
     if (!btn) return;
     const fileId = btn.dataset.renameFile;

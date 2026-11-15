@@ -266,14 +266,40 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
   let lit = null;
   function paint(colours) {
     meshes.forEach((m, i) => {
-      m.material.color.set(colours[i] || "#999");
-      m.material.opacity = lit === null || lit === i ? 1 : 0.18;
-      m.material.depthWrite = lit === null || lit === i;
+      const off = colours[i] === null;  // left off the plate: a faint ghost you can still click
+      m.material.color.set(off ? "#999" : colours[i] || "#999");
+      m.material.opacity = off ? 0.12 : lit === null || lit === i ? 1 : 0.18;
+      m.material.depthWrite = !off && (lit === null || lit === i);
       m.material.emissive.set(lit === i ? "#333" : "#000");
+    });
+  }
+  // Lay groups of pieces out side by side, the way the slicer arranges
+  // separate objects; null puts everything back where the file has it.
+  const home = geos.map(() => new THREE.Vector3());
+  function layout(groups) {
+    meshes.forEach((m, i) => m.position.copy(home[i]));
+    if (!groups) return;
+    const order = [...new Set(groups)];
+    const boxes = order.map((g) => {
+      const b = new THREE.Box3();
+      meshes.forEach((m, i) => { if (groups[i] === g && m.visible) b.union(m.geometry.boundingBox); });
+      return b;
+    });
+    const gap = 8;
+    const widths = boxes.map((b) => (b.isEmpty() ? 0 : b.max.x - b.min.x));
+    const total = widths.reduce((a, w) => a + w, 0) + gap * Math.max(0, widths.filter(Boolean).length - 1);
+    let x = -total / 2;
+    order.forEach((g, k) => {
+      const b = boxes[k];
+      if (b.isEmpty()) return;
+      const dx = x - b.min.x, dz = -(b.min.z + b.max.z) / 2, dy = -b.min.y;
+      meshes.forEach((m, i) => { if (groups[i] === g) m.position.set(dx, dy, dz); });
+      x += widths[k] + gap;
     });
   }
   let last = [];
   return {
+    layout,
     setColours(colours) { last = colours; paint(colours); },
     highlight(i) { lit = i ?? null; paint(last); },
     show(visible) { meshes.forEach((m, i) => (m.visible = visible[i] !== false)); },

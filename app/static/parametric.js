@@ -165,6 +165,7 @@ export async function openCustomizeDialog(file, onDone) {
       </tbody></table></div>` : ""}
     <label class="field"><span>Save as</span><input type="text" data-variant value="custom" maxlength="60"
       title="Name added to the file: ${esc(file.name.replace(/\.[^.]+$/, ""))} - <name>.stl. The same name replaces the last one."></label>
+    <label class="check replace-check"><input type="checkbox" data-replace checked> Replace earlier versions (removes the STLs, 3MF and sliced files made from this file before)</label>
     <div data-progress></div>
     <div class="dialog-actions"><button class="ghost" data-close>Close</button>
       <button data-go${toolOk && params.length + info.parts.length ? "" : " disabled"}>Make STL</button></div>`;
@@ -235,6 +236,7 @@ export async function openCustomizeDialog(file, onDone) {
   go.onclick = async () => {
     const body = {
       file_id: file.id, values: read(), variant: variant.value.trim() || "custom",
+      replace: !!$("[data-replace]")?.checked,
       parts: [...dlg.querySelectorAll("[data-part]:checked")].map((c) => c.value),
       combine: [...dlg.querySelectorAll("[data-combine]:checked")].map((c) => c.value),
     };

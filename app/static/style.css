@@ -358,6 +358,7 @@ button .muted { opacity: .75; font-weight: 400; }
 .brush .tool[aria-pressed="true"] { outline: 2px solid var(--accent); }
 .obj-rows { display: grid; gap: 6px; max-height: 240px; overflow: auto; padding-right: 2px; }
 .obj-row { display: grid; grid-template-columns: 14px 1fr 130px; gap: 8px; align-items: center; padding: 2px 0; }
+.obj-row.off .obj-name { opacity: .45; text-decoration: line-through; }
 .obj-row:hover { background: var(--surface-2); border-radius: 8px; }
 .obj-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
 .obj-name small { display: block; color: var(--ink-2); font-size: .78rem; }
@@ -1064,3 +1065,6 @@ dialog.prompt-dialog h2 {
   .param { grid-template-columns: 1fr; row-gap: 6px; }
   .param > :is(input, select, .range-row) { grid-column: 1; grid-row: auto; }
 }
+
+button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+.danger-text { color: #c0392b; }

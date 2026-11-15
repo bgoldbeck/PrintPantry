@@ -241,3 +241,29 @@ def test_rebuild_project_for_more_toolheads(tmp_path):
     assert {i.name.split(" · ")[0] for i in items} == {"Obj0", "Obj1"}
     with pytest.raises(O.ObjectsError):
         O.rebuild_3mf(bambu_3mf(tmp_path / "p.3mf", painted=True), {"o100": 3}, out)
+
+
+def test_plate_with_project_extra_stl_and_skips(tmp_path):
+    src = bambu_3mf(tmp_path / "a.3mf")
+    clip = write_stl(tmp_path / "clip.stl", cube(s=5))
+    items = O.items_for([src, clip])
+    assert [i.key for i in items] == ["o100", "o101:2", "o101:3", "f1"]
+    out = tmp_path / "plate.3mf"
+    O.plate_3mf([src, clip], {"o100": 0, "o101:3": 2, "f1": 3}, out)
+    got = O.threemf_items(out)
+    assert len(got) == 3 and sorted(i.extruder for i in got) == [1, 2, 3]
+    with pytest.raises(O.ObjectsError):
+        O.plate_3mf([src], {"o100": 0, "o101:2": 0, "o101:3": 0}, out)
+
+
+def test_submit_skips_and_extras_on_a_project(lib, monkeypatch):
+    write_stl(lib / "M" / "clip.stl", cube())
+    bambu_3mf(lib / "M" / "a.3mf")
+    monkeypatch.setattr(service, "queue_job", lambda job: job)
+    base = {"printer": "u1", "path": "M/a.3mf", "machine": "m", "process": "p", "filaments": ["A", "B"]}
+    job = service.submit({**base, "extra_paths": ["M/clip.stl"], "assign": {"o100": 0, "f1": 2}})
+    assert job.assign == {"o100": 0, "f1": 2} and job.extra_paths == ["M/clip.stl"]
+    with pytest.raises(service.BadRequest):
+        service.submit({**base, "assign": {"o100": 0}, "mode": "project"})
+    with pytest.raises(service.BadRequest):
+        service.submit({**base, "assign": {"o100": 0, "o101:2": 0}})  # nothing left... only when all are 0

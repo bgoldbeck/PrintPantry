@@ -52,7 +52,9 @@ class Item:
     tris: array = field(default_factory=lambda: array("f"), repr=False)  # 9 floats per triangle, world mm
 
     def to_json(self) -> dict:
-        return {"key": self.key, "name": self.name, "extruder": self.extruder,
+        # Pieces of one group print as one object (stay together on the plate).
+        group = self.key.split(":")[0] if self.key.startswith("o") else re.match(r"f\d+", self.key).group(0)
+        return {"key": self.key, "name": self.name, "extruder": self.extruder, "group": group,
                 "triangles": self.triangles, "size": [round(s, 1) for s in self.size],
                 "plate": self.plate, "painted": self.painted}
 
@@ -198,22 +200,23 @@ def stl_bodies(path: Path) -> list[array]:
     return bodies
 
 
-def stl_items(paths: list[Path]) -> list[Item]:
+def stl_items(paths: list[Path], start: int = 0) -> list[Item]:
+    """Items of STLs; keys count files from ``start`` (after a 3MF it's 1)."""
     items = []
-    for i, path in enumerate(paths):
+    for i, path in enumerate(paths, start=start):
         bodies = stl_bodies(path)
         stem = path.stem
         if len(bodies) == 1:
             items.append(Item(f"f{i}", stem, triangles=len(bodies[0]) // 9, size=_size(bodies[0]), tris=bodies[0]))
             continue
         for j, body in enumerate(bodies):
-            name = f"{stem} · body {j + 1}" if len(paths) > 1 else f"Body {j + 1}"
+            name = f"{stem} · body {j + 1}" if len(paths) + start > 1 else f"Body {j + 1}"
             items.append(Item(f"f{i}b{j}", name, triangles=len(body) // 9, size=_size(body), tris=body))
     # Separate pieces start on separate toolheads: one per STL when there are
     # several (bodies of one STL share it), else one per body. Change what you like.
     for n, item in enumerate(items):
         m = re.fullmatch(r"f(\d+)(?:b(\d+))?", item.key)
-        item.extruder = int(m.group(1)) + 1 if len(paths) > 1 else int(m.group(2) or 0) + 1
+        item.extruder = int(m.group(1)) + 1 if len(paths) + start > 1 else int(m.group(2) or 0) + 1
     return items
 
 
@@ -260,40 +263,54 @@ def esc(s) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool) -> None:
-    """Write STLs (split into bodies) as one 3MF with a filament per body.
+def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool = True, plate: int = 0) -> None:
+    """A plain 3MF of what goes on the plate: a project 3MF's printed meshes
+    and/or STLs (split into bodies), a filament per piece from ``assign``
+    (0 = leave it off the plate).
 
-    ``keep_positions``: all pieces become parts of one object, so they stay
-    where they are relative to each other (colours of one model). Otherwise
-    each STL is its own object and the slicer lays them out on the bed.
-    Bodies of one STL are always parts of one object."""
-    items = stl_items(paths)
-    if keep_positions:
-        groups = [(paths[0].stem if len(items) > 1 else items[0].name, items)]
-    else:
-        groups = []
-        for i, path in enumerate(paths):
-            group = [it for it in items if re.fullmatch(rf"f{i}(b\d+)?", it.key)]
-            groups.append((group[0].name if len(group) == 1 else path.stem, group))
-    write_3mf(groups, assign, dst, paths[0].stem)
+    Project objects stay objects (their parts stay parts). STLs: with
+    ``keep_positions`` they become parts of one object, so pieces made to fit
+    together (colours of one model) stay where they are; otherwise each STL
+    is its own object. The slicer lays the objects out (--arrange).
+
+    Used for STLs, and for a project when objects move to more toolheads than
+    it has filaments (OrcaSlicer can't grow a project's filament settings:
+    "invalid size found"), pieces are left off, or STLs are added. The
+    project's per-object settings and modifiers are left behind."""
+    items = items_for(paths)
+    keep = [it for it in items if str(assign.get(it.key, "")) != "0"]
+    if plate:
+        keep = [it for it in keep if not it.key.startswith("o") or not it.plate or it.plate == plate]
+    if not keep:
+        raise ObjectsError("Nothing left on the plate: every piece is set to don't print")
+    if any(it.painted for it in keep):
+        raise ObjectsError("This project has painted colours, so it can't be re-arranged or put on new toolheads here")
+    groups: dict[str, list[Item]] = {}
+    for it in keep:
+        if it.key.startswith("o"):
+            g = it.key.split(":")[0]
+        else:
+            g = "stl" if keep_positions else re.match(r"f\d+", it.key).group(0)
+        groups.setdefault(g, []).append(it)
+    stems = {f"f{i}": p.stem for i, p in enumerate(paths)}
+    named = []
+    for g, members in groups.items():
+        if g.startswith("o"):
+            name = members[0].name.split(" · ")[0]
+        elif len(members) == 1:
+            name = members[0].name
+        else:
+            name = stems.get(g) or next((p.stem for p in paths if p.suffix.lower() == ".stl"), "STLs")
+        named.append((name, members))
+    write_3mf(named, assign, dst, paths[0].stem)
+
+
+def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool) -> None:
+    plate_3mf(paths, assign, dst, keep_positions)
 
 
 def rebuild_3mf(src: Path, assign: dict, dst: Path, plate: int = 0) -> None:
-    """A plain 3MF of a project's printed meshes (one object per object, one
-    part per part) with a filament each. Used when objects move to more
-    toolheads than the project has filaments: OrcaSlicer can't grow a
-    project's own filament settings ("invalid size found"). Modifiers and
-    the project's per-object settings are left behind; the presets apply."""
-    items = threemf_items(src, with_mesh=True)
-    if plate:
-        items = [it for it in items if not it.plate or it.plate == plate]
-    if any(it.painted for it in items):
-        raise ObjectsError("This project has painted colours, so its objects can only use the filaments it already has")
-    groups: dict[str, list[Item]] = {}
-    for it in items:
-        groups.setdefault(it.key.split(":")[0], []).append(it)
-    named = [(g[0].name.split(" · ")[0], g) for g in groups.values()]
-    write_3mf(named, assign, dst, src.stem)
+    plate_3mf([src], assign, dst, True, plate)
 
 
 def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str) -> None:
@@ -567,10 +584,10 @@ def items_for(paths: list[Path]) -> list[Item]:
         hit = _ITEMS_CACHE.get(key)
     if hit is not None:
         return hit
-    if len(paths) == 1 and paths[0].suffix.lower() == ".3mf":
-        items = threemf_items(paths[0], with_mesh=True)
-    elif any(p.suffix.lower() != ".stl" for p in paths):
-        raise ObjectsError("Only STLs can be sliced together")
+    if any(p.suffix.lower() != ".stl" for p in paths[1:]):
+        raise ObjectsError("Only STLs can be added to the plate")
+    if paths[0].suffix.lower() == ".3mf":
+        items = threemf_items(paths[0], with_mesh=True) + stl_items(paths[1:], start=1)
     else:
         items = stl_items(paths)
     with _STL_LOCK:
