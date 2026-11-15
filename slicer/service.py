@@ -392,8 +392,8 @@ def submit(body: dict) -> Job:
     slots = len(filaments) if mode == "presets" else printer.max_filaments
     if used and max(used) > max(slots, 1):
         raise BadRequest(f"An object is set to filament {max(used)}, but only {slots} are picked")
-    if assign and not used:
-        raise BadRequest("Nothing left on the plate: every piece is set to don't print")
+    # Whether anything is left on the plate is checked when the plate is built:
+    # pieces missing from assign keep printing.
     if mode == "project" and src.suffix.lower() == ".3mf" and (extra or 0 in assign.values()):
         raise BadRequest("To add or leave out pieces, pick presets instead of the project's own settings")
     colours = [c if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(c or "")) else "" for c in body.get("colours") or []]

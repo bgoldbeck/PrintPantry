@@ -265,5 +265,7 @@ def test_submit_skips_and_extras_on_a_project(lib, monkeypatch):
     assert job.assign == {"o100": 0, "f1": 2} and job.extra_paths == ["M/clip.stl"]
     with pytest.raises(service.BadRequest):
         service.submit({**base, "assign": {"o100": 0}, "mode": "project"})
-    with pytest.raises(service.BadRequest):
-        service.submit({**base, "assign": {"o100": 0, "o101:2": 0}})  # nothing left... only when all are 0
+    # Only zeros in assign: the pieces not named still print, so it's accepted;
+    # an empty plate is caught when the plate is built (plate_3mf).
+    job = service.submit({**base, "assign": {"o100": 0}})
+    assert job.assign == {"o100": 0}
