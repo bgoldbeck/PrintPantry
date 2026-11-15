@@ -170,7 +170,7 @@ export function renderThumbnail(url, color = "#e9a23b", px = 384) {
 // ---------------------------------------------------------------- per-object preview
 // Shows the pieces of a model (from /api/slicer/objects/mesh), each in the
 // colour of the filament it will print with. Click a piece to pick it.
-export function createPartsViewer(container, buffer, { onPick } = {}) {
+export function createPartsViewer(container, buffer, { onPick, bed = null } = {}) {
   const dv = new DataView(buffer);
   let off = 0;
   const count = dv.getUint32(off, true); off += 4;
@@ -208,14 +208,29 @@ export function createPartsViewer(container, buffer, { onPick } = {}) {
     scene.add(m);
     return m;
   });
-  const span = Math.max(size.x, size.z, 40) * 1.6;
-  const step = span > 300 ? 50 : 10;
-  const cells = Math.ceil(span / step);
-  const grid = new THREE.GridHelper(cells * step, cells, cssVar("--ink-2", "#888"), cssVar("--line", "#ccc"));
+  // The build plate, when known: a plate-sized slab with a 10 mm grid, the
+  // model in the middle (the slicer centres / arranges it the same way).
+  let grid, plate = null;
+  if (bed) {
+    const [bw, bd] = bed;
+    plate = new THREE.Mesh(new THREE.BoxGeometry(bw, 1, bd),
+      new THREE.MeshStandardMaterial({ color: "#2e2e30", roughness: 0.9 }));  // dark like a PEI plate
+    plate.position.y = -0.55;
+    scene.add(plate);
+    grid = new THREE.GridHelper(Math.max(bw, bd), Math.round(Math.max(bw, bd) / 10), "#777", "#4a4a4c");
+    grid.scale.set(bw / Math.max(bw, bd), 1, bd / Math.max(bw, bd));
+  } else {
+    const span = Math.max(size.x, size.z, 40) * 1.6;
+    const step = span > 300 ? 50 : 10;
+    const cells = Math.ceil(span / step);
+    grid = new THREE.GridHelper(cells * step, cells, cssVar("--ink-2", "#888"), cssVar("--line", "#ccc"));
+  }
   grid.material.transparent = true;
   grid.material.opacity = 0.5;
   scene.add(grid);
-  frameCamera(camera, size, controls);
+  // Frame the model, but show enough of the plate to judge its size on it.
+  const view = bed ? new THREE.Vector3(Math.max(size.x, bed[0] * 0.3), size.y, Math.max(size.z, bed[1] * 0.3)) : size;
+  frameCamera(camera, view, controls);
 
   function resize() {
     const w = container.clientWidth || 400;
@@ -269,6 +284,7 @@ export function createPartsViewer(container, buffer, { onPick } = {}) {
       controls.dispose();
       meshes.forEach((m) => { m.geometry.dispose(); m.material.dispose(); });
       grid.geometry.dispose();
+      if (plate) { plate.geometry.dispose(); plate.material.dispose(); }
       renderer.dispose();
       el.remove();
     },

@@ -506,7 +506,15 @@ async function modelPage(id) {
       if (pf) openCustomizeDialog(pf, async (job) => {
         SHOW_FILE = job.output_ids?.[0] || null;
         await refreshLibrary();
-        route();
+        await route();
+        // "Colours & slice": straight on to the slice dialog for the new 3MF.
+        if (job.next) {
+          const i = job.outputs.indexOf(job.next.file);
+          const id = job.output_ids?.[i];
+          const fresh = await api(`/api/models/${m.id}`).catch(() => null);
+          const f = fresh?.files.find((x) => x.id === id);
+          if (f) openSliceDialog(f, job.next.printer, async () => { await refreshLibrary(); route(); });
+        }
       });
       return;
     }

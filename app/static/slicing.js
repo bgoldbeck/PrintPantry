@@ -41,6 +41,8 @@ const swatch = (c) => (c ? `<i class="dot" style="--c:${esc(c)}"></i>` : "");
 
 // Preview colours for filament slots nobody has a colour for.
 const PALETTE = ["#E9A23B", "#3B82E9", "#E94B3B", "#3BBF6A", "#9B59D0", "#E9D63B", "#3BD0D0", "#E93BA8"];
+// Build plate sizes (mm) for the preview.
+const BEDS = { u1: [270, 270], p1s: [256, 256] };
 const mm = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
 
 // "Slice for ..." on an STL of a model that has other STLs, or on a 3MF with
@@ -256,7 +258,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     } else {
       objBox.innerHTML = `<div class="field obj-field"><span>Colours</span><div>
         ${together}
-        ${many || objs.together.size ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>` : ""}
+        ${many || objs.together.size ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>
+          <small class="hint">Build plate preview${BEDS[printerId] ? ` (${BEDS[printerId].join(" × ")} mm)` : ""}. The slicer centres the model, or lays pieces out when they print separately.</small>` : ""}
         <div data-obj-dynamic>${dynamic}</div></div></div>`;
       objBox.querySelectorAll("[data-with]").forEach((c) => (c.onchange = () => {
         if (c.checked) objs.together.add(c.dataset.with); else objs.together.delete(c.dataset.with);
@@ -317,6 +320,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       if (seq !== loadSeq || !prev.isConnected) return;
       prev.innerHTML = "";
       viewer = createPartsViewer(prev, buf, {
+        bed: BEDS[printerId],
         onPick: (i) => {
           const it = objs.items[i];
           if (!it) return;
@@ -376,7 +380,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const secs = Math.round((Date.now() - started) / 1000);
       if (job.state === "done") {
         const warn = job.warnings?.length ? `<div class="notice warn"><ul>${job.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
-        progress.innerHTML = `<div class="notice success"><span class="notice-icon">✓</span><div class="notice-body"><strong>Done in ${secs} s!</strong> Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}.</div></div>${warn}`;
+        const used = (job.usage || []).map((g, i) => (g > 0 ? `<span class="used">${swatch(slotColour(i))} ${esc(slotTag(i))} ${g < 10 ? g.toFixed(1) : Math.round(g)} g</span>` : "")).join("");
+        progress.innerHTML = `<div class="notice success"><span class="notice-icon">✓</span><div class="notice-body"><strong>Done in ${secs} s!</strong> Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}.${used ? `<div class="usage">${used}</div>` : ""}</div></div>${warn}`;
         go.textContent = "Done";
         $("[data-close]").textContent = "Close";
         dlg.addEventListener("close", () => onDone?.(job), { once: true });
