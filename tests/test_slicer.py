@@ -114,6 +114,30 @@ def test_user_preset_without_inherits_still_names_a_builtin(profiles, tmp_path):
         assert flat["inherits"] == "Snapmaker U1 (0.4 nozzle)"
 
 
+def test_bambu_export_strings_become_lists(profiles, tmp_path):
+    """Bambu Studio exports some list settings as "" (e.g. filament_notes);
+    OrcaSlicer reads that as an empty list and aborts (invalid size found)."""
+    write(profiles / "Snapmaker/filament/Snapmaker PLA @U1.json",
+          {"type": "filament", "name": "Snapmaker PLA @U1", "filament_type": ["PLA"], "filament_notes": [""],
+           "compatible_printers": ["Snapmaker U1 (0.4 nozzle)"]})
+    cfg = tmp_path / "cfg4"
+    write(cfg / "filament/Shop PLA.json", {"name": "Shop PLA", "from": "User", "inherits": "Snapmaker PLA @U1",
+                                           "filament_notes": "", "filament_type": ["PLA"], "note_text": "x"})
+    lib = P.PresetLibrary(profiles, cfg, vendors=("Snapmaker",)).load()
+    flat = lib.flatten("filament", "Shop PLA", "Snapmaker")
+    assert flat["filament_notes"] == [""]
+    assert flat["note_text"] == "x"  # not a list in the built-ins: left alone
+
+
+def test_filament_keys_only_some_have_are_dropped():
+    fils = [{"name": "a", "filament_type": ["PLA"], "filament_cooling_before_tower": ["0"]},
+            {"name": "b", "filament_type": ["PETG"]}]
+    assert service.common_filament_keys(fils) == ["filament_cooling_before_tower"]
+    assert all(set(f) == {"name", "filament_type"} for f in fils)
+    one = [{"name": "a", "x": ["1"]}]
+    assert service.common_filament_keys(one) == [] and one[0]["x"] == ["1"]
+
+
 def test_choices_for_a_printer(lib):
     machines = [m.name for m in lib.machines_for("Snapmaker U1", "Snapmaker")]
     assert sorted(machines) == ["My U1", "Snapmaker U1 (0.4 nozzle)"]

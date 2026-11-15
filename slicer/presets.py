@@ -81,12 +81,15 @@ class PresetLibrary:
     system: dict[tuple[str, str, str], Preset] = field(default_factory=dict)  # (vendor, type, name)
     user: dict[tuple[str, str], Preset] = field(default_factory=dict)  # (type, name)
     problems: list[str] = field(default_factory=list)
+    # Keys that the built-in presets of each type store as lists (see vectorise).
+    list_keys: dict[str, set] = field(default_factory=dict)
 
     # ------------------------------------------------------------ loading
     def load(self) -> "PresetLibrary":
         self.system.clear()
         self.user.clear()
         self.problems.clear()
+        self.list_keys = {t: set() for t in TYPES}
         if self.profiles_root and self.profiles_root.is_dir():
             for vendor in (*self.vendors, *SHARED_VENDORS):
                 self._load_vendor(vendor)
@@ -105,6 +108,7 @@ class PresetLibrary:
             t = infer_type(data, path.parent.name)
             if t not in TYPES:
                 continue
+            self.list_keys.setdefault(t, set()).update(k for k, v in data.items() if isinstance(v, list))
             self.system[(vendor, t, data["name"])] = Preset(
                 name=data["name"], type=t, data=data, source="system", vendor=vendor, origin=str(path)
             )
@@ -216,9 +220,22 @@ class PresetLibrary:
             merged["name"] = preset.name
             merged["type"] = t
         merged["inherits"] = anc.name if anc else ""
+        if preset.source == "user":
+            self.vectorise(t, merged)
         merged["from"] = "User" if preset.source == "user" else "system"
         merged["instantiation"] = "true"
         return merged
+
+    def vectorise(self, t: str, data: dict) -> None:
+        """Wrap plain strings in a list where the built-in presets use a list.
+
+        Bambu Studio exports some list settings as a bare string (for example
+        "filament_notes": ""). OrcaSlicer reads "" as a list of zero entries
+        and aborts with "set_with_restore_2(): invalid size found"."""
+        for key in self.list_keys.get(t, ()):
+            value = data.get(key)
+            if isinstance(value, str):
+                data[key] = [value]
 
     def system_ancestor(self, preset: Preset, vendor: str = "") -> Preset | None:
         for p in self.chain(preset, vendor):
