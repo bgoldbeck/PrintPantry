@@ -33,6 +33,7 @@ class SliceRequest(BaseModel):
     assign: dict[str, int] = {}  # object key -> filament slot (1-based); see slicer/objects.py
     colours: list[str] = []  # colour per filament slot, e.g. what the toolhead has loaded
     keep_positions: bool = True  # STLs together keep their places (colours of one model)
+    copies: int = 1  # the plate this many times (the slicer arranges them)
 
 
 class SlicerClient:

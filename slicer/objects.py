@@ -54,8 +54,11 @@ class Item:
     def to_json(self) -> dict:
         # Pieces of one group print as one object (stay together on the plate).
         group = self.key.split(":")[0] if self.key.startswith("o") else re.match(r"f\d+", self.key).group(0)
+        lo, hi = bbox(self.tris)
         return {"key": self.key, "name": self.name, "extruder": self.extruder, "group": group,
                 "triangles": self.triangles, "size": [round(s, 1) for s in self.size],
+                # footprint on the plate (x0, y0, x1, y1 mm), to work out how many copies fit
+                "box": [round(lo[0], 1), round(lo[1], 1), round(hi[0], 1), round(hi[1], 1)],
                 "plate": self.plate, "painted": self.painted}
 
 
@@ -263,7 +266,8 @@ def esc(s) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool = True, plate: int = 0) -> None:
+def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool = True, plate: int = 0,
+              copies: int = 1) -> None:
     """A plain 3MF of what goes on the plate: a project 3MF's printed meshes
     and/or STLs (split into bodies), a filament per piece from ``assign``
     (0 = leave it off the plate).
@@ -275,8 +279,9 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
 
     Used for STLs, and for a project when objects move to more toolheads than
     it has filaments (OrcaSlicer can't grow a project's filament settings:
-    "invalid size found"), pieces are left off, or STLs are added. The
-    project's per-object settings and modifiers are left behind."""
+    "invalid size found"), pieces are left off, STLs are added, unused
+    filaments are dropped, or ``copies`` > 1 (each object written that many
+    times). The project's per-object settings and modifiers are left behind."""
     items = items_for(paths)
     keep = [it for it in items if str(assign.get(it.key, "")) != "0"]
     if plate:
@@ -302,6 +307,9 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
         else:
             name = stems.get(g) or next((p.stem for p in paths if p.suffix.lower() == ".stl"), "STLs")
         named.append((name, members))
+    copies = max(1, int(copies or 1))
+    if copies > 1:
+        named = [(f"{name} #{c + 1}" if c else name, members) for c in range(copies) for name, members in named]
     write_3mf(named, assign, dst, paths[0].stem)
 
 
