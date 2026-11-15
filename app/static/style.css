@@ -952,6 +952,7 @@ button.light-btn.on:hover {
   gap: 10px;
   margin: 0 0 4px;
 }
+#btn-delete-model { margin-left: auto; }
 .model-title-row h1 {
   margin: 0;
 }
