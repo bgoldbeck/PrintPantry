@@ -229,3 +229,15 @@ def test_filaments_get_distinct_colours():
     service.distinct_colours(fils)
     cols = [f["filament_colour"][0] for f in fils]
     assert cols[0] == "#FFFFFF" and len(set(c.upper() for c in cols)) == 4
+
+
+def test_rebuild_project_for_more_toolheads(tmp_path):
+    src = bambu_3mf(tmp_path / "a.3mf")
+    out = tmp_path / "r.3mf"
+    O.rebuild_3mf(src, {"o100": 3, "o101:3": 2}, out)
+    items = O.threemf_items(out)
+    assert len(items) == 3
+    assert sorted(i.extruder for i in items) == [1, 2, 3]
+    assert {i.name.split(" · ")[0] for i in items} == {"Obj0", "Obj1"}
+    with pytest.raises(O.ObjectsError):
+        O.rebuild_3mf(bambu_3mf(tmp_path / "p.3mf", painted=True), {"o100": 3}, out)

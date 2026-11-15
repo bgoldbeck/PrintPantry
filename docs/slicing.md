@@ -50,7 +50,11 @@ to match the highest toolhead used, with presets matching what's loaded.
   several parts (a multi-colour model). The file's own choices are the
   starting point; only what you change is written into the copy that gets
   sliced (`Metadata/model_settings.config`), never into your file. Painted
-  colours stay as painted; the toolhead applies to the unpainted rest.
+  colours stay as painted; the toolhead applies to the unpainted rest, and a
+  painted project can only use the filaments it already has. Moving objects
+  onto more toolheads than the project has filaments slices its meshes with
+  your chosen presets only (OrcaSlicer can't add filaments to a project), so
+  per-object settings and modifiers from the project are left out.
 - **STL with separate bodies** (e.g. a sign whose letters are separate
   pieces): each body gets a row, starting on different toolheads.
 - **Several STLs in one model** (colour sets as downloaded from model sites):

@@ -189,7 +189,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
 
   // ------------------------------------------------ objects, each with its own toolhead
   const isStl = proj.kind === "stl";
-  const choices = () => (mode() === "project" && !isStl ? Math.max(1, baseCount)
+  // A painted project keeps its own filaments (repainting isn't possible here).
+  const choices = () => ((mode() === "project" || objs.items.some((it) => it.painted)) && !isStl ? Math.max(1, baseCount)
     : Math.min(o.printer.max_filaments, Math.max(4, baseCount)));
   const loadedCount = () => Math.max(1, heads.filter((h) => h.loaded !== false && h.index < choices()).length || 1);
   const slotOf = (it) => Math.min(objs.assign[it.key] || it.extruder || 1, choices());

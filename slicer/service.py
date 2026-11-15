@@ -621,7 +621,13 @@ def run_job(job: Job) -> None:
             args += build_settings(job, printer, work, info)
         # Several STLs, or one with several bodies, become a 3MF with a filament per piece.
         combine = info.kind == "stl" and bool(job.extra_paths or job.assign)
-        if info.kind == "stl" or (info.kind == "3mf" and not info.printer_model):
+        # A project whose objects now use more filaments than it has is rebuilt
+        # as a plain 3MF: OrcaSlicer can't grow a project's filament settings.
+        rebuild = (info.kind == "3mf" and job.mode == "presets" and bool(job.assign)
+                   and len(job.filaments) > max(1, len(info.filaments)))
+        if rebuild:
+            args[args.index("--slice") + 1] = "0"  # only the chosen plate is in the rebuilt file
+        if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model):
             args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         if printer.output == "gcode.3mf":
             args += ["--export-3mf", "result.gcode.3mf"]  # relative to --outputdir
@@ -629,7 +635,14 @@ def run_job(job: Job) -> None:
         # settings. (Removing the project settings from the 3MF instead makes
         # the slicer crash.)
         inp = work / ("input" + src.suffix.lower())
-        if info.kind == "3mf":
+        if rebuild:
+            try:
+                O.rebuild_3mf(src, job.assign, inp, job.plate)
+            except O.ObjectsError as exc:
+                raise RuntimeError(str(exc)) from exc
+            job.warnings.append("Objects moved to new toolheads: sliced with the chosen presets only "
+                                "(the project's own per-object settings and modifiers were left out)")
+        elif info.kind == "3mf":
             # With presets, write the process into the project too: the CLI
             # keeps some project values over the loaded process, and a Bambu
             # Studio project can hold values OrcaSlicer rejects (e.g. -1).
