@@ -647,7 +647,9 @@ async function modelPage(id) {
     const loading = document.getElementById("viewer-loading");
     loading.style.display = "grid";
     loading.textContent = `Loading ${f.name} (${fmtSize(f.size)})...`;
-    actions.innerHTML = `<button class="small" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
+    // Made from a parametric source: changing text / sizes is the first thing you want.
+    actions.innerHTML = `${parametric.length ? `<button class="small" data-customize="${parametric[0].id}" title="Change the parameters (text, sizes...) and make new STLs on the NAS">Customize ${esc(parametric[0].kind === "scad" ? "(OpenSCAD)" : "text, size...")}</button>` : ""}
+      <button class="small${parametric.length ? " ghost" : ""}" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
       <button type="button" class="small ghost" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename this STL file">Rename STL</button>
       ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
