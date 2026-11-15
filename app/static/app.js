@@ -513,7 +513,8 @@ async function modelPage(id) {
     const b = e.target.closest("[data-slice]");
     if (!b) return;
     const f = m.files.find((x) => x.id === b.dataset.slice);
-    if (f) openSliceDialog(f, b.dataset.printer, async () => { await refreshLibrary(); route(); });
+    if (f) openSliceDialog(f, b.dataset.printer, async () => { await refreshLibrary(); route(); },
+      { siblings: f.kind === "stl" ? m.files.filter((x) => x.kind === "stl" && x.id !== f.id) : [] });
   });
 
   const catSelect = document.getElementById("cat-select");

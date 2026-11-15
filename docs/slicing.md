@@ -38,6 +38,29 @@ sliced for it. The dialog warns when a filament has no bed temperature for the
 chosen plate (OrcaSlicer's "Snapmaker PLA @U1", for example, only defines one
 for the smooth PEI / High Temp plate).
 
+### A colour per object
+
+When the file has more than one piece, the dialog adds a **Colours** section
+with a 3D preview. Each piece gets its own toolhead (T1-T4 on the U1): pick
+it in the list, or choose a toolhead button and click pieces in the preview.
+Pieces show in the colour loaded on that toolhead, and the filament rows grow
+to match the highest toolhead used, with presets matching what's loaded.
+
+- **Project 3MF**: one row per object, or per part when an object is made of
+  several parts (a multi-colour model). The file's own choices are the
+  starting point; only what you change is written into the copy that gets
+  sliced (`Metadata/model_settings.config`), never into your file. Painted
+  colours stay as painted; the toolhead applies to the unpainted rest.
+- **STL with separate bodies** (e.g. a sign whose letters are separate
+  pieces): each body gets a row, starting on different toolheads.
+- **Several STLs in one model** (colour sets as downloaded from model sites):
+  tick *Slice together with* to add them. *Keep their positions* (on when the
+  STLs touch or overlap) keeps them where they were designed to fit;
+  untick it for separate pieces and the slicer lays them out on the bed.
+
+STLs are combined into a 3MF for the slicer (one part per body, filament per
+part). STLs over 600,000 triangles aren't split into bodies.
+
 ### Your own presets
 
 Built-in presets need nothing. To use your own printer or process presets,

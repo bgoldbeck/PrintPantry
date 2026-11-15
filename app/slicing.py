@@ -13,7 +13,7 @@ import os
 import threading
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 log = logging.getLogger("printpantry.slicing")
@@ -29,6 +29,10 @@ class SliceRequest(BaseModel):
     filaments: list[str] = []
     bed_type: str = ""
     plate: int = 0
+    extra_files: list[str] = []  # more STLs of the model, sliced together with file_id
+    assign: dict[str, int] = {}  # object key -> filament slot (1-based); see slicer/objects.py
+    colours: list[str] = []  # colour per filament slot, e.g. what the toolhead has loaded
+    keep_positions: bool = True  # STLs together keep their places (colours of one model)
 
 
 class SlicerClient:
@@ -40,13 +44,26 @@ class SlicerClient:
     def enabled(self) -> bool:
         return bool(self.base)
 
-    def call(self, method: str, path: str, **kw) -> dict:
+    def _request(self, method: str, path: str, timeout: float | None = None, **kw) -> httpx.Response:
         if not self.enabled:
             raise HTTPException(503, "Slicing isn't set up (PP_SLICER_URL is empty)")
         try:
-            res = httpx.request(method, self.base + path, timeout=self.timeout, **kw)
+            return httpx.request(method, self.base + path, timeout=timeout or self.timeout, **kw)
         except httpx.HTTPError as exc:
             raise HTTPException(503, f"The slicer isn't reachable: {exc}") from exc
+
+    def raw(self, method: str, path: str, timeout: float | None = None, **kw) -> bytes:
+        res = self._request(method, path, timeout, **kw)
+        if res.status_code >= 400:
+            try:
+                detail = res.json().get("detail")
+            except ValueError:
+                detail = res.text[:300]
+            raise HTTPException(res.status_code, detail or "Slicer error")
+        return res.content
+
+    def call(self, method: str, path: str, timeout: float | None = None, **kw) -> dict:
+        res = self._request(method, path, timeout, **kw)
         try:
             data = res.json()
         except ValueError:
@@ -86,11 +103,33 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIR
         opts["calibrated"] = flow_ratios(printer)
         return opts
 
+    def object_paths(file_id: str, extra: str) -> list[str]:
+        f = sliceable(file_id)
+        paths = [f.relpath]
+        for x in [x for x in extra.split(",") if x]:
+            e, _ = resolve(x)
+            if e.kind != "stl" or f.kind != "stl":
+                raise HTTPException(400, "Only STLs can be sliced together")
+            paths.append(e.relpath)
+        return paths
+
+    @router.get("/objects")
+    def objects(file_id: str, extra: str = ""):
+        """The objects / parts / STL bodies that can each get their own filament."""
+        return client.call("POST", "/objects", timeout=120, json={"paths": object_paths(file_id, extra)})
+
+    @router.get("/objects/mesh")
+    def objects_mesh(file_id: str, extra: str = ""):
+        data = client.raw("POST", "/objects/mesh", timeout=120, json={"paths": object_paths(file_id, extra)})
+        return Response(data, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+
     @router.post("/jobs")
     def start(req: SliceRequest):
         f = sliceable(req.file_id)
-        body = req.model_dump(exclude={"file_id"})
+        body = req.model_dump(exclude={"file_id", "extra_files"})
         body["path"] = f.relpath
+        if req.extra_files:
+            body["extra_paths"] = object_paths(req.file_id, ",".join(req.extra_files))[1:]
         if req.mode == "presets":
             saved = flow_ratios(req.printer)
             body["flow_ratios"] = {n: saved[n] for n in req.filaments if n in saved}

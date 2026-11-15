@@ -5,6 +5,8 @@ only reachable on the compose network. Standard library only.
 
     GET  /health                       slicer version, preset counts
     GET  /options?printer=u1&path=..   presets to choose from, sensible defaults
+    POST /objects {"paths": [..]}      the objects/bodies to give filaments to (see objects.py)
+    POST /objects/mesh {"paths": [..]} their triangles for the preview (binary)
     POST /jobs                         queue a slice; returns {"id": ...}
     GET  /jobs                         recent jobs
     GET  /jobs/<id>                    one job: state, message, outputs, log tail
@@ -30,12 +32,15 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
+from xml.etree import ElementTree as ET
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import calibration as C
+import objects as O
 import presets as P
 import project
 import render as R
@@ -328,6 +333,10 @@ class Job:
     bed_type: str = ""
     plate: int = 0
     flow_ratios: dict = field(default_factory=dict)  # filament preset -> calibrated filament_flow_ratio
+    extra_paths: list[str] = field(default_factory=list)  # more STLs sliced together with path
+    assign: dict = field(default_factory=dict)  # item key (objects.py) -> filament slot, 1-based
+    colours: list[str] = field(default_factory=list)  # per filament slot, e.g. the toolhead's loaded colour
+    keep_positions: bool = True  # STLs together: as parts of one object (colours of one model)
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
@@ -370,13 +379,50 @@ def submit(body: dict) -> Job:
         if len(filaments) > printer.max_filaments:
             raise BadRequest(f"{printer.name} takes at most {printer.max_filaments} filaments; this needs {len(filaments)}")
     plate = int(body.get("plate") or 0)
+    extra = [str(x) for x in body.get("extra_paths") or [] if str(x) != path]
+    if extra:
+        if src.suffix.lower() != ".stl":
+            raise BadRequest("Only STLs can be sliced together")
+        for x in extra:
+            if library_path(x, (".stl",)).suffix.lower() != ".stl":
+                raise BadRequest("Only STLs can be sliced together")
+    assign = body.get("assign") or {}
+    if not isinstance(assign, dict):
+        raise BadRequest("assign must map objects to filaments")
+    assign = {str(k): int(v) for k, v in assign.items() if str(v).isdigit() and int(v) >= 1}
+    slots = len(filaments) if mode == "presets" else printer.max_filaments
+    if assign and max(assign.values()) > max(slots, 1):
+        raise BadRequest(f"An object is set to filament {max(assign.values())}, but only {slots} are picked")
+    colours = [c if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(c or "")) else "" for c in body.get("colours") or []]
     job = Job(
         id=uuid.uuid4().hex[:12], path=path, printer=printer.id, mode=mode,
         machine=str(body.get("machine", "")), process=str(body.get("process", "")),
         filaments=filaments, bed_type=str(body.get("bed_type", "")), plate=max(0, plate),
         flow_ratios=flow_ratios(body.get("flow_ratios")),
+        extra_paths=extra, assign=assign, colours=[str(c).upper() for c in colours],
+        keep_positions=bool(body.get("keep_positions", True)),
     )
     return queue_job(job)
+
+
+def object_paths(body: dict) -> list[Path]:
+    paths = [str(p) for p in body.get("paths") or [] if p]
+    if not paths:
+        raise BadRequest("No file")
+    if len(paths) > 16:
+        raise BadRequest("Too many files")
+    return [library_path(p) for p in dict.fromkeys(paths)]
+
+
+def list_objects(body: dict) -> dict:
+    paths = object_paths(body)
+    try:
+        items = O.items_for(paths)
+    except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
+        raise BadRequest(str(exc)) from exc
+    stls = len(paths) > 1
+    return {"items": [i.to_json() for i in items],
+            "overlapping": O.overlapping(paths) if stls else False}
 
 
 def flow_ratios(value) -> dict:
@@ -518,7 +564,9 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
     process["curr_bed_type"] = bed
     job.bed_type = bed
     for i, f in enumerate(fils):
-        if i < len(info.filaments) and info.filaments[i].get("colour"):
+        if i < len(job.colours) and job.colours[i]:
+            f["filament_colour"] = [job.colours[i]]
+        elif i < len(info.filaments) and info.filaments[i].get("colour"):
             f["filament_colour"] = [info.filaments[i]["colour"]]
         if _temp(f, BED_KEYS[bed]) <= 0:
             job.warnings.append(f'{f["name"]} has no bed temperature for {bed}; the bed will not heat')
@@ -535,7 +583,8 @@ def run_job(job: Job) -> None:
     printer = PRINTERS[job.printer]
     src = library_path(job.path)
     info = project.inspect(src)
-    if info.kind == "3mf" and job.mode == "presets" and info.filaments and len(job.filaments) != len(info.filaments):
+    if info.kind == "3mf" and job.mode == "presets" and info.filaments and len(job.filaments) != len(info.filaments) \
+            and not (job.assign and len(job.filaments) >= max(job.assign.values())):
         raise RuntimeError(f"This project uses {len(info.filaments)} filaments; pick one for each")
     if len(info.filaments) > printer.max_filaments:
         raise RuntimeError(f"This project uses {len(info.filaments)} filaments; {printer.name} has {printer.max_filaments}")
@@ -550,6 +599,8 @@ def run_job(job: Job) -> None:
         args = [BIN, "--allow-newer-file", "--debug", "2", "--slice", str(job.plate or 0), "--outputdir", str(out)]
         if job.mode == "presets":
             args += build_settings(job, printer, work, info)
+        # Several STLs, or one with several bodies, become a 3MF with a filament per piece.
+        combine = info.kind == "stl" and bool(job.extra_paths or job.assign)
         if info.kind == "stl" or (info.kind == "3mf" and not info.printer_model):
             args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         if printer.output == "gcode.3mf":
@@ -564,7 +615,16 @@ def run_job(job: Job) -> None:
             # Studio project can hold values OrcaSlicer rejects (e.g. -1).
             proc_file = work / "process.json"
             overrides = json.loads(proc_file.read_text()) if job.mode == "presets" and proc_file.exists() else None
-            project.copy_for_slicing(src, inp, overrides)
+            if job.assign:
+                assigned = work / "assigned.3mf"
+                O.assign_3mf(src, assigned, job.assign)
+                project.copy_for_slicing(assigned, inp, overrides)
+            else:
+                project.copy_for_slicing(src, inp, overrides)
+        elif combine:
+            inp = work / "input.3mf"
+            paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
+            O.stls_to_3mf(paths, job.assign, inp, job.keep_positions)
         else:
             shutil.copyfile(src, inp)
         args.append(str(inp))
@@ -574,7 +634,7 @@ def run_job(job: Job) -> None:
             bad = invalid_keys(proc.stderr or "") if result.get("return_code") == CLI_INVALID_VALUES else []
             # A Bambu Studio project can hold values OrcaSlicer rejects, such
             # as -1 for "auto". Drop them so OrcaSlicer's defaults apply.
-            if not bad or info.kind != "3mf" or not project.drop_keys(inp, bad):
+            if not bad or inp.suffix != ".3mf" or not project.drop_keys(inp, bad):
                 break
             job.warnings.append("Used OrcaSlicer defaults for " + ", ".join(bad))
             job.log = (job.log + (proc.stderr or ""))[-LOG_KEEP:]
@@ -829,6 +889,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"tests": [
                     {"id": t.id, "label": t.label, "hint": t.hint, "available": flow_test_file(t).is_file()}
                     for t in C.FLOW_TESTS.values()]})
+            if method == "POST" and url.path == "/objects":
+                return self._send(200, list_objects(self._body()))
+            if method == "POST" and url.path == "/objects/mesh":
+                paths = object_paths(self._body())
+                try:
+                    blob = O.mesh_blob(O.items_for(paths))
+                except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
+                    raise BadRequest(str(exc)) from exc
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+                return None
             if method == "GET" and url.path == "/render/tools":
                 return self._send(200, R.tools())
             if method == "POST" and url.path == "/render":
