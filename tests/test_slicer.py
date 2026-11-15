@@ -460,10 +460,10 @@ def test_app_objects_and_stls_together(app_client):
     assert c.get(f"/api/slicer/objects?file_id={stl['id']}&extra={proj['id']}").status_code == 400
 
 
-def test_delete_only_sliced_files(app_client):
+def test_delete_files(app_client):
     c, _ = app_client
     sliced = _file(c, "sliced3mf")
     stl = _file(c, "stl")
-    assert c.delete(f"/api/files/{stl['id']}").status_code == 400
+    assert c.delete(f"/api/files/{stl['id']}").status_code == 200
     assert c.delete(f"/api/files/{sliced['id']}").status_code == 200
     assert c.delete(f"/api/files/{sliced['id']}").status_code == 404

@@ -397,3 +397,41 @@ def test_failed_move_puts_files_back(tmp_path, monkeypatch):
         assert r.status_code == 500 and "Nothing was changed" in r.json()["detail"]
         assert (lib / "stls" / stl).is_file() and (lib / "3mf" / "Pot Ladle Clip-Pot Ladle Clip.3mf").is_file()
         assert not (lib / "Kitchen" / "Pot Ladle Clip").exists()
+
+
+def test_recategorize_loose_copy_merges_instead_of_duplicate(tmp_path):
+    """A library sync can bring back loose copies of files already moved into a
+    model folder; moving them again must not make "Pot Ladle Clip (2)"."""
+    lib = tmp_path / "lib"
+    stl = "Pot Ladle Clip-Pot Ladle Clip.stl"
+    demo.write_stl(lib / "stls" / stl, demo.SHAPES["cube"]())
+    settings = Settings(library=lib, data=tmp_path / "d", password="", scan_interval=0)
+    with TestClient(create_app(settings, background_scan=False)) as c:
+        m = c.get("/api/models").json()["models"][0]
+        first = c.put(f"/api/models/{m['id']}/category", json={"category": "Kitchen"}).json()["id"]
+        demo.write_stl(lib / "stls" / stl, demo.SHAPES["cube"]())  # the sync puts it back
+        c.post("/api/rescan")
+        c.app.state.scanner.scan()
+        m = next(x for x in c.get("/api/models").json()["models"] if x["id"] != first)
+        r = c.put(f"/api/models/{m['id']}/category", json={"category": "Kitchen"})
+        assert r.status_code == 200, r.text
+        assert r.json()["id"] == first
+        assert not (lib / "Kitchen" / "Pot Ladle Clip (2)").exists()
+        assert not (lib / "stls" / stl).exists()
+        assert [x["path"] for x in c.get("/api/models").json()["models"]] == ["Kitchen/Pot Ladle Clip"]
+
+
+def test_delete_model_and_source_file(client, library):
+    label = by_name(client, "plant label")  # loose files
+    r = client.delete(f"/api/models/{label['id']}")
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/models/{label['id']}").status_code == 404
+    full = [client.get(f"/api/models/{m['id']}").json() for m in client.get("/api/models").json()["models"]]
+    m = next(m for m in full if "#" not in m["path"] and len(m["files"]) > 1)
+    f = m["files"][0]
+    assert client.delete(f"/api/files/{f['id']}").status_code == 200
+    left = client.get(f"/api/models/{m['id']}").json()
+    assert f["id"] not in [x["id"] for x in left["files"]]
+    assert client.delete(f"/api/models/{m['id']}").status_code == 200
+    assert not (library / m["path"]).exists()
+    assert client.delete("/api/models/nope").status_code == 404

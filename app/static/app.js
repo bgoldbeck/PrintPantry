@@ -411,6 +411,7 @@ function projectFileHtml(f) {
       ${sliceButtons(f)}
       <button class="small${slicerPrinters().length ? " ghost" : ""}" data-open="${f.id}">Open in<span class="slicer-name">${esc(slicerName())}</span></button>
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
+      <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this file (print history stays)">Delete</button>
     </div></div>`;
 }
 
@@ -424,6 +425,7 @@ function parametricFileHtml(f) {
     <div class="file-actions">
       <button class="small" data-customize="${f.id}" title="Change the parameters and make an STL on the NAS">Customize</button>
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download</a>
+      <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this file (print history stays)">Delete</button>
     </div></div>`;
 }
 
@@ -485,6 +487,7 @@ async function modelPage(id) {
       ${!m.path.startsWith("#") ? `<button type="button" class="ghost icon-btn rename-btn" id="btn-rename-model" title="Rename model" aria-label="Rename model">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
       </button>` : ""}
+      <button type="button" class="small ghost danger-text" id="btn-delete-model" title="Delete this model and all its files (print history stays)">Delete model</button>
     </div>
     <p class="sub">${esc(m.path.replace(/#.*/, ""))}${m.source ? ` · from <a href="${esc(m.source.url)}" target="_blank" rel="noopener">${esc(m.source.site)}</a>${m.source.author ? ` by ${esc(m.source.author)}` : ""}${m.source.license ? ` · ${esc(m.source.license)}` : ""}` : ""}</p>
     <div class="tags-edit" id="tags"></div>
@@ -581,6 +584,18 @@ async function modelPage(id) {
     };
   }
 
+  document.getElementById("btn-delete-model").onclick = async () => {
+    const ok = await confirmDialog({ title: "Delete model?",
+      text: `<strong>${esc(m.name)}</strong> and its ${plural(m.files.length, "file")} will be deleted from the library on the NAS. Print history keeps its entries.` });
+    if (!ok) return;
+    try {
+      await api(`/api/models/${m.id}`, { method: "DELETE" });
+      await refreshLibrary();
+      location.hash = `#/c/${encodeURIComponent(m.category)}`;
+    } catch (err) {
+      alert(err.message);
+    }
+  };
   const renameModelBtn = document.getElementById("btn-rename-model");
   if (renameModelBtn) {
     renameModelBtn.onclick = async () => {
@@ -604,8 +619,8 @@ async function modelPage(id) {
   view.addEventListener("click", async (e) => {
     const del = e.target.closest("[data-delete-file]");
     if (del) {
-      const ok = await confirmDialog({ title: "Delete sliced file?",
-        text: `<strong>${esc(del.dataset.fileName)}</strong> will be deleted from the library. Print history keeps its entries.` });
+      const ok = await confirmDialog({ title: "Delete file?",
+        text: `<strong>${esc(del.dataset.fileName)}</strong> will be deleted from the library on the NAS. Print history keeps its entries.` });
       if (!ok) return;
       try {
         await api(`/api/files/${del.dataset.deleteFile}`, { method: "DELETE" });
@@ -684,7 +699,8 @@ async function modelPage(id) {
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
       <button type="button" class="small ghost" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename this STL file">Rename STL</button>
       ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
-      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>`;
+      <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>
+      <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this STL (print history stays)">Delete STL</button>`;
     showSources(f);
     try {
       await viewer.load(fileUrl(f.id));

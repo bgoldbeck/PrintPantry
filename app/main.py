@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import filecmp
 import shutil
 import threading
 import time
@@ -389,12 +390,6 @@ def create_app(
             raise HTTPException(404, "No such model")
         return {"tags": tags.set(model_id, body.tags)}
 
-    def unique_dir(parent: Path, name: str) -> Path:
-        path, n = parent / name, 2
-        while path.exists():
-            path, n = parent / f"{name} ({n})", n + 1
-        return path
-
     def move_model(model_id: str, new_dir: Path) -> str:
         """Move a model's files into new_dir and carry its tags, history and
         STL previews over to the new ids. Loose files (sitting directly in a
@@ -402,17 +397,31 @@ def create_app(
         m = lib().models[model_id]
         root = settings.library.resolve()
         file_map: dict[str, str] = {}
+        dups: list[tuple[Path, Path, str]] = []
         if "#" in m.relpath:
             cat_dir = root if m.category == UNCATEGORIZED else (root / m.category).resolve()
             # keep type subfolders (e.g. "stls/") the files sat in
             moves = [((root / f.relpath).resolve(), f.relpath) for f in m.files]
             moves = [(src, new_dir / src.relative_to(cat_dir), rel) for src, rel in moves]
+            # Merging into a model folder that already exists (e.g. the loose
+            # files came back from a library sync): a file that is already
+            # there byte for byte is dropped instead of making "X (2)".
+            merged = []
+            for src, dst, rel in moves:
+                if dst.is_file() and filecmp.cmp(src, dst, shallow=False):
+                    dups.append((src, dst, rel))
+                    continue
+                base, n = dst, 2
+                while dst.exists():
+                    dst, n = base.with_name(f"{base.stem} ({n}){base.suffix}"), n + 1
+                merged.append((src, dst, rel))
+            moves = merged
         else:
             old_dir = (root / m.relpath).resolve()
             moves = [(old_dir, new_dir, m.relpath)]
         # Check first, so a folder the app can't write to fails cleanly instead
         # of leaving half-copied files behind.
-        for src, _, _ in moves:
+        for src, _, _ in moves + dups:
             if not os.access(src.parent, os.W_OK | os.X_OK):
                 where = src.parent.relative_to(root).as_posix() or "the library folder"
                 raise HTTPException(403, f"Print Pantry isn't allowed to move files out of '{where}' on the NAS. "
@@ -439,14 +448,23 @@ def create_app(
             log.exception("moving model %s to %s failed", m.relpath, new_dir)
             raise HTTPException(500, f"Couldn't move the files: {exc.strerror or exc}. Nothing was changed.") from exc
         if "#" in m.relpath:
-            for src, dst, rel in moves:
+            for src, dst, rel in moves + dups:
                 file_map[rel] = dst.relative_to(root).as_posix()
+            for src, _, _ in dups:
+                try:
+                    src.unlink()
+                except OSError:
+                    log.exception("could not remove duplicate %s", src)
         else:
             new_rel = new_dir.relative_to(root).as_posix()
             for f in m.files:
                 file_map[f.relpath] = new_rel + f.relpath[len(m.relpath):]
         new_id = make_id(new_dir.relative_to(root).as_posix())
-        tags.migrate_id(model_id, new_id)
+        if new_id in tags.all():
+            tags.add(new_id, tags.get(model_id))
+            tags.set(model_id, [])
+        else:
+            tags.migrate_id(model_id, new_id)
         ids = {make_id(old): make_id(new) for old, new in file_map.items()}
         history.migrate_ids({model_id: new_id}, ids)
         thumbs = settings.data / "thumbs"
@@ -490,7 +508,7 @@ def create_app(
             raise HTTPException(400, "Invalid model name")
         if "#" in m.relpath:
             # loose files: give them a model folder with the new name
-            new_dir = unique_dir(category_dir(m.category), new_name)
+            new_dir = category_dir(m.category) / new_name  # merges into an existing folder
         else:
             old_dir = model_dir(m)
             if new_name == old_dir.name:
@@ -512,7 +530,7 @@ def create_app(
             return {"ok": True, "id": model_id, "category": m.category}
         target = category_dir(new_category)
         if "#" in m.relpath:
-            new_dir = unique_dir(target, folder_name(m.name))
+            new_dir = target / folder_name(m.name)  # merges into an existing folder
         else:
             old_dir = model_dir(m)
             new_dir = target / old_dir.name
@@ -541,15 +559,45 @@ def create_app(
             return {"ok": True, "id": new_f_id, "name": new_name}
         return {"ok": True, "id": file_id, "name": f.name}
 
+    def check_writable(folder: Path) -> None:
+        if not os.access(folder, os.W_OK | os.X_OK):
+            where = folder.relative_to(settings.library.resolve()).as_posix() or "the library folder"
+            raise HTTPException(403, f"Print Pantry isn't allowed to delete files in '{where}' on the NAS. "
+                                     "Run the deploy again to fix the folder permissions.")
+
     @app.delete("/api/files/{file_id}")
     def delete_file(file_id: str):
-        """Delete a sliced file (G-code / sliced 3MF). Sources are never deleted
-        here. Print history keeps its rows (they hold their own copies of the
-        name, time and usage)."""
+        """Delete one file (STL, project 3MF, G-code...). Print history keeps
+        its rows (they hold their own copies of the name, time and usage)."""
         f, path = resolve(file_id)
-        if f.kind not in ("sliced3mf", "gcode"):
-            raise HTTPException(400, "Only sliced files can be deleted here")
+        check_writable(path.parent)
         path.unlink()
+        scanner.scan()
+        return {"ok": True}
+
+    @app.delete("/api/models/{model_id}")
+    def delete_model(model_id: str):
+        """Delete a whole model: its folder, or its loose files. Print history
+        keeps its rows."""
+        m = lib().models.get(model_id)
+        if not m:
+            raise HTTPException(404, "No such model")
+        root = settings.library.resolve()
+        if "#" in m.relpath:
+            paths = [(root / f.relpath).resolve() for f in m.files]
+            for p in paths:
+                if root not in p.parents:
+                    raise HTTPException(400, "File outside the library")
+                check_writable(p.parent)
+            for p in paths:
+                p.unlink(missing_ok=True)
+        else:
+            path = model_dir(m)
+            if len(path.relative_to(root).parts) < 2:
+                raise HTTPException(400, "That is a category folder, not a model")
+            check_writable(path.parent)
+            shutil.rmtree(path)
+        tags.set(model_id, [])
         scanner.scan()
         return {"ok": True}
 

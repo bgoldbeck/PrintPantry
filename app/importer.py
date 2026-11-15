@@ -607,7 +607,11 @@ class Importer:
             if not cand.exists():
                 return cand
             try:
-                if json.loads(meta.read_text("utf-8")).get("url") == plan.url:
+                old = json.loads(meta.read_text("utf-8"))
+                # same link, or the same model reached by another link
+                # (with/without "#profileId-...", tracking query...)
+                if old.get("url") == plan.url or (
+                        plan.id and old.get("site") == plan.site and str(old.get("id")) == str(plan.id)):
                     return cand
             except (OSError, ValueError):
                 pass
