@@ -268,15 +268,41 @@ def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool
     each STL is its own object and the slicer lays them out on the bed.
     Bodies of one STL are always parts of one object."""
     items = stl_items(paths)
-    groups: list[list[Item]] = []
     if keep_positions:
-        groups = [items]
+        groups = [(paths[0].stem if len(items) > 1 else items[0].name, items)]
     else:
-        for i in range(len(paths)):
-            groups.append([it for it in items if re.fullmatch(rf"f{i}(b\d+)?", it.key)])
+        groups = []
+        for i, path in enumerate(paths):
+            group = [it for it in items if re.fullmatch(rf"f{i}(b\d+)?", it.key)]
+            groups.append((group[0].name if len(group) == 1 else path.stem, group))
+    write_3mf(groups, assign, dst, paths[0].stem)
+
+
+def rebuild_3mf(src: Path, assign: dict, dst: Path, plate: int = 0) -> None:
+    """A plain 3MF of a project's printed meshes (one object per object, one
+    part per part) with a filament each. Used when objects move to more
+    toolheads than the project has filaments: OrcaSlicer can't grow a
+    project's own filament settings ("invalid size found"). Modifiers and
+    the project's per-object settings are left behind; the presets apply."""
+    items = threemf_items(src, with_mesh=True)
+    if plate:
+        items = [it for it in items if not it.plate or it.plate == plate]
+    if any(it.painted for it in items):
+        raise ObjectsError("This project has painted colours, so its objects can only use the filaments it already has")
+    groups: dict[str, list[Item]] = {}
+    for it in items:
+        groups.setdefault(it.key.split(":")[0], []).append(it)
+    named = [(g[0].name.split(" · ")[0], g) for g in groups.values()]
+    write_3mf(named, assign, dst, src.stem)
+
+
+def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str) -> None:
+    """One object per group, one part per item, filament per part from
+    ``assign`` (else the item's own). Objects are centred on their origin;
+    slice with --arrange so the slicer places them."""
     resources, build, config = [], [], []
     next_id = 1
-    for g, group in enumerate(groups):
+    for g, (name, group) in enumerate(groups):
         both = array("f")
         for it in group:
             both.extend(it.tris)
@@ -295,19 +321,18 @@ def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool
                              '   <metadata key="extruder" value="%d"/>\n  </part>\n' % (pid, esc(it.name), ext))
         oid = next_id
         next_id += 1
-        title = group[0].name if len(group) == 1 else (paths[g].stem if not keep_positions else paths[0].stem)
         comps = "".join('   <component objectid="%d"/>\n' % p for p in part_ids)
         resources.append(' <object id="%d" name="%s" type="model">\n  <components>\n%s  </components>\n </object>\n'
-                         % (oid, esc(title), comps))
+                         % (oid, esc(name), comps))
         build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %d 128 0" printable="1"/>\n'
                      % (oid, 128 + g * 10))
         first = _slot(assign.get(group[0].key), group[0].extruder)
         config.append(' <object id="%d">\n  <metadata key="name" value="%s"/>\n  <metadata key="extruder" value="%d"/>\n%s </object>\n'
-                      % (oid, esc(title), first, "".join(parts_cfg)))
+                      % (oid, esc(name), first, "".join(parts_cfg)))
     model = ('<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" '
              'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
              ' <metadata name="Title">%s</metadata>\n<resources>\n%s</resources>\n<build>\n%s</build>\n</model>\n'
-             % (esc(paths[0].stem), "".join(resources), "".join(build)))
+             % (esc(title), "".join(resources), "".join(build)))
     cfg = '<?xml version="1.0" encoding="UTF-8"?>\n<config>\n%s</config>\n' % "".join(config)
     types = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
