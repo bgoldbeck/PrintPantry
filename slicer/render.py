@@ -126,6 +126,10 @@ def run(job, library: Path, work_root: Path) -> None:
             files = _run_freecad(job, src, work, out, stem, variant)
         job.outputs = publish(library, job.path, files)
         job.message = "Made " + ", ".join(Path(o).name for o in job.outputs)
+        if r.get("replace", True):
+            gone = remove_earlier(library, job.path, stem, job.outputs)
+            if gone:
+                job.message += f"; removed {len(gone)} earlier file{'s' if len(gone) != 1 else ''}"
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -232,6 +236,30 @@ def _run_freecad(job, src: Path, work: Path, out: Path, stem: str, variant: str)
         raise RuntimeError(f"FreeCAD failed: {error or 'see the log'}")
     job.warnings += list(dict.fromkeys(result.get("warnings", [])))
     return [Path(p) for p in result.get("outputs", [])]
+
+
+def remove_earlier(library: Path, relpath: str, stem: str, keep: list[str]) -> list[str]:
+    """Delete what earlier renders of this source made (other variants, parts
+    no longer exported) and what was sliced from them, so a new render
+    replaces the old one instead of piling up. Only files named
+    "<source> - ..." in the output folder and its sliced/ folder."""
+    dest = out_folder(library, relpath)
+    keep_names = {Path(k).name for k in keep}
+    prefix = f"{stem} - ".lower()
+    gone = []
+    for folder, exts in ((dest, (".stl", ".3mf")), (dest / "sliced", (".gcode", ".3mf"))):
+        if not folder.is_dir():
+            continue
+        for f in folder.iterdir():
+            n = f.name.lower()
+            if f.is_file() and n.startswith(prefix) and n.endswith(exts) and f.name not in keep_names:
+                # Sliced files of the new outputs are outdated too: their geometry changed.
+                try:
+                    f.unlink()
+                    gone.append(f.relative_to(library).as_posix())
+                except OSError as exc:
+                    log.warning("couldn't remove %s: %s", f, exc)
+    return gone
 
 
 def publish(library: Path, relpath: str, files: list[Path]) -> list[str]:

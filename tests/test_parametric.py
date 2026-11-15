@@ -342,3 +342,21 @@ def test_other_files_are_refused(app_client, tmp_path):
         time.sleep(0.05)
     _, f = _find(c, "box.stl")
     assert c.get(f"/api/parametric/{f['id']}").status_code == 400
+
+
+def test_render_replaces_earlier_outputs(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "slicer"))
+    import render as R
+    lib = tmp_path / "lib"
+    model = lib / "Signs" / "Shelf Sign"
+    gen = model / "generated"
+    (gen / "sliced").mkdir(parents=True)
+    (model / "ShelfSign.FCStd").write_text("x")
+    for n in ["ShelfSign - Old.3mf", "ShelfSign - Old - Clip.stl", "ShelfSign - New - Clip.stl", "Other - Old.stl"]:
+        (gen / n).write_text("x")
+    (gen / "sliced" / "ShelfSign - Old_U1.gcode").write_text("x")
+    keep = ["Signs/Shelf Sign/generated/ShelfSign - New - Clip.stl"]
+    gone = R.remove_earlier(lib, "Signs/Shelf Sign/ShelfSign.FCStd", "ShelfSign", keep)
+    assert sorted(Path(g).name for g in gone) == ["ShelfSign - Old - Clip.stl", "ShelfSign - Old.3mf", "ShelfSign - Old_U1.gcode"]
+    assert (gen / "ShelfSign - New - Clip.stl").exists() and (gen / "Other - Old.stl").exists()

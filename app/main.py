@@ -540,6 +540,18 @@ def create_app(
             return {"ok": True, "id": new_f_id, "name": new_name}
         return {"ok": True, "id": file_id, "name": f.name}
 
+    @app.delete("/api/files/{file_id}")
+    def delete_file(file_id: str):
+        """Delete a sliced file (G-code / sliced 3MF). Sources are never deleted
+        here. Print history keeps its rows (they hold their own copies of the
+        name, time and usage)."""
+        f, path = resolve(file_id)
+        if f.kind not in ("sliced3mf", "gcode"):
+            raise HTTPException(400, "Only sliced files can be deleted here")
+        path.unlink()
+        scanner.scan()
+        return {"ok": True}
+
     @app.get("/api/tags")
     def all_tags():
         return {"tags": tags.counts(set(lib().models))}

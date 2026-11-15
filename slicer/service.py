@@ -381,19 +381,21 @@ def submit(body: dict) -> Job:
             raise BadRequest(f"{printer.name} takes at most {printer.max_filaments} filaments; this needs {len(filaments)}")
     plate = int(body.get("plate") or 0)
     extra = [str(x) for x in body.get("extra_paths") or [] if str(x) != path]
-    if extra:
-        if src.suffix.lower() != ".stl":
-            raise BadRequest("Only STLs can be sliced together")
-        for x in extra:
-            if library_path(x, (".stl",)).suffix.lower() != ".stl":
-                raise BadRequest("Only STLs can be sliced together")
+    for x in extra:  # STLs added to the plate (to an STL or a project 3MF)
+        library_path(x, (".stl",))
     assign = body.get("assign") or {}
     if not isinstance(assign, dict):
         raise BadRequest("assign must map objects to filaments")
-    assign = {str(k): int(v) for k, v in assign.items() if str(v).isdigit() and int(v) >= 1}
+    # filament slot per piece, 1-based; 0 = leave it off the plate
+    assign = {str(k): int(v) for k, v in assign.items() if str(v).isdigit()}
+    used = [v for v in assign.values() if v >= 1]
     slots = len(filaments) if mode == "presets" else printer.max_filaments
-    if assign and max(assign.values()) > max(slots, 1):
-        raise BadRequest(f"An object is set to filament {max(assign.values())}, but only {slots} are picked")
+    if used and max(used) > max(slots, 1):
+        raise BadRequest(f"An object is set to filament {max(used)}, but only {slots} are picked")
+    if assign and not used:
+        raise BadRequest("Nothing left on the plate: every piece is set to don't print")
+    if mode == "project" and src.suffix.lower() == ".3mf" and (extra or 0 in assign.values()):
+        raise BadRequest("To add or leave out pieces, pick presets instead of the project's own settings")
     colours = [c if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(c or "")) else "" for c in body.get("colours") or []]
     job = Job(
         id=uuid.uuid4().hex[:12], path=path, printer=printer.id, mode=mode,
@@ -421,9 +423,9 @@ def list_objects(body: dict) -> dict:
         items = O.items_for(paths)
     except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
         raise BadRequest(str(exc)) from exc
-    stls = len(paths) > 1
+    stls = [p for p in paths if p.suffix.lower() == ".stl"]
     return {"items": [i.to_json() for i in items],
-            "overlapping": O.overlapping(paths) if stls else False}
+            "overlapping": O.overlapping(stls) if len(stls) > 1 else False}
 
 
 def flow_ratios(value) -> dict:
@@ -482,7 +484,8 @@ def submit_render(body: dict) -> Job:
         raise BadRequest("values must be an object")
     render = {"kind": kind, "variant": str(body.get("variant") or "custom"), "values": values,
               "parts": [str(p) for p in body.get("parts") or []], "labels": body.get("labels") or {},
-              "cells": body.get("cells") or {}, "combine": [str(p) for p in body.get("combine") or []]}
+              "cells": body.get("cells") or {}, "combine": [str(p) for p in body.get("combine") or []],
+              "replace": bool(body.get("replace", True))}
     if kind == "fcstd" and not (render["parts"] or render["combine"]):
         raise BadRequest("Pick at least one part")
     job = Job(id=uuid.uuid4().hex[:12], path=path, printer="", mode="render", render=render,
@@ -645,8 +648,10 @@ def run_job(job: Job) -> None:
         combine = info.kind == "stl" and bool(job.extra_paths or job.assign)
         # A project whose objects now use more filaments than it has is rebuilt
         # as a plain 3MF: OrcaSlicer can't grow a project's filament settings.
-        rebuild = (info.kind == "3mf" and job.mode == "presets" and bool(job.assign)
-                   and len(job.filaments) > max(1, len(info.filaments)))
+        # The same when pieces are left off or STLs added to the plate.
+        rebuild = info.kind == "3mf" and job.mode == "presets" and (
+            bool(job.extra_paths) or 0 in job.assign.values()
+            or (bool(job.assign) and len(job.filaments) > max(1, len(info.filaments))))
         if rebuild:
             args[args.index("--slice") + 1] = "0"  # only the chosen plate is in the rebuilt file
         if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model):
@@ -659,11 +664,13 @@ def run_job(job: Job) -> None:
         inp = work / ("input" + src.suffix.lower())
         if rebuild:
             try:
-                O.rebuild_3mf(src, job.assign, inp, job.plate)
+                paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
+                O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
-            job.warnings.append("Objects moved to new toolheads: sliced with the chosen presets only "
-                                "(the project's own per-object settings and modifiers were left out)")
+            if info.printer_model:
+                job.warnings.append("Sliced with the chosen presets only (the project's own per-object "
+                                    "settings and modifiers were left out to change what's on the plate)")
         elif info.kind == "3mf":
             # With presets, write the process into the project too: the CLI
             # keeps some project values over the loaded process, and a Bambu
@@ -687,7 +694,10 @@ def run_job(job: Job) -> None:
         elif combine:
             inp = work / "input.3mf"
             paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
-            O.stls_to_3mf(paths, job.assign, inp, job.keep_positions)
+            try:
+                O.plate_3mf(paths, job.assign, inp, job.keep_positions)
+            except O.ObjectsError as exc:
+                raise RuntimeError(str(exc)) from exc
         else:
             shutil.copyfile(src, inp)
         args.append(str(inp))

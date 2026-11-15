@@ -195,11 +195,30 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const choices = () => ((mode() === "project" || objs.items.some((it) => it.painted)) && !isStl ? Math.max(1, baseCount)
     : Math.min(o.printer.max_filaments, Math.max(4, baseCount)));
   const loadedCount = () => Math.max(1, heads.filter((h) => h.loaded !== false && h.index < choices()).length || 1);
-  const slotOf = (it) => Math.min(objs.assign[it.key] || it.extruder || 1, choices());
+  // Filament slot of a piece (1-based); 0 = left off the plate.
+  const slotOf = (it) => (objs.assign[it.key] === 0 ? 0 : Math.min(objs.assign[it.key] || it.extruder || 1, choices()));
+  const isOff = (it) => slotOf(it) === 0;
+  // Changing what's on the plate of a project needs presets (the slicer gets a re-made file).
+  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff));
+  function forcePresets() {
+    const r = dlg.querySelector('input[name="mode"][value="presets"]');
+    if (reshaped() && r && !r.checked) { r.checked = true; check(); }
+  }
+  // What's on the plate, remembered per file in this browser.
+  const PLATE_KEY = "pp.slice.plate";
+  function savePlate() {
+    try {
+      const all = JSON.parse(localStorage.getItem(PLATE_KEY) || "{}");
+      all[file.id] = { together: [...objs.together], off: objs.items.filter(isOff).map((it) => it.key) };
+      localStorage.setItem(PLATE_KEY, JSON.stringify(all));
+    } catch { /* private mode */ }
+  }
+  const savedPlate = (() => { try { return JSON.parse(localStorage.getItem(PLATE_KEY) || "{}")[file.id] || null; } catch { return null; } })();
+  if (savedPlate) savedPlate.together.filter((id) => siblings.some((x) => x.id === id)).forEach((id) => objs.together.add(id));
 
   // Filament rows: as many as the highest toolhead in use (a 3MF keeps all its own).
   function syncRows() {
-    const want = Math.max(baseCount, ...objs.items.map(slotOf), 1);
+    const want = Math.max(isStl && objs.items.length ? 1 : baseCount, ...objs.items.map(slotOf), 1);
     const before = slots.length;
     while (slots.length < want) {
       const h = head(slots.length);
@@ -220,10 +239,17 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     objBox.querySelectorAll("[data-obj]").forEach((sel) => {
       const it = objs.items[Number(sel.dataset.obj)];
       sel.value = String(slotOf(it));
-      sel.closest(".obj-row").querySelector(".dot").style.setProperty("--c", slotColour(slotOf(it) - 1));
+      const row = sel.closest(".obj-row");
+      row.classList.toggle("off", isOff(it));
+      row.querySelector(".dot").style.setProperty("--c", isOff(it) ? "transparent" : slotColour(slotOf(it) - 1));
     });
     objBox.querySelectorAll("[data-brush]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.brush) === objs.brush)));
-    viewer?.setColours(objs.items.map((it) => slotColour(slotOf(it) - 1)));
+    viewer?.setColours(objs.items.map((it) => (isOff(it) ? null : slotColour(slotOf(it) - 1))));
+    // The slicer lays out separate objects itself when it gets a plain file
+    // (STLs, a plain 3MF, or a project with pieces added or left off).
+    const arranged = isStl || reshaped() || !proj.printer_model;
+    const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + objs.together.size > 1;
+    viewer?.layout(arranged ? objs.items.map((it) => (isOff(it) ? "off" : keepStls && it.group.startsWith("f") ? "stl" : it.group)) : null);
   }
   function objectsChanged() {
     if (!objs.active) return;
@@ -238,16 +264,17 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const h = head(i);
       const what = !h ? "" : h.loaded === false ? " · empty" : h.type ? ` · ${h.type}` : "";
       return option(i + 1, `${slotTag(i)}${what}`);
-    }).join("");
-    const together = siblings.length ? `<div class="together"><small>Slice together with</small>${siblings.map((s) =>
+    }).join("") + option(0, "Don't print");
+    const stlCount = (isStl ? 1 : 0) + objs.together.size;
+    const together = siblings.length ? `<div class="together"><small>Also put on the plate</small>${siblings.map((s) =>
       `<label class="check"><input type="checkbox" data-with="${esc(s.id)}"${objs.together.has(s.id) ? " checked" : ""}> ${esc(s.name)}</label>`).join("")}
-      ${objs.together.size ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</div>` : "";
+      ${stlCount > 1 ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</div>` : "";
     const many = objs.items.length > 1;
     const painted = objs.items.some((it) => it.painted);
     const box = objBox.querySelector("[data-obj-dynamic]");
     const dynamic = `
       ${many ? `<div class="brush"><small>Click a piece to give it</small>${Array.from({ length: n }, (_, i) =>
-        `<button type="button" class="tool" data-brush="${i + 1}"><i style="--c:${esc(slotColour(i))}"></i>${esc(slotTag(i))}</button>`).join("")}</div>` : ""}
+        `<button type="button" class="tool" data-brush="${i + 1}"><i style="--c:${esc(slotColour(i))}"></i>${esc(slotTag(i))}</button>`).join("")}<button type="button" class="tool" data-brush="0" title="Leave it off the plate">Off</button></div>` : ""}
       <div class="obj-rows">${objs.items.map((it, i) => `
         <div class="obj-row" data-row="${i}"><i class="dot"></i>
           <span class="obj-name">${esc(it.name)}<small>${it.size.map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
@@ -263,16 +290,20 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         <div data-obj-dynamic>${dynamic}</div></div></div>`;
       objBox.querySelectorAll("[data-with]").forEach((c) => (c.onchange = () => {
         if (c.checked) objs.together.add(c.dataset.with); else objs.together.delete(c.dataset.with);
+        forcePresets();
+        savePlate();
         loadObjects();
       }));
       const keep = objBox.querySelector("[data-keep]");
-      if (keep) keep.onchange = () => { objs.keep = keep.checked; };
+      if (keep) keep.onchange = () => { objs.keep = keep.checked; paintObjects(); };
     }
     const dyn = objBox.querySelector("[data-obj-dynamic]");
     dyn.onchange = (e) => {
       const sel = e.target.closest("[data-obj]");
       if (!sel) return;
       objs.assign[objs.items[Number(sel.dataset.obj)].key] = Number(sel.value);
+      forcePresets();
+      savePlate();
       syncRows();
       paintObjects();
     };
@@ -300,10 +331,16 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     objs.items = data.items;
     objs.overlapping = data.overlapping;
     // STL pieces start on different loaded toolheads; a 3MF keeps what the file says.
-    if (isStl) {
-      const loaded = loadedCount();
-      objs.assign = Object.fromEntries(objs.items.map((it, i) => [it.key, objs.assign[it.key] || ((it.extruder - 1) % loaded) + 1]));
+    // Added STLs too.
+    const loaded = loadedCount();
+    for (const it of objs.items) {
+      if (it.key.startsWith("f") && !(it.key in objs.assign)) objs.assign[it.key] = ((it.extruder - 1) % loaded) + 1;
     }
+    if (savedPlate && !objs.restored) {
+      objs.restored = true;
+      for (const it of objs.items) if (savedPlate.off.includes(it.key)) objs.assign[it.key] = 0;
+    }
+    forcePresets();
     objs.active = objs.items.length > 1 || objs.together.size > 0 || siblings.length > 0;
     viewer?.dispose();
     viewer = null;
@@ -325,6 +362,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
           const it = objs.items[i];
           if (!it) return;
           objs.assign[it.key] = objs.brush;
+          forcePresets();
+          savePlate();
           syncRows();
           paintObjects();
           objBox.querySelector(`[data-row="${i}"]`)?.scrollIntoView({ block: "nearest" });
@@ -352,7 +391,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       objs.items.forEach((it) => {
         const slot = slotOf(it);
         // A 3MF only gets the changes; STLs are rebuilt, so every piece counts.
-        if (isStl || slot !== it.extruder) assign[it.key] = slot;
+        if (isStl || it.key.startsWith("f") || slot !== it.extruder) assign[it.key] = slot;
       });
       body.assign = assign;
       body.extra_files = [...objs.together];

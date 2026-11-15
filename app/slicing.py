@@ -108,8 +108,8 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIR
         paths = [f.relpath]
         for x in [x for x in extra.split(",") if x]:
             e, _ = resolve(x)
-            if e.kind != "stl" or f.kind != "stl":
-                raise HTTPException(400, "Only STLs can be sliced together")
+            if e.kind != "stl":
+                raise HTTPException(400, "Only STLs can be added to the plate")
             paths.append(e.relpath)
         return paths
 
