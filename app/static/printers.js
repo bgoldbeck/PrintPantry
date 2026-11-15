@@ -541,7 +541,8 @@ export async function openPrintDialog(fileId, printerId) {
   dlg.innerHTML = `<h2>Checking the printer...</h2>`;
   document.body.appendChild(dlg);
   let stopCam = null;
-  dlg.addEventListener("close", () => { stopCam?.(); dlg.remove(); });
+  let platePreview = null;
+  dlg.addEventListener("close", () => { stopCam?.(); platePreview?.dispose(); dlg.remove(); });
   dlg.showModal();
 
   let chk;
@@ -586,7 +587,10 @@ export async function openPrintDialog(fileId, printerId) {
   dlg.innerHTML = `
     <h2 class="with-state">Print on ${esc(p.name)} ${stateBadge(p)}</h2>
     <p class="sub" style="margin-bottom:12px"><strong>${esc(f.name)}</strong>${plate.seconds ? ` · about ${fmtDur(plate.seconds)}` : ""}</p>
-    ${p.can_camera ? `<div class="cam"><img alt="Camera" class="nocam"><span class="cam-age" data-age>Getting a fresh picture...</span></div>` : ""}
+    <div class="print-views${p.can_camera ? "" : " single"}">
+      ${p.can_camera ? `<div class="cam"><img alt="Camera" class="nocam"><span class="cam-age" data-age>Getting a fresh picture...</span></div>` : ""}
+      <div class="cam plate-view" data-plate title="Drag to turn, scroll to zoom"><span class="cam-age" data-plate-note>Loading the build plate...</span></div>
+    </div>
     <div data-checks>${checksHtml()}</div>
     <label class="check"><input type="checkbox" data-bed> The bed is clear and the build plate is in place</label>
     <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button data-go disabled>Start print</button></div>`;
@@ -607,10 +611,43 @@ export async function openPrintDialog(fileId, printerId) {
       chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}&map=${q}`);
       map = { ...chk.tool_map };
       checks.innerHTML = checksHtml();
+      paintPlate();
     } catch (err) { alert(err.message); }
     update();
   });
   dlg.querySelector("[data-close]").onclick = () => dlg.close();
+
+  // Build plate preview: the sliced lines, each filament in the colour of the
+  // toolhead it's mapped to (updates when you pick another toolhead).
+  function plateColours() {
+    const out = {};
+    chk.tools.forEach((t) => {
+      const h = heads().find((x) => x.index === map[t.file_index]);
+      out[t.file_index] = (h && h.loaded !== false && h.color) || t.loaded?.color || t.file.color || "#999";
+    });
+    return out;
+  }
+  function paintPlate() {
+    if (!platePreview) return;
+    const cols = plateColours();
+    platePreview.tools.forEach((i) => { if (!cols[i]) cols[i] = (plate.filaments || [])[i]?.color || "#999"; });
+    platePreview.setColours(cols);
+  }
+  (async () => {
+    const box = dlg.querySelector("[data-plate]"), note = dlg.querySelector("[data-plate-note]");
+    try {
+      const res = await fetch(`/api/files/${encodeURIComponent(fileId)}/toolpath`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "No preview");
+      const buf = await res.arrayBuffer();
+      if (!dlg.isConnected) return;
+      const { createToolpathViewer } = await import("./viewer.js");
+      platePreview = createToolpathViewer(box, buf);
+      paintPlate();
+      note.textContent = "Build plate";
+    } catch (e) {
+      note.textContent = `No plate preview: ${e.message}`;
+    }
+  })();
 
   if (p.can_camera) {
     const age = dlg.querySelector("[data-age]");

@@ -316,3 +316,113 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
     },
   };
 }
+
+// ---------------------------------------------------------------- sliced toolpath preview
+// Draws the extrusion lines of a sliced file (from /api/files/{id}/toolpath) on
+// the build plate, each filament in the colour of the toolhead it prints with.
+export function createToolpathViewer(container, buffer) {
+  const dv = new DataView(buffer);
+  if (String.fromCharCode(...new Uint8Array(buffer, 0, 4)) !== "PPTP") throw new Error("Not a toolpath");
+  const [bx0, by0, bx1, by1] = [4, 8, 12, 16].map((o) => dv.getFloat32(o, true));
+  const ntools = dv.getUint32(20, true);
+  const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2, bw = bx1 - bx0, bd = by1 - by0;
+  let off = 24, maxZ = 1;
+  const parts = [];
+  for (let t = 0; t < ntools; t++) {
+    const tool = dv.getUint32(off, true), n = dv.getUint32(off + 4, true);
+    off += 8;
+    const src = new Int16Array(buffer.slice(off, off + n * 12));
+    off += n * 12;
+    const pos = new Float32Array(n * 6);
+    for (let k = 0; k < src.length; k += 3) {
+      const z = src[k + 2] / 20;
+      pos[k] = src[k] / 20 - cx; pos[k + 1] = z; pos[k + 2] = -(src[k + 1] / 20 - cy);
+      if (z > maxZ) maxZ = z;
+    }
+    parts.push({ tool, pos });
+  }
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(renderer.domElement);
+  const { scene } = buildScene(new THREE.Color("#999"));
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(bw, 1, bd), new THREE.MeshStandardMaterial({ color: "#2e2e30", roughness: 0.9 }));
+  plate.position.y = -0.55;
+  scene.add(plate);
+  const grid = new THREE.GridHelper(Math.max(bw, bd), Math.round(Math.max(bw, bd) / 10), "#777", "#4a4a4c");
+  grid.scale.set(bw / Math.max(bw, bd), 1, bd / Math.max(bw, bd));
+  grid.material.transparent = true;
+  grid.material.opacity = 0.5;
+  scene.add(grid);
+
+  // Lower layers a little darker, so the shape reads without lighting.
+  const lines = parts.map(({ tool, pos }) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.length), 3));
+    const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true }));
+    l.userData.tool = tool;
+    scene.add(l);
+    return l;
+  });
+
+  const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  // Frame what's printed (with some plate around it), not the whole empty bed.
+  const box = new THREE.Box3();
+  lines.forEach((l) => { l.geometry.computeBoundingBox(); box.union(l.geometry.boundingBox); });
+  if (box.isEmpty()) box.set(new THREE.Vector3(-bw / 2, 0, -bd / 2), new THREE.Vector3(bw / 2, 1, bd / 2));
+  const sz = new THREE.Vector3(), mid = new THREE.Vector3();
+  box.getSize(sz); box.getCenter(mid);
+  frameCamera(camera, new THREE.Vector3(Math.max(sz.x * 1.1, bw * 0.25), sz.y, Math.max(sz.z * 1.1, bd * 0.25)), controls);
+  mid.y = 0;
+  camera.position.add(mid);
+  controls.target.add(mid);
+  controls.update();
+
+  function resize() {
+    const w = container.clientWidth || 400, h = container.clientHeight || 240;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  const ro = new ResizeObserver(resize);
+  ro.observe(container);
+  resize();
+  let frame = 0, disposed = false;
+  (function tick() {
+    if (disposed) return;
+    frame = requestAnimationFrame(tick);
+    controls.update();
+    renderer.render(scene, camera);
+  })();
+
+  const c = new THREE.Color();
+  return {
+    tools: parts.map((p) => p.tool),
+    // colours: {filament index: css colour}
+    setColours(colours) {
+      lines.forEach((l) => {
+        c.set(colours[l.userData.tool] || "#999");
+        const pos = l.geometry.attributes.position.array, col = l.geometry.attributes.color.array;
+        for (let k = 0; k < pos.length; k += 3) {
+          const s = 0.55 + 0.45 * (pos[k + 1] / maxZ);
+          col[k] = c.r * s; col[k + 1] = c.g * s; col[k + 2] = c.b * s;
+        }
+        l.geometry.attributes.color.needsUpdate = true;
+      });
+    },
+    dispose() {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+      controls.dispose();
+      lines.forEach((l) => { l.geometry.dispose(); l.material.dispose(); });
+      grid.geometry.dispose();
+      plate.geometry.dispose(); plate.material.dispose();
+      renderer.dispose();
+      renderer.domElement.remove();
+    },
+  };
+}

@@ -314,6 +314,13 @@ button.danger { background: #c0392b; color: #fff; }
 .notice.warn { border-color: #f2a900; }
 .notice ul { margin: 4px 0 0; padding-left: 20px; }
 .print-dialog { width: min(560px, calc(100vw - 32px)); }
+.print-dialog:has(.print-views:not(.single)) { width: min(900px, calc(100vw - 32px)); }
+.print-views { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.print-views.single { grid-template-columns: 1fr; }
+.print-views .cam { margin-bottom: 0; aspect-ratio: 4 / 3; }
+.plate-view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.plate-view .cam-age { pointer-events: none; }
+@media (max-width: 700px) { .print-views { grid-template-columns: 1fr; } }
 .print-dialog .notice { margin: 10px 0; }
 .toolmap { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .9rem; }
 .toolmap th, .toolmap td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
