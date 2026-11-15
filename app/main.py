@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,7 +26,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, formats
+from . import __version__, formats, toolpath
 from .auth import COOKIE, MAX_AGE, Auth, LoginLimiter, client_ip, is_https
 from .calibration import CalibrationStore
 from .calibration import make_router as calibration_router
@@ -673,6 +674,25 @@ def create_app(
             prefs["slicer"] = patch.slicer
         store.set("prefs", prefs)
         return get_prefs()
+
+    @app.get("/api/files/{file_id}/toolpath")
+    def toolpath_bin(file_id: str, plate: int = 1):
+        """Extrusion lines of a sliced file, for the print dialog's plate preview."""
+        f, path = resolve(file_id)
+        if f.kind not in ("gcode", "sliced3mf"):
+            raise HTTPException(400, "Only sliced files have toolpaths")
+        cache = settings.data / "toolpaths" / f"{f.id}-{plate}-{int(f.mtime)}-{f.size}.bin"
+        if not cache.is_file():
+            try:
+                data = toolpath.encode(path, plate)
+            except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                raise HTTPException(422, f"Can't read the toolpath: {exc}") from None
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            for old in cache.parent.glob(f"{f.id}-{plate}-*.bin"):
+                old.unlink(missing_ok=True)
+            cache.write_bytes(data)
+        return FileResponse(cache, media_type="application/octet-stream",
+                            headers={"Cache-Control": "private, max-age=3600"})
 
     @app.get("/api/files/{file_id}/thumb")
     def thumb(file_id: str, plate: int = 1):
