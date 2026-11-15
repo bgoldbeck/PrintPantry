@@ -208,3 +208,24 @@ def test_submit_takes_assignment(lib, monkeypatch):
     assert job.colours == ["#FF0000", ""] and job.keep_positions is False
     with pytest.raises(service.BadRequest):  # T3 without a third filament
         service.submit({**base, "assign": {"f0": 3}})
+
+
+def test_project_filaments_grow_for_new_toolheads():
+    import project
+    cfg = {"filament_colour": ["#FF0000"], "filament_type": ["PLA"], "nozzle_temperature": ["220"],
+           "filament_map": ["1"], "flush_volumes_matrix": ["0"], "compatible_printers": ["X"],
+           "wall_loops": "2", "printer_extruder_id": ["1"]}
+    assert project.pad_filaments(cfg, 3, {"nozzle_temperature", "compatible_printers"}, nozzles=4)
+    assert cfg["filament_colour"] == ["#FF0000"] * 3 and cfg["filament_type"] == ["PLA"] * 3
+    assert cfg["nozzle_temperature"] == ["220"] * 3
+    assert cfg["filament_map"] == ["1", "2", "3"]
+    assert cfg["flush_volumes_matrix"] == ["0", "280", "280", "280", "0", "280", "280", "280", "0"]
+    assert cfg["compatible_printers"] == ["X"] and cfg["printer_extruder_id"] == ["1"]
+    assert not project.pad_filaments(cfg, 2, set())  # already enough
+
+
+def test_filaments_get_distinct_colours():
+    fils = [{"filament_colour": ["#FFFFFF"]}, {"filament_colour": ["#ffffff"]}, {}, {"filament_colour": ["#D02020"]}]
+    service.distinct_colours(fils)
+    cols = [f["filament_colour"][0] for f in fils]
+    assert cols[0] == "#FFFFFF" and len(set(c.upper() for c in cols)) == 4

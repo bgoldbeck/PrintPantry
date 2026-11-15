@@ -517,6 +517,22 @@ def worker():
         job.finished = time.time()
 
 
+SPARE_COLOURS = ["#FFFFFF", "#F5D000", "#D02020", "#2060D0", "#20A040", "#202020", "#E07020", "#9040C0"]
+
+
+def distinct_colours(fils: list[dict]) -> None:
+    """Give every filament its own colour. OrcaSlicer treats filaments of the
+    same colour and type as one: objects put on the second one print with the
+    first, and splitting the bodies of one STL that way crashes it."""
+    seen: set[str] = set()
+    for f in fils:
+        c = str(_first(f.get("filament_colour")) or "").upper()[:7]
+        if not re.fullmatch(r"#[0-9A-F]{6}", c) or c in seen:
+            c = next((x for x in SPARE_COLOURS if x not in seen), c)
+            f["filament_colour"] = [c]
+        seen.add(c)
+
+
 def write_json(path: Path, data: dict) -> str:
     path.write_text(json.dumps(data, indent=1))
     return path.name
@@ -568,6 +584,10 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
             f["filament_colour"] = [job.colours[i]]
         elif i < len(info.filaments) and info.filaments[i].get("colour"):
             f["filament_colour"] = [info.filaments[i]["colour"]]
+    if job.assign and len(fils) > 1:
+        distinct_colours(fils)
+        job.colours = [str(_first(f.get("filament_colour")) or "") for f in fils]
+    for f in fils:
         if _temp(f, BED_KEYS[bed]) <= 0:
             job.warnings.append(f'{f["name"]} has no bed temperature for {bed}; the bed will not heat')
     names = [write_json(work / "machine.json", machine), write_json(work / "process.json", process)]
@@ -615,12 +635,20 @@ def run_job(job: Job) -> None:
             # Studio project can hold values OrcaSlicer rejects (e.g. -1).
             proc_file = work / "process.json"
             overrides = json.loads(proc_file.read_text()) if job.mode == "presets" and proc_file.exists() else None
+            # Objects moved onto a toolhead the project didn't use need its
+            # per-filament settings to cover the extra filaments.
+            fil_keys: set = set()
+            for f in work.glob("filament_*.json"):
+                fil_keys |= set(json.loads(f.read_text()))
+            count = len(job.filaments) if job.mode == "presets" else 0
+            source = src
             if job.assign:
-                assigned = work / "assigned.3mf"
-                O.assign_3mf(src, assigned, job.assign)
-                project.copy_for_slicing(assigned, inp, overrides)
-            else:
-                project.copy_for_slicing(src, inp, overrides)
+                source = work / "assigned.3mf"
+                O.assign_3mf(src, source, job.assign)
+            machine_file = work / "machine.json"
+            nozzles = len(json.loads(machine_file.read_text()).get("nozzle_diameter") or [1]) if machine_file.exists() else 1
+            project.copy_for_slicing(source, inp, overrides, count, fil_keys - project.META_KEYS, nozzles,
+                                     job.colours if job.assign else None)
         elif combine:
             inp = work / "input.3mf"
             paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]

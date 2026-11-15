@@ -146,9 +146,53 @@ def apply_process(config: dict, process: dict) -> None:
         diff[0] = ""
 
 
-def copy_for_slicing(src: Path, dst: Path, process: dict | None = None) -> None:
+def pad_filaments(config: dict, count: int, filament_keys, nozzles: int = 1) -> bool:
+    """Grow the project's per-filament lists to ``count`` filaments.
+
+    When objects are moved to a toolhead the project never used, more
+    filaments are loaded than the project has; OrcaSlicer then aborts with
+    "set_with_restore_2(): invalid size found" unless every per-filament list
+    (and the flush matrix) has an entry for each. Returns True if changed."""
+    have = len(_list(config.get("filament_colour"))) or len(_list(config.get("filament_settings_id")))
+    if not have or count <= have:
+        return False
+    keys = set(filament_keys) | {k for k in config if k.startswith("filament_")}
+    keys -= {"compatible_prints", "compatible_printers", "filament_map"}
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, list) and len(value) == have and value:
+            config[key] = value + [value[-1]] * (count - have)
+    # Which nozzle each filament prints with: on a toolchanger (U1: 4) filament
+    # N goes to toolhead N, on a single nozzle all go to 1.
+    fmap = config.get("filament_map")
+    if isinstance(fmap, list) and len(fmap) == have:
+        config["filament_map"] = fmap + [str(min(i + 1, max(1, nozzles))) for i in range(have, count)]
+    matrix = config.get("flush_volumes_matrix")
+    if isinstance(matrix, list):
+        old = [float(v) if str(v).replace(".", "", 1).isdigit() else 0.0 for v in matrix]
+        nozzles = max(1, len(old) // (have * have)) if have and len(old) % (have * have) == 0 else 1
+        default = max(old) if old and max(old) > 0 else 280.0
+        out = []
+        for n in range(nozzles):
+            block = old[n * have * have:(n + 1) * have * have]
+            for i in range(count):
+                for j in range(count):
+                    if i == j:
+                        out.append("0")
+                    elif i < have and j < have and block:
+                        out.append(f"{block[i * have + j]:g}")
+                    else:
+                        out.append(f"{default:g}")
+        config["flush_volumes_matrix"] = out
+    return True
+
+
+def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
+                     filaments: int = 0, filament_keys=(), nozzles: int = 1,
+                     colours: list[str] | None = None) -> None:
     """Copy a 3MF, padding its per-extruder settings (see pad_per_extruder)
-    and, when given, writing a process preset into its settings."""
+    and per-filament lists (see pad_filaments), and, when given, writing a
+    process preset into its settings."""
     with zipfile.ZipFile(src) as zin:
         try:
             settings = json.loads(zin.read(SETTINGS)) if SETTINGS in zin.namelist() else None
@@ -156,6 +200,12 @@ def copy_for_slicing(src: Path, dst: Path, process: dict | None = None) -> None:
             settings = None
         if isinstance(settings, dict):
             changed = pad_per_extruder(settings)
+            if filaments and pad_filaments(settings, filaments, filament_keys, nozzles):
+                changed = True
+            # The project's own colour list wins over the loaded filaments'.
+            if colours and filaments and len(colours) == filaments and all(colours):
+                settings["filament_colour"] = list(colours)
+                changed = True
             if process:
                 apply_process(settings, process)
                 changed = True
