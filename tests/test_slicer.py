@@ -323,7 +323,13 @@ class FakeSlicer(SlicerClient):
             return {"id": "abc123", "state": "queued"}
         if path.startswith("/jobs/"):
             return {"id": "abc123", "state": "done", "outputs": ["Tools/sliced/x_U1.gcode"]}
+        if path == "/objects":
+            return {"items": [{"key": "f0"}], "overlapping": False}
         return {"defaults": {}}
+
+    def raw(self, method, path, **kw):
+        self.calls.append((method, path, kw))
+        return b"\0\0\0\0"
 
 
 @pytest.fixture()
@@ -431,3 +437,23 @@ def test_fill_plate_temps():
     bare = {"filament_type": ["PETG"]}
     service.fill_plate_temps(bare)
     assert bare["textured_plate_temp"] == ["70"]
+
+
+def test_app_objects_and_stls_together(app_client):
+    c, fake = app_client
+    stl = _file(c, "stl")
+    model = next(m for m in c.get("/api/models").json()["models"]
+                 if any(f["id"] == stl["id"] for f in c.get(f"/api/models/{m['id']}").json()["files"]))
+    others = [f for f in c.get(f"/api/models/{model['id']}").json()["files"] if f["kind"] == "stl" and f["id"] != stl["id"]]
+    extra = ",".join(f["id"] for f in others)
+    assert c.get(f"/api/slicer/objects?file_id={stl['id']}&extra={extra}").json()["items"][0]["key"] == "f0"
+    assert fake.calls[-1][2]["json"]["paths"][0] == stl["path"]
+    assert c.get(f"/api/slicer/objects/mesh?file_id={stl['id']}").content == b"\0\0\0\0"
+    res = c.post("/api/slicer/jobs", json={"file_id": stl["id"], "printer": "u1", "filaments": ["A", "B"],
+                                            "assign": {"f0": 2}, "extra_files": [f["id"] for f in others]})
+    assert res.status_code == 200
+    body = fake.calls[-1][2]["json"]
+    assert body["assign"] == {"f0": 2} and "extra_files" not in body
+    assert body.get("extra_paths", []) == [f["path"] for f in others]
+    proj = _file(c, "project3mf")
+    assert c.get(f"/api/slicer/objects?file_id={proj['id']}&extra={stl['id']}").status_code == 400

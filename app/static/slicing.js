@@ -2,6 +2,7 @@
 // command line in its own container); new files land in the model's
 // "sliced" folder and show up under Print files.
 import { printerById, stateBadge } from "./printers.js";
+import { createPartsViewer } from "./viewer.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -38,13 +39,21 @@ function saveLast(printerId, choice) {
 
 const swatch = (c) => (c ? `<i class="dot" style="--c:${esc(c)}"></i>` : "");
 
-export async function openSliceDialog(file, printerId, onDone) {
+// Preview colours for filament slots nobody has a colour for.
+const PALETTE = ["#E9A23B", "#3B82E9", "#E94B3B", "#3BBF6A", "#9B59D0", "#E9D63B", "#3BD0D0", "#E93BA8"];
+const mm = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
+
+// "Slice for ..." on an STL of a model that has other STLs, or on a 3MF with
+// several objects: each object (or STL, or separate body inside an STL) can
+// print with its own toolhead. ctx.siblings: the model's other STLs.
+export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const dlg = document.createElement("dialog");
   dlg.className = "slice-dialog";
   dlg.innerHTML = `<h2>Getting slicer settings...</h2>`;
   document.body.appendChild(dlg);
   let timer = null;
-  dlg.addEventListener("close", () => { clearTimeout(timer); dlg.remove(); });
+  let viewer = null;
+  dlg.addEventListener("close", () => { clearTimeout(timer); viewer?.dispose(); dlg.remove(); });
   dlg.showModal();
 
   let o;
@@ -68,8 +77,18 @@ export async function openSliceDialog(file, printerId, onDone) {
   // A remembered plate counts only from the time the presets had temperatures for every
   // plate (bedV 2); before that, Smooth PEI was often forced on the U1's textured plate.
   if (last.bedV === 2 && has(o.bed_types.map((b) => b.name), last.bed_type)) d.bed_type = last.bed_type;
-  const slots = proj.filaments.length ? proj.filaments : [{ type: "PLA", colour: "" }];
+  const slots = proj.filaments.length ? proj.filaments.map((f) => ({ ...f })) : [{ type: "PLA", colour: "" }];
+  const baseCount = slots.length;
   const tooMany = slots.length > o.printer.max_filaments;
+  const isU1 = printerId === "u1";
+  const heads = printerById(printerId)?.status?.toolheads || [];
+  const head = (i) => heads.find((h) => h.index === i);
+  const headColour = (i) => { const h = head(i); return h && h.loaded !== false && h.color ? h.color : ""; };
+  const slotColour = (i) => headColour(i) || slots[i]?.colour || PALETTE[i % PALETTE.length];
+  const slotTag = (i) => (isU1 ? `T${i + 1}` : `${i + 1}`);
+  const siblings = (ctx.siblings || []).filter((s) => s.id !== file.id);
+  // Per-object state, filled by loadObjects().
+  const objs = { items: [], assign: {}, together: new Set(), keep: null, active: false, brush: 1, overlapping: false };
   const plates = proj.plates > 1
     ? `<label class="field"><span>Plates</span><select data-plate>${option(0, `All ${proj.plates} plates`, true)}${
       Array.from({ length: proj.plates }, (_, i) => option(i + 1, `Plate ${i + 1} only`)).join("")}</select></label>`
@@ -90,11 +109,10 @@ export async function openSliceDialog(file, printerId, onDone) {
       <label class="field"><span>Process</span><select data-process></select></label>
       <label class="field"><span>Bed plate</span><select data-bed>${o.bed_types.map((b) =>
         option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
-      <div class="field"><span>Filaments</span><div class="fil-rows">${slots.map((s, i) => `
-        <label class="fil-row"><span class="slot" title="What the project file was set up with. The preset on the right is what gets sliced.">${slots.length > 1 ? `<b>${i + 1}</b>` : ""}${s.type || s.colour ? `${swatch(s.colour)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}</span>
-          <select data-fil="${i}"></select></label>`).join("")}</div>${Object.keys(o.calibrated || {}).length
+      <div class="field"><span>Filaments</span><div class="fil-rows" data-fil-rows></div>${Object.keys(o.calibrated || {}).length
         ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
     </div>
+    <div data-objects></div>
     ${plates}
     <div data-warn></div>
     <div data-progress></div>
@@ -102,7 +120,26 @@ export async function openSliceDialog(file, printerId, onDone) {
 
   const $ = (sel) => dlg.querySelector(sel);
   const machineSel = $("[data-machine]"), processSel = $("[data-process]"), bedSel = $("[data-bed]");
-  const filSels = [...dlg.querySelectorAll("[data-fil]")];
+  const filSels = () => [...dlg.querySelectorAll("[data-fil]")];
+  const filRowsBox = $("[data-fil-rows]"), objBox = $("[data-objects]");
+  let chosen = [];  // filament preset per row, kept while rows come and go
+
+  function rowLabel(s, i) {
+    const many = slots.length > 1 || objs.active;
+    const tag = many ? `<b>${esc(slotTag(i))}</b>` : "";
+    if (s.extra) {
+      const h = head(i);
+      return `${tag}${swatch(slotColour(i))}<small>${h && h.loaded !== false && h.type ? `loaded: ${esc(h.type)}` : "any filament"}</small>`;
+    }
+    const col = objs.active ? slotColour(i) : s.colour;
+    return `${tag}${s.type || col ? `${swatch(col)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}`;
+  }
+  function renderFilRows() {
+    filRowsBox.innerHTML = slots.map((s, i) => `
+        <label class="fil-row"><span class="slot" title="What the project file was set up with. The preset on the right is what gets sliced.">${rowLabel(s, i)}</span>
+          <select data-fil="${i}"></select></label>`).join("");
+    filSels().forEach((sel) => (sel.onchange = () => { chosen[Number(sel.dataset.fil)] = sel.value; check(); }));
+  }
   const presetsBox = $("[data-presets]"), warnBox = $("[data-warn]"), progress = $("[data-progress]");
   const go = $("[data-go]");
   const mode = () => dlg.querySelector('input[name="mode"]:checked')?.value || "presets";
@@ -112,8 +149,8 @@ export async function openSliceDialog(file, printerId, onDone) {
     const wantProc = keep && procs.names.includes(processSel.value) ? processSel.value : (machine === d.machine ? d.process : procs.default);
     processSel.innerHTML = procs.names.map((n) => option(n, procs.user.includes(n) ? `${n} (yours)` : n, n === wantProc)).join("");
     const fils = o.filaments[machine] || [];
-    filSels.forEach((sel, i) => {
-      const prev = keep ? sel.value : "";
+    filSels().forEach((sel, i) => {
+      const prev = keep ? (sel.value || chosen[i] || "") : "";
       // Last time's pick for this toolhead if it's the same material, then the
       // last pick for this material, then the slicer's suggestion.
       const typeOf = (n) => fils.find((f) => f.name === n)?.type || "";
@@ -122,10 +159,12 @@ export async function openSliceDialog(file, printerId, onDone) {
       const remembered = lastHere && (!slotType || typeOf(lastHere).toUpperCase() === slotType) ? lastHere : last.byType?.[slotType];
       const want = fils.some((f) => f.name === prev) ? prev
         : fils.some((f) => f.name === remembered) ? remembered : (d.filaments[i] || "");
-      const pick = fils.some((f) => f.name === want) ? want : (fils.find((f) => f.type === slots[i].type)?.name || fils[0]?.name);
+      const pick = fils.some((f) => f.name === want) ? want
+        : (fils.find((f) => f.type === slots[i].type)?.name || fils.find((f) => f.type === "PLA")?.name || fils[0]?.name);
       const cal = o.calibrated || {};
       sel.innerHTML = fils.map((f) => option(f.name,
         `${f.name}${f.user ? " (yours)" : ""}${cal[f.name] ? ` · flow ${cal[f.name]} ✓` : ""}`, f.name === pick)).join("");
+      chosen[i] = sel.value;
     });
     if (!procs.names.length || !fils.length) warnBox.innerHTML = `<div class="notice warn">No process or filament presets for ${esc(machine)}.</div>`;
   }
@@ -135,18 +174,163 @@ export async function openSliceDialog(file, printerId, onDone) {
     presetsBox.hidden = !usePresets;
     if (!usePresets) { warnBox.innerHTML = ""; return; }
     const fils = o.filaments[machineSel.value] || [];
-    const cold = filSels.map((s) => fils.find((f) => f.name === s.value)).filter((f) => f && !(f.beds[bedSel.value] > 0));
+    const cold = filSels().map((s) => fils.find((f) => f.name === s.value)).filter((f) => f && !(f.beds[bedSel.value] > 0));
     warnBox.innerHTML = cold.length
       ? `<div class="notice warn">${cold.map((f) => esc(f.name)).join(", ")} ${cold.length > 1 ? "have" : "has"} no bed temperature for this plate, so the bed won't heat. Pick another plate.</div>`
       : "";
   }
 
+  renderFilRows();
   fillFor(machineSel.value, false);
   check();
   machineSel.onchange = () => { fillFor(machineSel.value, true); check(); };
   bedSel.onchange = check;
-  filSels.forEach((s) => (s.onchange = check));
-  dlg.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = check));
+  dlg.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = () => { check(); objectsChanged(); }));
+
+  // ------------------------------------------------ objects, each with its own toolhead
+  const isStl = proj.kind === "stl";
+  const choices = () => (mode() === "project" && !isStl ? Math.max(1, baseCount)
+    : Math.min(o.printer.max_filaments, Math.max(4, baseCount)));
+  const loadedCount = () => Math.max(1, heads.filter((h) => h.loaded !== false && h.index < choices()).length || 1);
+  const slotOf = (it) => Math.min(objs.assign[it.key] || it.extruder || 1, choices());
+
+  // Filament rows: as many as the highest toolhead in use (a 3MF keeps all its own).
+  function syncRows() {
+    const want = Math.max(baseCount, ...objs.items.map(slotOf), 1);
+    const before = slots.length;
+    while (slots.length < want) {
+      const h = head(slots.length);
+      slots.push({ type: h && h.loaded !== false ? h.type || "" : "", colour: "", extra: true });
+    }
+    while (slots.length > want && slots[slots.length - 1].extra) slots.pop();
+    if (slots.length !== before || objs.active) {
+      chosen = filSels().map((s) => s.value).concat(chosen.slice(filSels().length));
+      renderFilRows();
+      fillFor(machineSel.value, true);
+      check();
+    }
+    const over = slots.length > o.printer.max_filaments;
+    go.disabled = over;
+  }
+
+  function paintObjects() {
+    objBox.querySelectorAll("[data-obj]").forEach((sel) => {
+      const it = objs.items[Number(sel.dataset.obj)];
+      sel.value = String(slotOf(it));
+      sel.closest(".obj-row").querySelector(".dot").style.setProperty("--c", slotColour(slotOf(it) - 1));
+    });
+    objBox.querySelectorAll("[data-brush]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.brush) === objs.brush)));
+    viewer?.setColours(objs.items.map((it) => slotColour(slotOf(it) - 1)));
+  }
+  function objectsChanged() {
+    if (!objs.active) return;
+    renderObjects(false);
+    syncRows();
+    paintObjects();
+  }
+
+  function renderObjects(withPreview) {
+    const n = choices();
+    const opts = Array.from({ length: n }, (_, i) => {
+      const h = head(i);
+      const what = !h ? "" : h.loaded === false ? " · empty" : h.type ? ` · ${h.type}` : "";
+      return option(i + 1, `${slotTag(i)}${what}`);
+    }).join("");
+    const together = siblings.length ? `<div class="together"><small>Slice together with</small>${siblings.map((s) =>
+      `<label class="check"><input type="checkbox" data-with="${esc(s.id)}"${objs.together.has(s.id) ? " checked" : ""}> ${esc(s.name)}</label>`).join("")}
+      ${objs.together.size ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</div>` : "";
+    const many = objs.items.length > 1;
+    const painted = objs.items.some((it) => it.painted);
+    const box = objBox.querySelector("[data-obj-dynamic]");
+    const dynamic = `
+      ${many ? `<div class="brush"><small>Click a piece to give it</small>${Array.from({ length: n }, (_, i) =>
+        `<button type="button" class="tool" data-brush="${i + 1}"><i style="--c:${esc(slotColour(i))}"></i>${esc(slotTag(i))}</button>`).join("")}</div>` : ""}
+      <div class="obj-rows">${objs.items.map((it, i) => `
+        <div class="obj-row" data-row="${i}"><i class="dot"></i>
+          <span class="obj-name">${esc(it.name)}<small>${it.size.map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
+          <select data-obj="${i}" aria-label="Toolhead for ${esc(it.name)}">${opts}</select></div>`).join("")}</div>
+      ${painted ? `<small class="hint">Painted pieces keep their painted colours; the toolhead here is for the unpainted rest.</small>` : ""}`;
+    if (box && !withPreview) {
+      box.innerHTML = dynamic;
+    } else {
+      objBox.innerHTML = `<div class="field obj-field"><span>Colours</span><div>
+        ${together}
+        ${many || objs.together.size ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>` : ""}
+        <div data-obj-dynamic>${dynamic}</div></div></div>`;
+      objBox.querySelectorAll("[data-with]").forEach((c) => (c.onchange = () => {
+        if (c.checked) objs.together.add(c.dataset.with); else objs.together.delete(c.dataset.with);
+        loadObjects();
+      }));
+      const keep = objBox.querySelector("[data-keep]");
+      if (keep) keep.onchange = () => { objs.keep = keep.checked; };
+    }
+    const dyn = objBox.querySelector("[data-obj-dynamic]");
+    dyn.onchange = (e) => {
+      const sel = e.target.closest("[data-obj]");
+      if (!sel) return;
+      objs.assign[objs.items[Number(sel.dataset.obj)].key] = Number(sel.value);
+      syncRows();
+      paintObjects();
+    };
+    dyn.onclick = (e) => {
+      const b = e.target.closest("[data-brush]");
+      if (b) { objs.brush = Number(b.dataset.brush); paintObjects(); }
+    };
+    dyn.onmouseover = (e) => { const r = e.target.closest("[data-row]"); viewer?.highlight(r ? Number(r.dataset.row) : null); };
+    dyn.onmouseleave = () => viewer?.highlight(null);
+  }
+
+  let loadSeq = 0;
+  async function loadObjects() {
+    const seq = ++loadSeq;
+    const extra = [...objs.together].join(",");
+    const q = `file_id=${encodeURIComponent(file.id)}&extra=${encodeURIComponent(extra)}`;
+    let data;
+    try {
+      data = await api(`/api/slicer/objects?${q}`);
+    } catch (e) {
+      if (siblings.length) objBox.innerHTML = `<div class="notice warn">Couldn't list the pieces: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (seq !== loadSeq) return;
+    objs.items = data.items;
+    objs.overlapping = data.overlapping;
+    // STL pieces start on different loaded toolheads; a 3MF keeps what the file says.
+    if (isStl) {
+      const loaded = loadedCount();
+      objs.assign = Object.fromEntries(objs.items.map((it, i) => [it.key, objs.assign[it.key] || ((it.extruder - 1) % loaded) + 1]));
+    }
+    objs.active = objs.items.length > 1 || objs.together.size > 0 || siblings.length > 0;
+    viewer?.dispose();
+    viewer = null;
+    if (!objs.active) { objBox.innerHTML = ""; return; }
+    renderObjects(true);
+    syncRows();
+    paintObjects();
+    const prev = objBox.querySelector("[data-preview]");
+    if (!prev) return;
+    try {
+      const res = await fetch(`/api/slicer/objects/mesh?${q}`);
+      if (!res.ok) throw new Error(res.statusText);
+      const buf = await res.arrayBuffer();
+      if (seq !== loadSeq || !prev.isConnected) return;
+      prev.innerHTML = "";
+      viewer = createPartsViewer(prev, buf, {
+        onPick: (i) => {
+          const it = objs.items[i];
+          if (!it) return;
+          objs.assign[it.key] = objs.brush;
+          syncRows();
+          paintObjects();
+          objBox.querySelector(`[data-row="${i}"]`)?.scrollIntoView({ block: "nearest" });
+        },
+      });
+      paintObjects();
+    } catch (e) {
+      prev.innerHTML = `<small class="muted">No preview (${esc(e.message)})</small>`;
+    }
+  }
+  loadObjects();
   $("[data-close]").onclick = () => dlg.close();
 
   go.onclick = async () => {
@@ -156,10 +340,22 @@ export async function openSliceDialog(file, printerId, onDone) {
     const body = {
       file_id: file.id, printer: printerId, mode: mode(),
       machine: machineSel.value, process: processSel.value, bed_type: bedSel.value,
-      filaments: filSels.map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
+      filaments: filSels().map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
     };
+    if (objs.active) {
+      const assign = {};
+      objs.items.forEach((it) => {
+        const slot = slotOf(it);
+        // A 3MF only gets the changes; STLs are rebuilt, so every piece counts.
+        if (isStl || slot !== it.extruder) assign[it.key] = slot;
+      });
+      body.assign = assign;
+      body.extra_files = [...objs.together];
+      body.keep_positions = objs.keep ?? objs.overlapping;
+      body.colours = slots.map((_, i) => headColour(i).slice(0, 7));
+    }
     const byType = {};
-    body.filaments.forEach((n, i) => { if (slots[i].type) byType[slots[i].type.toUpperCase()] = n; });
+    body.filaments.forEach((n, i) => { if (slots[i]?.type) byType[slots[i].type.toUpperCase()] = n; });
     saveLast(printerId, { mode: o.project_matches ? body.mode : last.mode, machine: body.machine,
       process: body.process, bed_type: body.bed_type, bedV: 2, filaments: body.filaments, byType });
     progress.innerHTML = `<div class="notice">Sending to the slicer...</div>`;
