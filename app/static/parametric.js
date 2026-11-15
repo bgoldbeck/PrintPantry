@@ -3,6 +3,7 @@
 // The form is built from the parameters the app reads out of the file; the
 // NAS renders the STL (one job at a time, shared with slicing) into the
 // model's "generated" folder, where it shows up like any other STL.
+import { slicerPrinters } from "./slicing.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -268,10 +269,18 @@ export async function openCustomizeDialog(file, onDone) {
       try { job = await api(`/api/parametric/jobs/${job.id}`); } catch (e) { job = { ...job, message: e.message }; }
       const secs = Math.round((Date.now() - started) / 1000);
       if (job.state === "done") {
+        // The multi-colour 3MF (parts on their own filaments), when one was made.
+        const three = job.outputs.find((p) => /\.3mf$/i.test(p)) || "";
         const warn = job.warnings?.length ? `<div class="notice warn"><ul>${job.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
         progress.innerHTML = `<div class="notice success"><span class="notice-icon">✓</span><div class="notice-body"><strong>Done in ${secs} s!</strong>
-          Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}. Close to see it and slice it.</div></div>${warn}`;
+          Saved ${job.outputs.map((p) => `<code>${esc(p.split("/").pop())}</code>`).join(", ")}.${three ? "" : " Close to see it and slice it."}</div></div>${warn}
+          ${three ? `<div class="next-step"><span>Next: pick a colour for each part and slice</span>${slicerPrinters().map((p, i) =>
+            `<button type="button" class="small${i ? " ghost" : ""}" data-next="${esc(p.id)}">Colours &amp; slice for ${esc(p.name)}</button>`).join("")}</div>` : ""}`;
         finished = job;
+        progress.querySelectorAll("[data-next]").forEach((b) => (b.onclick = () => {
+          finished = { ...job, next: { printer: b.dataset.next, file: three } };
+          dlg.close();
+        }));
         go.textContent = "Make STL";
         go.disabled = false;
         lock(false);

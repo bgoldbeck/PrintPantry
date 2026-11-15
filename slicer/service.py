@@ -342,6 +342,7 @@ class Job:
     state: str = "queued"  # queued | running | done | failed
     message: str = "Waiting for the slicer"
     outputs: list[str] = field(default_factory=list)
+    usage: list[float] = field(default_factory=list)  # grams per filament slot, from the G-code
     warnings: list[str] = field(default_factory=list)
     log: str = ""
     created: float = field(default_factory=time.time)
@@ -517,6 +518,25 @@ def worker():
         job.finished = time.time()
 
 
+def gcode_usage(path: Path) -> list[float]:
+    """Grams per filament from OrcaSlicer's G-code footer (empty for .gcode.3mf)."""
+    if path.suffix.lower() != ".gcode":
+        return []
+    try:
+        with path.open("rb") as fh:
+            fh.seek(max(0, path.stat().st_size - 1_000_000))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    m = re.search(r"^; filament used \[g\] = (.+)$", tail, re.M)
+    if not m:
+        return []
+    try:
+        return [round(float(v), 2) for v in m.group(1).split(",")]
+    except ValueError:
+        return []
+
+
 SPARE_COLOURS = ["#FFFFFF", "#F5D000", "#D02020", "#2060D0", "#20A040", "#202020", "#E07020", "#9040C0"]
 
 
@@ -584,7 +604,9 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
             f["filament_colour"] = [job.colours[i]]
         elif i < len(info.filaments) and info.filaments[i].get("colour"):
             f["filament_colour"] = [info.filaments[i]["colour"]]
-    if job.assign and len(fils) > 1:
+    if len(fils) > 1:
+        # Also without per-object choices: a 2-colour 3MF whose filaments both
+        # got the same preset would otherwise print in one colour.
         distinct_colours(fils)
         job.colours = [str(_first(f.get("filament_colour")) or "") for f in fils]
     for f in fils:
@@ -661,7 +683,7 @@ def run_job(job: Job) -> None:
             machine_file = work / "machine.json"
             nozzles = len(json.loads(machine_file.read_text()).get("nozzle_diameter") or [1]) if machine_file.exists() else 1
             project.copy_for_slicing(source, inp, overrides, count, fil_keys - project.META_KEYS, nozzles,
-                                     job.colours if job.assign else None)
+                                     job.colours if job.mode == "presets" else None)
         elif combine:
             inp = work / "input.3mf"
             paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
@@ -695,6 +717,7 @@ def run_job(job: Job) -> None:
         job.outputs = publish(job, printer, src, out)
         if not job.outputs:
             raise RuntimeError("The slicer finished but wrote no files")
+        job.usage = gcode_usage(LIBRARY / job.outputs[0])
         job.message = "Sliced: " + ", ".join(Path(o).name for o in job.outputs)
     finally:
         shutil.rmtree(work, ignore_errors=True)

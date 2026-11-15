@@ -361,6 +361,8 @@ button .muted { opacity: .75; font-weight: 400; }
 .obj-row:hover { background: var(--surface-2); border-radius: 8px; }
 .obj-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
 .obj-name small { display: block; color: var(--ink-2); font-size: .78rem; }
+.usage { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: .9rem; }
+.usage .used { display: inline-flex; align-items: center; gap: 4px; }
 .obj-row select { width: 100%; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
 @media (max-width: 640px) {
   .field { grid-template-columns: 1fr; gap: 4px; }
