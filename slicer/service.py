@@ -573,6 +573,23 @@ def write_json(path: Path, data: dict) -> str:
     return path.name
 
 
+def common_filament_keys(fils: list[dict]) -> list[str]:
+    """Drop settings that only some of the loaded filaments have.
+
+    OrcaSlicer joins the filaments' lists into one per setting and aborts with
+    "set_with_restore_2(): invalid size found" when a setting is missing from
+    some (e.g. a Bambu Studio export with filament_cooling_before_tower next
+    to a built-in Generic PETG). Without it, OrcaSlicer's default applies."""
+    if len(fils) < 2:
+        return []
+    keep = set.intersection(*(set(f) for f in fils))
+    dropped = sorted(set().union(*(set(f) for f in fils)) - keep)
+    for f in fils:
+        for key in dropped:
+            f.pop(key, None)
+    return dropped
+
+
 def build_settings(job: Job, printer: Printer, work: Path, info: project.ProjectInfo) -> list[str]:
     """Flat preset files for the CLI; returns the extra arguments."""
     lib = PRESETS.get()
@@ -584,6 +601,7 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
         raise RuntimeError(str(exc)) from exc
     for f in fils:
         fill_plate_temps(f)
+    common_filament_keys(fils)
     calibrated = []
     for f in fils:
         ratio = job.flow_ratios.get(f["name"])
