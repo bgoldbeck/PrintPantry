@@ -307,10 +307,7 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
         else:
             name = stems.get(g) or next((p.stem for p in paths if p.suffix.lower() == ".stl"), "STLs")
         named.append((name, members))
-    copies = max(1, int(copies or 1))
-    if copies > 1:
-        named = [(f"{name} #{c + 1}" if c else name, members) for c in range(copies) for name, members in named]
-    write_3mf(named, assign, dst, paths[0].stem)
+    write_3mf(named, assign, dst, paths[0].stem, max(1, int(copies or 1)))
 
 
 def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool) -> None:
@@ -321,10 +318,12 @@ def rebuild_3mf(src: Path, assign: dict, dst: Path, plate: int = 0) -> None:
     plate_3mf([src], assign, dst, True, plate)
 
 
-def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str) -> None:
+def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str, copies: int = 1) -> None:
     """One object per group, one part per item, filament per part from
     ``assign`` (else the item's own). Objects are centred on their origin;
-    slice with --arrange so the slicer places them."""
+    slice with --arrange so the slicer places them. ``copies`` > 1 adds
+    instances (build items of the same object), which the slicer slices
+    once and repeats, much faster than as many separate objects."""
     resources, build, config = [], [], []
     next_id = 1
     for g, (name, group) in enumerate(groups):
@@ -349,8 +348,9 @@ def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, tit
         comps = "".join('   <component objectid="%d"/>\n' % p for p in part_ids)
         resources.append(' <object id="%d" name="%s" type="model">\n  <components>\n%s  </components>\n </object>\n'
                          % (oid, esc(name), comps))
-        build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %d 128 0" printable="1"/>\n'
-                     % (oid, 128 + g * 10))
+        for c in range(copies):
+            build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %d %d 0" printable="1"/>\n'
+                         % (oid, 128 + g * 10, 128 + c * 5))
         first = _slot(assign.get(group[0].key), group[0].extruder)
         config.append(' <object id="%d">\n  <metadata key="name" value="%s"/>\n  <metadata key="extruder" value="%d"/>\n%s </object>\n'
                       % (oid, esc(name), first, "".join(parts_cfg)))

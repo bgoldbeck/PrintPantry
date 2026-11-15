@@ -276,11 +276,12 @@ def test_copies_repeat_every_object(tmp_path):
     out = tmp_path / "c.3mf"
     O.plate_3mf([src], {"o100": 1, "o101:2": 1, "o101:3": 1}, out, copies=3)
     got = O.threemf_items(out)
-    assert len(got) == 9  # (1 + 2 parts) x 3
-    assert {i.extruder for i in got} == {1}
+    assert len(got) == 3 and {i.extruder for i in got} == {1}  # objects written once...
+    build = lambda: zipfile.ZipFile(out).read("3D/3dmodel.model").decode().count("<item ")
+    assert build() == 6  # ...placed as instances: 2 objects x 3
     stl = write_stl(tmp_path / "s.stl", cube(s=20))
     O.plate_3mf([stl], {}, out, copies=4)
-    assert len(O.threemf_items(out)) == 4
+    assert build() == 4
 
 
 def test_item_box_is_the_footprint(tmp_path):
