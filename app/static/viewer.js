@@ -276,7 +276,12 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
   // Lay groups of pieces out side by side, the way the slicer arranges
   // separate objects; null puts everything back where the file has it.
   const home = geos.map(() => new THREE.Vector3());
-  function layout(groups) {
+  let clones = [];
+  // ``places`` (copies): {c, g, x, y} per group per copy, centres in mm from
+  // the middle of the bed; copy 0 moves the pieces, later copies are clones.
+  function layout(groups, places = null) {
+    clones.forEach((m) => scene.remove(m));
+    clones = [];
     meshes.forEach((m, i) => m.position.copy(home[i]));
     if (!groups) return;
     const order = [...new Set(groups)];
@@ -285,6 +290,26 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
       meshes.forEach((m, i) => { if (groups[i] === g && m.visible) b.union(m.geometry.boundingBox); });
       return b;
     });
+    if (places) {
+      for (const p of places) {
+        const b = boxes[order.indexOf(p.g)];
+        if (!b || b.isEmpty()) continue;
+        const dx = p.x - (b.min.x + b.max.x) / 2, dz = -p.y - (b.min.z + b.max.z) / 2, dy = -b.min.y;
+        meshes.forEach((m, i) => {
+          if (groups[i] !== p.g) return;
+          let t = m;
+          if (p.c > 0) {
+            t = new THREE.Mesh(m.geometry, m.material);  // same colour as the original
+            t.raycast = () => {};
+            t.visible = m.visible;
+            scene.add(t);
+            clones.push(t);
+          }
+          t.position.set(dx, dy, dz);
+        });
+      }
+      return;
+    }
     const gap = 8;
     const widths = boxes.map((b) => (b.isEmpty() ? 0 : b.max.x - b.min.x));
     const total = widths.reduce((a, w) => a + w, 0) + gap * Math.max(0, widths.filter(Boolean).length - 1);

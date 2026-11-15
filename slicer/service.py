@@ -309,9 +309,11 @@ def output_dir(src: Path) -> Path:
 PRINTER_TAG = re.compile(r"([ _.\-]+(p1s|u1|snapmaker[ _]?u1|bambu[ _]?p1s))+$", re.I)
 
 
-def output_name(src: Path, printer: Printer, plate: int | None) -> str:
+def output_name(src: Path, printer: Printer, plate: int | None, copies: int = 1) -> str:
     stem = src.name[: -len(".3mf")] if src.name.lower().endswith(".3mf") else src.stem
     stem = PRINTER_TAG.sub("", stem) or stem
+    if copies > 1:
+        stem += f" x{copies}"
     if printer.output == "gcode.3mf":
         return f"{stem}_{printer.tag}.gcode.3mf"
     if plate:
@@ -337,6 +339,7 @@ class Job:
     assign: dict = field(default_factory=dict)  # item key (objects.py) -> filament slot, 1-based
     colours: list[str] = field(default_factory=list)  # per filament slot, e.g. the toolhead's loaded colour
     keep_positions: bool = True  # STLs together: as parts of one object (colours of one model)
+    copies: int = 1  # the whole plate this many times, laid out by the slicer (--arrange)
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
@@ -358,6 +361,9 @@ class Job:
 JOBS: dict[str, Job] = {}
 QUEUE: "queue.Queue[str]" = queue.Queue()
 JOBS_LOCK = threading.Lock()
+
+
+MAX_COPIES = 200
 
 
 def submit(body: dict) -> Job:
@@ -394,8 +400,14 @@ def submit(body: dict) -> Job:
         raise BadRequest(f"An object is set to filament {max(used)}, but only {slots} are picked")
     # Whether anything is left on the plate is checked when the plate is built:
     # pieces missing from assign keep printing.
-    if mode == "project" and src.suffix.lower() == ".3mf" and (extra or 0 in assign.values()):
-        raise BadRequest("To add or leave out pieces, pick presets instead of the project's own settings")
+    try:
+        copies = int(body.get("copies", 1))
+    except (TypeError, ValueError):
+        raise BadRequest("copies must be a number") from None
+    if not 1 <= copies <= MAX_COPIES:
+        raise BadRequest(f"copies must be 1 to {MAX_COPIES}")
+    if mode == "project" and src.suffix.lower() == ".3mf" and (extra or 0 in assign.values() or copies > 1):
+        raise BadRequest("To add, copy or leave out pieces, pick presets instead of the project's own settings")
     colours = [c if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(c or "")) else "" for c in body.get("colours") or []]
     job = Job(
         id=uuid.uuid4().hex[:12], path=path, printer=printer.id, mode=mode,
@@ -403,7 +415,7 @@ def submit(body: dict) -> Job:
         filaments=filaments, bed_type=str(body.get("bed_type", "")), plate=max(0, plate),
         flow_ratios=flow_ratios(body.get("flow_ratios")),
         extra_paths=extra, assign=assign, colours=[str(c).upper() for c in colours],
-        keep_positions=bool(body.get("keep_positions", True)),
+        keep_positions=bool(body.get("keep_positions", True)), copies=copies,
     )
     return queue_job(job)
 
@@ -631,7 +643,14 @@ def run_job(job: Job) -> None:
     if info.kind == "3mf" and job.mode == "presets" and info.filaments and len(job.filaments) != len(info.filaments) \
             and not (job.assign and len(job.filaments) >= max(job.assign.values())):
         raise RuntimeError(f"This project uses {len(info.filaments)} filaments; pick one for each")
-    if len(info.filaments) > printer.max_filaments:
+    # A project 3MF is rebuilt as a plain 3MF (see objects.plate_3mf) when
+    # what's on the plate changes: STLs added, pieces left off, copies, objects
+    # moved to more toolheads than it has filaments, or fewer filaments than
+    # it lists (a Bambu project often lists every AMS slot but uses one).
+    rebuild = info.kind == "3mf" and job.mode == "presets" and (
+        bool(job.extra_paths) or 0 in job.assign.values() or job.copies > 1
+        or (bool(job.assign) and len(job.filaments) != max(1, len(info.filaments))))
+    if len(info.filaments) > printer.max_filaments and not rebuild:
         raise RuntimeError(f"This project uses {len(info.filaments)} filaments; {printer.name} has {printer.max_filaments}")
     if job.mode == "project" and info.printer_model.lower() != printer.model.lower():
         raise RuntimeError(f"This project is set up for {info.printer_model or 'another printer'}; pick presets instead")
@@ -645,13 +664,7 @@ def run_job(job: Job) -> None:
         if job.mode == "presets":
             args += build_settings(job, printer, work, info)
         # Several STLs, or one with several bodies, become a 3MF with a filament per piece.
-        combine = info.kind == "stl" and bool(job.extra_paths or job.assign)
-        # A project whose objects now use more filaments than it has is rebuilt
-        # as a plain 3MF: OrcaSlicer can't grow a project's filament settings.
-        # The same when pieces are left off or STLs added to the plate.
-        rebuild = info.kind == "3mf" and job.mode == "presets" and (
-            bool(job.extra_paths) or 0 in job.assign.values()
-            or (bool(job.assign) and len(job.filaments) > max(1, len(info.filaments))))
+        combine = info.kind == "stl" and (bool(job.extra_paths or job.assign) or job.copies > 1)
         if rebuild:
             args[args.index("--slice") + 1] = "0"  # only the chosen plate is in the rebuilt file
         if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model):
@@ -665,7 +678,7 @@ def run_job(job: Job) -> None:
         if rebuild:
             try:
                 paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
-                O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate)
+                O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
             if info.printer_model:
@@ -695,7 +708,7 @@ def run_job(job: Job) -> None:
             inp = work / "input.3mf"
             paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
             try:
-                O.plate_3mf(paths, job.assign, inp, job.keep_positions)
+                O.plate_3mf(paths, job.assign, inp, job.keep_positions, copies=job.copies)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
         else:
@@ -887,18 +900,18 @@ def publish(job: Job, printer: Printer, src: Path, out: Path) -> list[str]:
     if printer.output == "gcode.3mf":
         f = out / "result.gcode.3mf"
         if f.is_file():
-            produced.append((f, output_name(src, printer, None)))
+            produced.append((f, output_name(src, printer, None, job.copies)))
     else:
         plates = sorted(out.glob("plate_*.gcode"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
         for f in plates:
             n = int(re.sub(r"\D", "", f.stem) or 1)
-            produced.append((f, output_name(src, printer, n if len(plates) > 1 or job.plate else None)))
+            produced.append((f, output_name(src, printer, n if len(plates) > 1 or job.plate else None, job.copies)))
     written = []
     if produced and printer.output == "gcode" and not job.plate:
         # A full re-slice replaces every earlier output for this source, so a
         # model that went from 3 plates to 2 doesn't keep a stale plate 3 (and
         # a single-plate result doesn't sit next to old per-plate files).
-        single = output_name(src, printer, None)
+        single = output_name(src, printer, None, job.copies)
         stem = single[: -len(".gcode")]
         fresh = {name for _, name in produced}
         for old in dest_dir.iterdir():

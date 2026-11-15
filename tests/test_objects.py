@@ -269,3 +269,37 @@ def test_submit_skips_and_extras_on_a_project(lib, monkeypatch):
     # an empty plate is caught when the plate is built (plate_3mf).
     job = service.submit({**base, "assign": {"o100": 0}})
     assert job.assign == {"o100": 0}
+
+
+def test_copies_repeat_every_object(tmp_path):
+    src = bambu_3mf(tmp_path / "a.3mf")
+    out = tmp_path / "c.3mf"
+    O.plate_3mf([src], {"o100": 1, "o101:2": 1, "o101:3": 1}, out, copies=3)
+    got = O.threemf_items(out)
+    assert len(got) == 9  # (1 + 2 parts) x 3
+    assert {i.extruder for i in got} == {1}
+    stl = write_stl(tmp_path / "s.stl", cube(s=20))
+    O.plate_3mf([stl], {}, out, copies=4)
+    assert len(O.threemf_items(out)) == 4
+
+
+def test_item_box_is_the_footprint(tmp_path):
+    write = write_stl(tmp_path / "s.stl", cube(x=5, y=7, s=20))
+    item = O.items_for([write])[0].to_json()
+    assert item["box"] == [5.0, 7.0, 25.0, 27.0]
+
+
+def test_submit_copies(lib, monkeypatch):
+    write_stl(lib / "M" / "a.stl", cube())
+    bambu_3mf(lib / "M" / "p.3mf")
+    monkeypatch.setattr(service, "queue_job", lambda job: job)
+    base = {"printer": "u1", "path": "M/a.stl", "machine": "m", "process": "p", "filaments": ["A"]}
+    assert service.submit({**base, "copies": 6}).copies == 6
+    assert service.submit(base).copies == 1
+    for bad in (0, 999, "x"):
+        with pytest.raises(service.BadRequest):
+            service.submit({**base, "copies": bad})
+    with pytest.raises(service.BadRequest):  # copies rebuild the project, so presets only
+        service.submit({**base, "path": "M/p.3mf", "mode": "project", "copies": 2})
+    u1 = service.PRINTERS["u1"]
+    assert service.output_name(Path("Clip.stl"), u1, None, 4) == f"Clip x4_{u1.tag}.gcode"

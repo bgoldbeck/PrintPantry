@@ -44,6 +44,36 @@ const PALETTE = ["#E9A23B", "#3B82E9", "#E94B3B", "#3BBF6A", "#9B59D0", "#E9D63B
 // Build plate sizes (mm) for the preview.
 const BEDS = { u1: [270, 270], p1s: [256, 256] };
 const mm = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
+const MAX_COPIES = 200;
+
+// Shelf-pack ``copies`` sets of footprints ({g, w, d} mm) on the bed, the way
+// the slicer's arrange would at least manage; null if they don't fit. Returns
+// {c, g, x, y} per piece: centres in mm from the middle of the bed (y = back).
+export function packCopies(rects, copies, bed, gap = 8, edge = 3) {
+  const W = bed[0] - 2 * edge, D = bed[1] - 2 * edge;
+  const all = [];
+  for (let c = 0; c < copies; c++) rects.forEach((r) => all.push({ c, g: r.g, w: r.w, d: r.d }));
+  all.sort((a, b) => b.d - a.d || b.w - a.w || a.c - b.c);
+  let x = 0, y = 0, row = 0;
+  for (const r of all) {
+    if (r.w > W || r.d > D) return null;
+    if (x > 0 && x + r.w > W) { y += row + gap; x = 0; row = 0; }
+    if (y + r.d > D) return null;
+    r.x = x + r.w / 2; r.y = y + r.d / 2;
+    x += r.w + gap;
+    row = Math.max(row, r.d);
+  }
+  // Centre the whole layout on the bed.
+  const x1 = Math.max(...all.map((r) => r.x + r.w / 2)), y1 = Math.max(...all.map((r) => r.y + r.d / 2));
+  all.forEach((r) => { r.x -= x1 / 2; r.y = y1 / 2 - r.y; });
+  return all;
+}
+export function maxCopies(rects, bed) {
+  if (!rects.length || !bed || !packCopies(rects, 1, bed)) return 1;
+  let n = 1;
+  while (n < MAX_COPIES && packCopies(rects, n + 1, bed)) n++;
+  return n;
+}
 
 // "Slice for ..." on an STL of a model that has other STLs, or on a 3MF with
 // several objects: each object (or STL, or separate body inside an STL) can
@@ -80,8 +110,9 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   // plate (bedV 2); before that, Smooth PEI was often forced on the U1's textured plate.
   if (last.bedV === 2 && has(o.bed_types.map((b) => b.name), last.bed_type)) d.bed_type = last.bed_type;
   const slots = proj.filaments.length ? proj.filaments.map((f) => ({ ...f })) : [{ type: "PLA", colour: "" }];
-  const baseCount = slots.length;
+  let baseCount = slots.length;
   const tooMany = slots.length > o.printer.max_filaments;
+  const listed = slots.length;  // filaments the project lists (before dropping unused ones)
   const isU1 = printerId === "u1";
   const heads = printerById(printerId)?.status?.toolheads || [];
   const head = (i) => heads.find((h) => h.index === i);
@@ -90,7 +121,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const slotTag = (i) => (isU1 ? `T${i + 1}` : `${i + 1}`);
   const siblings = (ctx.siblings || []).filter((s) => s.id !== file.id);
   // Per-object state, filled by loadObjects().
-  const objs = { items: [], assign: {}, together: new Set(), keep: null, active: false, brush: 1, overlapping: false };
+  const objs = { items: [], assign: {}, together: new Set(), keep: null, active: false, brush: 1, overlapping: false,
+    compact: false, copies: 1, max: 1 };
   const plates = proj.plates > 1
     ? `<label class="field"><span>Plates</span><select data-plate>${option(0, `All ${proj.plates} plates`, true)}${
       Array.from({ length: proj.plates }, (_, i) => option(i + 1, `Plate ${i + 1} only`)).join("")}</select></label>`
@@ -100,7 +132,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     <h2 class="with-state">Slice for ${esc(o.printer.name)} ${printerById(o.printer.id) ? stateBadge(printerById(o.printer.id)) : ""}</h2>
     <p class="sub" style="margin-bottom:12px"><strong>${esc(file.name)}</strong>${
       proj.printer_model ? ` · set up for ${esc(proj.printer_model)}` : ""}</p>
-    ${tooMany ? `<div class="notice error">This project uses ${slots.length} filaments, but the ${esc(o.printer.name)} has ${o.printer.max_filaments} toolheads.</div>` : ""}
+    <div data-toomany>${tooMany ? `<div class="notice">Checking which of the project's ${slots.length} filaments its objects use...</div>` : ""}</div>
     ${o.project_matches ? `<div class="modes">
         <label class="check"><input type="radio" name="mode" value="project"${d.mode === "project" ? " checked" : ""}> Use the project's own settings</label>
         <label class="check"><input type="radio" name="mode" value="presets"${d.mode === "presets" ? " checked" : ""}> Pick presets</label>
@@ -115,6 +147,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
     </div>
     <div data-objects></div>
+    <div data-copies></div>
     ${plates}
     <div data-warn></div>
     <div data-progress></div>
@@ -199,7 +232,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const slotOf = (it) => (objs.assign[it.key] === 0 ? 0 : Math.min(objs.assign[it.key] || it.extruder || 1, choices()));
   const isOff = (it) => slotOf(it) === 0;
   // Changing what's on the plate of a project needs presets (the slicer gets a re-made file).
-  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff));
+  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff) || objs.compact || objs.copies > 1);
   function forcePresets() {
     const r = dlg.querySelector('input[name="mode"][value="presets"]');
     if (reshaped() && r && !r.checked) { r.checked = true; check(); }
@@ -233,6 +266,9 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     const over = slots.length > o.printer.max_filaments;
     go.disabled = over;
+    $("[data-toomany]").innerHTML = over
+      ? `<div class="notice error">This project uses ${slots.length} filaments, but the ${esc(o.printer.name)} has ${o.printer.max_filaments} toolheads.</div>`
+      : objs.compact ? `<div class="notice">The file lists ${listed} filaments, but its objects only use ${slots.length}, so only ${slots.length > 1 ? "those are" : "that one is"} sliced.</div>` : "";
   }
 
   function paintObjects() {
@@ -248,8 +284,47 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     // The slicer lays out separate objects itself when it gets a plain file
     // (STLs, a plain 3MF, or a project with pieces added or left off).
     const arranged = isStl || reshaped() || !proj.printer_model;
+    const groups = groupsOf();
+    viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? packCopies(footprints(groups), objs.copies, BEDS[printerId]) : null);
+  }
+  // Which pieces stay together as one object on the plate (as the slicer gets them).
+  function groupsOf() {
     const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + objs.together.size > 1;
-    viewer?.layout(arranged ? objs.items.map((it) => (isOff(it) ? "off" : keepStls && it.group.startsWith("f") ? "stl" : it.group)) : null);
+    return objs.items.map((it) => (isOff(it) ? "off" : keepStls && it.group.startsWith("f") ? "stl" : it.group));
+  }
+  function footprints(groups) {
+    const boxes = {};
+    objs.items.forEach((it, i) => {
+      const g = groups[i];
+      if (g === "off" || !it.box) return;
+      const b = boxes[g] || (boxes[g] = [Infinity, Infinity, -Infinity, -Infinity]);
+      b[0] = Math.min(b[0], it.box[0]); b[1] = Math.min(b[1], it.box[1]);
+      b[2] = Math.max(b[2], it.box[2]); b[3] = Math.max(b[3], it.box[3]);
+    });
+    return Object.entries(boxes).map(([g, b]) => ({ g, w: b[2] - b[0], d: b[3] - b[1] }));
+  }
+  // "Copies": 1 up to as many as fit on this bed.
+  function renderCopies() {
+    const box = $("[data-copies]");
+    const bed = BEDS[printerId];
+    const painted = !isStl && objs.items.some((it) => it.painted);
+    if (!objs.items.length || !bed || painted) { box.innerHTML = ""; return; }
+    objs.max = maxCopies(footprints(groupsOf()), bed);
+    if (objs.copies > objs.max) objs.copies = objs.max;
+    box.innerHTML = `<label class="field"><span>Copies</span><div class="copies">
+      <input type="number" data-copy min="1" max="${objs.max}" value="${objs.copies}" style="width:5em">
+      <button type="button" class="ghost" data-copy-max${objs.max < 2 ? " disabled" : ""}>Max (${objs.max})</button>
+      <small class="hint">${objs.max > 1 ? `Up to ${objs.max} fit on the ${bed.join(" × ")} mm bed; the slicer arranges them.` : "Only one fits on the bed."}</small></div></label>`;
+    const input = box.querySelector("[data-copy]");
+    const set = (n) => {
+      objs.copies = Math.max(1, Math.min(objs.max, Math.round(Number(n)) || 1));
+      input.value = objs.copies;
+      forcePresets();
+      if (objs.copies > 1 && !objs.active) { objs.active = true; showObjects(); return; }
+      paintObjects();
+    };
+    input.onchange = () => set(input.value);
+    box.querySelector("[data-copy-max]").onclick = () => set(objs.max);
   }
   function objectsChanged() {
     if (!objs.active) return;
@@ -280,13 +355,14 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
           <span class="obj-name">${esc(it.name)}<small>${it.size.map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
           <select data-obj="${i}" aria-label="Toolhead for ${esc(it.name)}">${opts}</select></div>`).join("")}</div>
       ${painted ? `<small class="hint">Painted pieces keep their painted colours; the toolhead here is for the unpainted rest.</small>` : ""}`;
+    if (!withPreview) renderCopies();
     if (box && !withPreview) {
       box.innerHTML = dynamic;
     } else {
       objBox.innerHTML = `<div class="field obj-field"><span>Colours</span><div>
         ${together}
-        ${many || objs.together.size ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>
-          <small class="hint">Build plate preview${BEDS[printerId] ? ` (${BEDS[printerId].join(" × ")} mm)` : ""}. The slicer centres the model, or lays pieces out when they print separately.</small>` : ""}
+        ${many || objs.together.size || objs.copies > 1 ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>
+          <small class="hint">Build plate preview${BEDS[printerId] ? ` (${BEDS[printerId].join(" × ")} mm)` : ""}. The slicer centres the model, or lays pieces out when they print separately or as copies.</small>` : ""}
         <div data-obj-dynamic>${dynamic}</div></div></div>`;
       objBox.querySelectorAll("[data-with]").forEach((c) => (c.onchange = () => {
         if (c.checked) objs.together.add(c.dataset.with); else objs.together.delete(c.dataset.with);
@@ -325,6 +401,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       data = await api(`/api/slicer/objects?${q}`);
     } catch (e) {
       if (siblings.length) objBox.innerHTML = `<div class="notice warn">Couldn't list the pieces: ${esc(e.message)}</div>`;
+      syncRows();
       return;
     }
     if (seq !== loadSeq) return;
@@ -340,20 +417,51 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       objs.restored = true;
       for (const it of objs.items) if (savedPlate.off.includes(it.key)) objs.assign[it.key] = 0;
     }
+    compactFilaments();
     forcePresets();
-    objs.active = objs.items.length > 1 || objs.together.size > 0 || siblings.length > 0;
+    objs.active = objs.items.length > 1 || objs.together.size > 0 || siblings.length > 0 || objs.compact || objs.copies > 1;
+    objs.q = q;
+    objs.mesh = null;
+    showObjects();
+  }
+
+  // A project that lists more filaments than the printer has toolheads (a
+  // Bambu project lists every AMS slot) but whose objects use few enough:
+  // keep only the used ones, each object moved to its new number.
+  function compactFilaments() {
+    if (isStl || objs.compact || listed <= o.printer.max_filaments || objs.items.some((it) => it.painted)) return;
+    const used = [...new Set(objs.items.map((it) => it.extruder))].sort((a, b) => a - b);
+    if (!used.length || used.length > o.printer.max_filaments || used[used.length - 1] > listed) return;
+    const keep = used.map((u) => slots[u - 1]);
+    d.filaments = used.map((u) => d.filaments[u - 1]);
+    slots.splice(0, slots.length, ...keep);
+    baseCount = slots.length;
+    objs.items.forEach((it) => { if (objs.assign[it.key] !== 0) objs.assign[it.key] = used.indexOf(it.extruder) + 1; });
+    objs.compact = true;
+    chosen = [];
+    renderFilRows();
+    fillFor(machineSel.value, false);
+    check();
+  }
+
+  async function showObjects() {
+    const seq = loadSeq, q = objs.q;
     viewer?.dispose();
     viewer = null;
-    if (!objs.active) { objBox.innerHTML = ""; return; }
+    if (!objs.active) { objBox.innerHTML = ""; renderCopies(); syncRows(); return; }
     renderObjects(true);
+    renderCopies();
     syncRows();
     paintObjects();
     const prev = objBox.querySelector("[data-preview]");
     if (!prev) return;
     try {
-      const res = await fetch(`/api/slicer/objects/mesh?${q}`);
-      if (!res.ok) throw new Error(res.statusText);
-      const buf = await res.arrayBuffer();
+      if (!objs.mesh) {
+        const res = await fetch(`/api/slicer/objects/mesh?${q}`);
+        if (!res.ok) throw new Error(res.statusText);
+        objs.mesh = await res.arrayBuffer();
+      }
+      const buf = objs.mesh.slice(0);
       if (seq !== loadSeq || !prev.isConnected) return;
       prev.innerHTML = "";
       viewer = createPartsViewer(prev, buf, {
@@ -390,14 +498,16 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const assign = {};
       objs.items.forEach((it) => {
         const slot = slotOf(it);
-        // A 3MF only gets the changes; STLs are rebuilt, so every piece counts.
-        if (isStl || it.key.startsWith("f") || slot !== it.extruder) assign[it.key] = slot;
+        // A 3MF only gets the changes; STLs are rebuilt, so every piece counts
+        // (and every object of a project whose unused filaments were dropped).
+        if (isStl || objs.compact || it.key.startsWith("f") || slot !== it.extruder) assign[it.key] = slot;
       });
       body.assign = assign;
       body.extra_files = [...objs.together];
       body.keep_positions = objs.keep ?? objs.overlapping;
-      body.colours = slots.map((_, i) => headColour(i).slice(0, 7));
+      body.colours = slots.map((s, i) => (headColour(i) || (objs.compact ? s.colour || "" : "")).slice(0, 7));
     }
+    if (objs.copies > 1) body.copies = objs.copies;
     const byType = {};
     body.filaments.forEach((n, i) => { if (slots[i]?.type) byType[slots[i].type.toUpperCase()] = n; });
     saveLast(printerId, { mode: o.project_matches ? body.mode : last.mode, machine: body.machine,
