@@ -47,6 +47,10 @@ STATE_MAP = {
 }
 CANCEL_CODES = {0, 50348044}  # print_error after "stop" (0300-400C = task cancelled)
 PUSHALL_EVERY = 300.0  # the P1 series asks to be sparing with full reports
+# Link watchdog. The P1S sends a report every few seconds even when idle.
+RELINK_DOWN = 45.0  # down this long (paho didn't get back): start a fresh connection
+QUIET_PROBE = 60.0  # connected but silent this long: ask for a full report
+QUIET_RELINK = 120.0  # still silent: the connection is dead, start a fresh one
 SNAPSHOT_CACHE = 2.0
 CAMERA_PORT = 6000
 MAX_FRAME = 4 * 1024 * 1024
@@ -154,7 +158,12 @@ def plate_gcode(path: Path) -> str:
 
 # ---------------------------------------------------------------- transports
 class MqttLink:
-    """paho-mqtt connection to the printer. Reconnects by itself."""
+    """paho-mqtt connection to the printer. paho reconnects by itself; the driver
+    also watches it (``down_for`` / ``silent_for`` / ``alive``) and replaces the
+    link when paho gets stuck, because a P1S sometimes drops the socket and
+    paho's loop never gets back (the Printers page then says Offline for good)."""
+
+    _seq = 0
 
     def __init__(self, host: str, serial: str, access_code: str, on_report, on_state=None):
         import paho.mqtt.client as mqtt
@@ -164,14 +173,20 @@ class MqttLink:
         self._on_state = on_state or (lambda up: None)
         self.connected = False
         self.error = ""
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"printpantry-{int(time.time())}",
+        now = time.monotonic()
+        self.down_at: float | None = now  # when the link last went down (None while up)
+        self.last_msg = now
+        MqttLink._seq += 1
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                        client_id=f"printpantry-{int(time.time())}-{MqttLink._seq}",
                         protocol=mqtt.MQTTv311)
+        c.suppress_exceptions = True  # a bad report must never kill paho's network thread
         c.username_pw_set("bblp", access_code)
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE  # the printer's certificate is self-signed
         c.tls_set_context(ctx)
-        c.reconnect_delay_set(2, 30)
+        c.reconnect_delay_set(2, 20)
         c.on_connect = self._connected
         c.on_disconnect = self._disconnected
         c.on_message = self._message
@@ -183,31 +198,58 @@ class MqttLink:
         self.client.loop_start()
 
     def stop(self) -> None:
-        self.client.loop_stop()
-        self.client.disconnect()
+        # Don't let a stuck network thread block the caller.
+        def _stop():
+            try:
+                self.client.disconnect()
+                self.client.loop_stop()
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=_stop, name="mqtt-stop", daemon=True).start()
+
+    @property
+    def alive(self) -> bool:
+        """False once paho's network thread has died."""
+        t = getattr(self.client, "_thread", None)
+        return t is not None and t.is_alive()
+
+    def down_for(self) -> float:
+        return 0.0 if self.down_at is None else time.monotonic() - self.down_at
+
+    def silent_for(self) -> float:
+        return time.monotonic() - self.last_msg
 
     def _connected(self, client, userdata, flags, reason, properties=None):
         if getattr(reason, "is_failure", False):
             self.error = f"Printer refused the connection ({reason}); check the access code"
             self.connected = False
+            log.warning("P1S refused the MQTT connection: %s", reason)
             return
         self.error = ""
         self.connected = True
+        self.down_at = None
+        self.last_msg = time.monotonic()
         client.subscribe(f"device/{self.serial}/report")
+        log.info("P1S MQTT connected")
         self._on_state(True)
 
     def _disconnected(self, client, userdata, flags, reason, properties=None):
         self.connected = False
+        if self.down_at is None:
+            self.down_at = time.monotonic()
         if getattr(reason, "is_failure", False):
-            self.error = f"Lost connection ({reason})"
+            self.error = f"Lost connection ({reason}); reconnecting"
+        log.warning("P1S MQTT disconnected: %s", reason)
         self._on_state(False)
 
     def _message(self, client, userdata, msg):
+        self.last_msg = time.monotonic()
         try:
             data = json.loads(msg.payload)
-        except ValueError:
-            return
-        self._on_report(data)
+            if isinstance(data, dict):
+                self._on_report(data)
+        except Exception:  # noqa: BLE001 - one odd report must not stop the link
+            log.exception("Bad report from the P1S")
 
     def publish(self, payload: dict) -> None:
         if not self.connected:
@@ -316,6 +358,7 @@ class BambuPrinter(Printer):
         self._report_lock = threading.Lock()
         self._got_report = threading.Event()
         self._pushed_at = 0.0
+        self._probe_at = 0.0
         self._snap: tuple[bytes, float] | None = None
         self._snap_at = 0.0
         self._cam_lock = threading.Lock()
@@ -373,10 +416,40 @@ class BambuPrinter(Printer):
             self._got_report.set()
 
     # ------------------------------------------------------------ status
+    def _relink(self, why: str) -> None:
+        log.warning("P1S link: %s; starting a fresh MQTT connection", why)
+        old, self.link = self.link, None
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self._pushed_at = 0.0
+        self._probe_at = 0.0
+
+    def _watch_link(self) -> None:
+        """Replace the MQTT link when it is dead, stuck reconnecting, or silent."""
+        link = self.link
+        if link is None or not hasattr(link, "down_for"):
+            return
+        if not link.alive:
+            self._relink("network thread stopped")
+        elif not link.connected and link.down_for() > RELINK_DOWN:
+            self._relink(f"down for {link.down_for():.0f}s ({link.error or 'no answer'})")
+        elif link.connected and link.silent_for() > QUIET_RELINK:
+            self._relink(f"no report for {link.silent_for():.0f}s")
+        elif link.connected and link.silent_for() > QUIET_PROBE and time.monotonic() - self._probe_at > QUIET_PROBE:
+            self._probe_at = time.monotonic()
+            try:
+                link.publish({"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}})
+            except PrinterError:
+                pass
+
     def poll(self) -> Status:
+        self._watch_link()
         link = self._ensure_link()
         if not link.connected:
-            raise PrinterError(link.error or "Can't reach the printer over MQTT")
+            raise PrinterError(link.error or "Connecting to the printer over MQTT")
         now = time.monotonic()
         if now - self._pushed_at > PUSHALL_EVERY:
             self._pushed_at = now

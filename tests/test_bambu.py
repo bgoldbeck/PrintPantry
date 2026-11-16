@@ -261,3 +261,95 @@ def test_calibration_waits_for_finish(p1s, monkeypatch):
         return orig()
     monkeypatch.setattr(p1s, "refresh", refresh)
     p1s.run_script(p1s.calibration_script(p1s.calibration("bed_level"), {}))
+
+
+class WatchedLink(FakeLink):
+    """A FakeLink with the watchdog hooks the real MqttLink has."""
+
+    def __init__(self, drv):
+        super().__init__(drv)
+        self.alive = True
+        self.down = 0.0
+        self.silent = 0.0
+        self.stopped = False
+
+    def down_for(self):
+        return self.down
+
+    def silent_for(self):
+        return self.silent
+
+    def stop(self):
+        self.stopped = True
+        super().stop()
+
+
+@pytest.fixture
+def watched(tmp_path, monkeypatch):
+    monkeypatch.setattr(bambu.time, "sleep", lambda s: None)
+    links = []
+
+    def factory(on_report, on_state):
+        link = WatchedLink(drv)
+        link.state = report()
+        links.append(link)
+        return link
+
+    drv = BambuPrinter(P1S, "192.168.1.51", "01P00TEST", "12345678", link_factory=factory,
+                       ftp_factory=lambda: FakeFTP({}), camera=lambda: JPEG,
+                       ledger=tmp_path / "u.json", jobs_file=tmp_path / "j.json")
+    drv.links = links
+    return drv
+
+
+def test_stuck_reconnect_gets_a_fresh_link(watched):
+    assert watched.refresh().online
+    first = watched.links[0]
+    first.connected, first.error, first.down = False, "Lost connection (Unspecified error); reconnecting", 10
+    st = watched.refresh()
+    assert not st.online and "reconnecting" in st.message
+    assert len(watched.links) == 1  # a short drop is left to paho
+    first.down = bambu.RELINK_DOWN + 1
+    st = watched.refresh()
+    assert st.online and first.stopped and len(watched.links) == 2
+
+
+def test_dead_network_thread_gets_a_fresh_link(watched):
+    watched.refresh()
+    watched.links[0].alive = False
+    assert watched.refresh().online
+    assert len(watched.links) == 2
+
+
+def test_silent_link_is_probed_then_replaced(watched):
+    watched.refresh()
+    link = watched.links[0]
+    link.sent.clear()
+    link.silent = bambu.QUIET_PROBE + 1
+    watched.refresh()
+    assert any("pushing" in m for m in link.sent) and len(watched.links) == 1
+    link.silent = bambu.QUIET_RELINK + 1
+    watched.refresh()
+    assert link.stopped and len(watched.links) == 2
+
+
+def test_mqtt_link_survives_a_bad_report():
+    seen = []
+    link = bambu.MqttLink("127.0.0.1", "S", "c", seen.append)
+    assert link.client.suppress_exceptions
+
+    class Msg:
+        payload = b"[1, 2]"
+
+    link._message(None, None, Msg())  # not a dict: ignored
+    Msg.payload = b'{"print": {}}'
+
+    def boom(data):
+        raise KeyError("x")
+
+    link._on_report = boom
+    link._message(None, None, Msg())  # must not raise
+    link._on_report = seen.append
+    link._message(None, None, Msg())
+    assert seen == [{"print": {}}]
+    assert not link.alive and link.down_for() >= 0
