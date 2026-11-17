@@ -1,7 +1,7 @@
 // "Slice for U1 / P1S" dialog. The slicer runs on the NAS (OrcaSlicer's
 // command line in its own container); new files land in the model's
 // "sliced" folder and show up under Print files.
-import { printerById, stateBadge } from "./printers.js";
+import { printerById, stateBadge, watchToolheads } from "./printers.js";
 import { createPartsViewer } from "./viewer.js";
 import { createProcessPanel } from "./process.js";
 const esc = (s) =>
@@ -86,7 +86,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   document.body.appendChild(dlg);
   let timer = null;
   let viewer = null;
-  dlg.addEventListener("close", () => { clearTimeout(timer); viewer?.dispose(); dlg.remove(); });
+  let stopHeads = null;
+  dlg.addEventListener("close", () => { clearTimeout(timer); stopHeads?.(); viewer?.dispose(); dlg.remove(); });
   dlg.showModal();
 
   let o;
@@ -120,8 +121,13 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const tooMany = slots.length > o.printer.max_filaments;
   const listed = slots.length;  // filaments the project lists (before dropping unused ones)
   const isU1 = printerId === "u1";
-  const heads = printerById(printerId)?.status?.toolheads || [];
+  let heads = printerById(printerId)?.status?.toolheads || [];
   const head = (i) => heads.find((h) => h.index === i);
+  // On the U1 filament n prints from toolhead Tn, so the preset follows what's
+  // loaded there. (The P1S maps filaments to AMS trays at print time instead.)
+  const followsHeads = !printerById(printerId)?.ams_mapping;
+  const loadedType = (i) => { const h = followsHeads && head(i); return h && h.loaded !== false ? (h.type || "").trim() : ""; };
+  const loadedVendor = (i) => { const h = followsHeads && head(i); return h && h.loaded !== false ? (h.vendor || "").trim() : ""; };
   const headColour = (i) => { const h = head(i); return h && h.loaded !== false && h.color ? h.color : ""; };
   const slotColour = (i) => headColour(i) || slots[i]?.colour || PALETTE[i % PALETTE.length];
   const slotTag = (i) => (isU1 ? `T${i + 1}` : `${i + 1}`);
@@ -165,13 +171,18 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const filSels = () => [...dlg.querySelectorAll("[data-fil]")];
   const filRowsBox = $("[data-fil-rows]"), objBox = $("[data-objects]");
   let chosen = [];  // filament preset per row, kept while rows come and go
+  const byHand = new Set();  // rows whose preset the user picked; the rest follow the loaded spool
 
   function rowLabel(s, i) {
     const many = slots.length > 1 || objs.active;
     const tag = many ? `<b>${esc(slotTag(i))}</b>` : "";
+    const lt = loadedType(i);
     if (s.extra) {
-      const h = head(i);
-      return `${tag}${swatch(slotColour(i))}<small>${h && h.loaded !== false && h.type ? `loaded: ${esc(h.type)}` : "any filament"}</small>`;
+      return `${tag}${swatch(slotColour(i))}<small>${lt ? `loaded: ${esc(lt)}` : "any filament"}</small>`;
+    }
+    if (lt) {
+      const had = s.type && s.type.toUpperCase() !== lt.toUpperCase() ? ` · file had ${esc(s.type)}` : "";
+      return `${tag}${swatch(headColour(i) || s.colour)}<small>loaded: ${esc(lt)}${had}</small>`;
     }
     const col = objs.active ? slotColour(i) : s.colour;
     return `${tag}${s.type || col ? `${swatch(col)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}`;
@@ -180,7 +191,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     filRowsBox.innerHTML = slots.map((s, i) => `
         <label class="fil-row"><span class="slot" title="What the project file was set up with. The preset on the right is what gets sliced.">${rowLabel(s, i)}</span>
           <select data-fil="${i}"></select></label>`).join("");
-    filSels().forEach((sel) => (sel.onchange = () => { chosen[Number(sel.dataset.fil)] = sel.value; check(); }));
+    filSels().forEach((sel) => (sel.onchange = () => {
+      chosen[Number(sel.dataset.fil)] = sel.value;
+      byHand.add(Number(sel.dataset.fil));
+      check();
+    }));
   }
   const presetsBox = $("[data-presets]"), warnBox = $("[data-warn]"), progress = $("[data-progress]");
   const go = $("[data-go]");
@@ -200,17 +215,22 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     processSel.innerHTML = procs.names.map((n) => option(n, procs.user.includes(n) ? `${n} (yours)` : n, n === wantProc)).join("");
     const fils = o.filaments[machine] || [];
     filSels().forEach((sel, i) => {
-      const prev = keep ? (sel.value || chosen[i] || "") : "";
-      // Last time's pick for this toolhead if it's the same material, then the
-      // last pick for this material, then the slicer's suggestion.
-      const typeOf = (n) => fils.find((f) => f.name === n)?.type || "";
-      const slotType = (slots[i].type || "").toUpperCase();
+      // A preset the user picked stays; otherwise follow the material loaded on
+      // the toolhead (or, if the printer doesn't say, the file's): last time's
+      // pick for this toolhead if it's that material, then the last pick for
+      // that material, then the slicer's suggestion, then any preset of it.
+      const prev = keep && byHand.has(i) ? (sel.value || chosen[i] || "") : "";
+      const typeOf = (n) => (fils.find((f) => f.name === n)?.type || "").toUpperCase();
+      const lt = loadedType(i).toUpperCase();
+      const slotType = lt || (slots[i].type || "").toUpperCase();
+      const ok = (n) => fils.some((f) => f.name === n) && (!slotType || typeOf(n) === slotType);
       const lastHere = last.filaments?.[i];
-      const remembered = lastHere && (!slotType || typeOf(lastHere).toUpperCase() === slotType) ? lastHere : last.byType?.[slotType];
-      const want = fils.some((f) => f.name === prev) ? prev
-        : fils.some((f) => f.name === remembered) ? remembered : (d.filaments[i] || "");
-      const pick = fils.some((f) => f.name === want) ? want
-        : (fils.find((f) => f.type === slots[i].type)?.name || fils.find((f) => f.type === "PLA")?.name || fils[0]?.name);
+      const vendor = loadedVendor(i).toLowerCase();
+      const ofType = fils.filter((f) => (f.type || "").toUpperCase() === slotType);
+      const pick = (prev && fils.some((f) => f.name === prev) && prev)
+        || [lastHere, last.byType?.[slotType], d.filaments[i]].find(ok)
+        || (vendor && ofType.find((f) => f.name.toLowerCase().includes(vendor))?.name)
+        || ofType[0]?.name || fils.find((f) => f.type === "PLA")?.name || fils[0]?.name;
       const cal = o.calibrated || {};
       sel.innerHTML = fils.map((f) => option(f.name,
         `${f.name}${f.user ? " (yours)" : ""}${cal[f.name] ? ` · flow ${cal[f.name]} ✓` : ""}`, f.name === pick)).join("");
@@ -236,6 +256,19 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   renderFilRows();
   fillFor(machineSel.value, false);
   check();
+  // Spools loaded or swapped while the dialog is open show up here within seconds.
+  stopHeads = watchToolheads(printerId, (now) => {
+    heads = now;
+    slots.forEach((s, i) => { if (s.extra) s.type = loadedType(i); });
+    filRowsBox.querySelectorAll(".fil-row .slot").forEach((el, i) => { if (slots[i]) el.innerHTML = rowLabel(slots[i], i); });
+    fillFor(machineSel.value, true);
+    check();
+    objBox.querySelectorAll("[data-brush]").forEach((b) => {
+      const n = Number(b.dataset.brush);
+      if (n > 0) b.querySelector("i")?.style.setProperty("--c", slotColour(n - 1));
+    });
+    if (objs.items.length) paintObjects();
+  }, heads);
   panel = createProcessPanel($("[data-process-panel]"), {
     printerId, fileId: file.id,
     base: () => ({ mode: start() === "author" ? "project" : "presets", process: processSel.value, machine: machineSel.value }),
@@ -548,7 +581,10 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     if (objs.copies > 1) body.copies = objs.copies;
     const byType = {};
-    body.filaments.forEach((n, i) => { if (slots[i]?.type) byType[slots[i].type.toUpperCase()] = n; });
+    body.filaments.forEach((n, i) => {
+      const t = loadedType(i) || slots[i]?.type;
+      if (t) byType[t.toUpperCase()] = n;
+    });
     saveLast(printerId, { start: hasOwn ? start() : last.start, machine: body.machine,
       process: body.process, bed_type: body.bed_type, bedV: 2, filaments: body.filaments, byType });
     progress.innerHTML = `<div class="notice">Sending to the slicer...</div>`;

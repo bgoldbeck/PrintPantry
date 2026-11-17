@@ -49,6 +49,7 @@ CANCEL_CODES = {0, 50348044}  # print_error after "stop" (0300-400C = task cance
 PUSHALL_EVERY = 300.0  # the P1 series asks to be sparing with full reports
 # Link watchdog. The P1S sends a report every few seconds even when idle.
 RELINK_DOWN = 45.0  # down this long (paho didn't get back): start a fresh connection
+AMS_PUSH_GAP = 10.0  # after a partial AMS/spool update, ask for a full report (at most this often)
 QUIET_PROBE = 60.0  # connected but silent this long: ask for a full report
 QUIET_RELINK = 120.0  # still silent: the connection is dead, start a fresh one
 SNAPSHOT_CACHE = 2.0
@@ -98,6 +99,10 @@ def _merge(dst: dict, src: dict) -> None:
             _merge(dst[k], v)
         else:
             dst[k] = v
+
+
+def _spools_of(report: dict) -> str:
+    return json.dumps([report.get("ams"), report.get("vt_tray")], sort_keys=True, default=str)
 
 
 def _num(v, default=None):
@@ -359,6 +364,8 @@ class BambuPrinter(Printer):
         self._got_report = threading.Event()
         self._pushed_at = 0.0
         self._probe_at = 0.0
+        self._ams_dirty = False
+        self._ams_push_at = 0.0
         self._snap: tuple[bytes, float] | None = None
         self._snap_at = 0.0
         self._cam_lock = threading.Lock()
@@ -410,8 +417,17 @@ class BambuPrinter(Printer):
         p = data.get("print")
         if not isinstance(p, dict):
             return
+        spools = "ams" in p or "vt_tray" in p
         with self._report_lock:
+            before = _spools_of(self._report) if spools else None
             _merge(self._report, p)
+            # (The first report filling them in isn't a change.)
+            changed = spools and before != _spools_of({}) and _spools_of(self._report) != before
+        # A spool loaded, swapped or read: the update may name only some trays or
+        # fields, so follow it with a full report to get every tray right. (A
+        # full report that changes nothing doesn't ask again.)
+        if changed:
+            self._ams_dirty = True
         if p.get("command") == "push_status" or "gcode_state" in p:
             self._got_report.set()
 
@@ -451,6 +467,10 @@ class BambuPrinter(Printer):
         if not link.connected:
             raise PrinterError(link.error or "Connecting to the printer over MQTT")
         now = time.monotonic()
+        if self._ams_dirty and now - self._ams_push_at > AMS_PUSH_GAP:
+            self._ams_dirty = False
+            self._ams_push_at = now
+            link.publish({"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}})
         if now - self._pushed_at > PUSHALL_EVERY:
             self._pushed_at = now
             link.publish({"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}})
