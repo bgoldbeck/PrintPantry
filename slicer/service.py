@@ -340,6 +340,7 @@ class Job:
     colours: list[str] = field(default_factory=list)  # per filament slot, e.g. the toolhead's loaded colour
     keep_positions: bool = True  # STLs together: as parts of one object (colours of one model)
     copies: int = 1  # the whole plate this many times, laid out by the slicer (--arrange)
+    overrides: dict = field(default_factory=dict)  # process setting -> value, over the preset / project
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
@@ -364,6 +365,30 @@ JOBS_LOCK = threading.Lock()
 
 
 MAX_COPIES = 200
+# Settings that run programs, name files or hold G-code are never taken from a
+# request (the app only sends the ones its settings panel shows).
+NO_OVERRIDE = re.compile(r"(post_process|filename_format|_gcode|gcode_|^notes$|^inherits$|^name$|^from$|"
+                         r"compatible_|^print_settings_id$|^nozzle_diameter$|^curr_bed_type$)")
+
+
+def clean_overrides(value) -> dict:
+    if not value:
+        return {}
+    if not isinstance(value, dict) or len(value) > 500:
+        raise BadRequest("overrides must map process settings to values")
+    out = {}
+    for key, v in value.items():
+        key = str(key)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", key) or NO_OVERRIDE.search(key):
+            raise BadRequest(f"{key!r} can't be changed here")
+        items = v if isinstance(v, list) else [v]
+        if not items or len(items) > 16 or not all(isinstance(x, (str, int, float)) and not isinstance(x, bool) for x in items):
+            raise BadRequest(f"Bad value for {key}")
+        items = [str(x) for x in items]
+        if any(len(x) > 200 or "\n" in x or "\r" in x for x in items):
+            raise BadRequest(f"Bad value for {key}")
+        out[key] = items if isinstance(v, list) else items[0]
+    return out
 
 
 def submit(body: dict) -> Job:
@@ -416,8 +441,28 @@ def submit(body: dict) -> Job:
         flow_ratios=flow_ratios(body.get("flow_ratios")),
         extra_paths=extra, assign=assign, colours=[str(c).upper() for c in colours],
         keep_positions=bool(body.get("keep_positions", True)), copies=copies,
+        overrides=clean_overrides(body.get("overrides")),
     )
     return queue_job(job)
+
+
+def process_values(printer_id: str, name: str, relpath: str = "", mode: str = "presets") -> dict:
+    """The settings a slice starts from: the flattened process preset, or the
+    project 3MF's own settings (mode "project")."""
+    printer = PRINTERS.get(printer_id)
+    if not printer:
+        raise BadRequest(f"Unknown printer {printer_id!r}")
+    if mode == "project":
+        src = library_path(relpath, (".3mf",))
+        values = project.read_settings(src)
+        source = "project"
+    else:
+        if not name:
+            raise BadRequest("Pick a process preset")
+        values = PRESETS.get().flatten("process", name, printer.vendor)
+        source = name
+    return {"source": source, "values": {k: v for k, v in values.items()
+                                         if isinstance(v, (str, list)) and not NO_OVERRIDE.search(k)}}
 
 
 def object_paths(body: dict) -> list[Path]:
@@ -599,6 +644,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
         fils = [lib.flatten("filament", n, printer.vendor) for n in job.filaments]
     except P.PresetError as exc:
         raise RuntimeError(str(exc)) from exc
+    if job.overrides:
+        project.apply_overrides(process, job.overrides)
     for f in fils:
         fill_plate_temps(f)
     common_filament_keys(fils)
@@ -629,6 +676,8 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
                f'compatible {compat})\n')
     if calibrated:
         job.log += "; ".join(dict.fromkeys(calibrated)) + "\n"
+    if job.overrides:
+        job.log += "process settings changed: " + ", ".join(f"{k}={v}" for k, v in job.overrides.items()) + "\n"
     bed = job.bed_type if job.bed_type in BED_KEYS else default_bed(machine, fils)
     process["curr_bed_type"] = bed
     job.bed_type = bed
@@ -720,8 +769,10 @@ def run_job(job: Job) -> None:
                 O.assign_3mf(src, source, job.assign)
             machine_file = work / "machine.json"
             nozzles = len(json.loads(machine_file.read_text()).get("nozzle_diameter") or [1]) if machine_file.exists() else 1
+            # Presets mode: process.json already has the changed settings.
             project.copy_for_slicing(source, inp, overrides, count, fil_keys - project.META_KEYS, nozzles,
-                                     job.colours if job.mode == "presets" else None)
+                                     job.colours if job.mode == "presets" else None,
+                                     job.overrides if job.mode == "project" else None)
         elif combine:
             inp = work / "input.3mf"
             paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
@@ -983,6 +1034,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if method == "GET" and url.path == "/options":
                 return self._send(200, options(qs.get("printer", "u1"), qs.get("path", "")))
+            if method == "GET" and url.path == "/process":
+                return self._send(200, process_values(qs.get("printer", "u1"), qs.get("name", ""),
+                                                      qs.get("path", ""), qs.get("mode", "presets")))
             if method == "GET" and url.path == "/jobs":
                 jobs = sorted(JOBS.values(), key=lambda j: j.created, reverse=True)[:20]
                 return self._send(200, {"jobs": [j.to_json() for j in jobs]})

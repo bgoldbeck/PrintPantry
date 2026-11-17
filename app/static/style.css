@@ -1076,3 +1076,39 @@ dialog.prompt-dialog h2 {
 
 button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 .danger-text { color: #c0392b; }
+/* Process settings (OrcaSlicer's process tab) in the slice dialog */
+.proc-field { align-items: start; }
+.proc { display: grid; gap: 6px; min-width: 0; }
+.proc-head { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.proc-head select { width: 100%; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+.proc-summary b { color: var(--accent); font-weight: 600; }
+.proc-editor { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 8px; display: grid; gap: 8px; }
+.proc-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.proc-tab { background: transparent; color: var(--ink); border: 1px solid transparent; padding: 6px 10px; border-radius: 10px; font-weight: 500; }
+.proc-tab[aria-pressed="true"] { background: var(--surface); border-color: var(--line); font-weight: 700; }
+.proc-tab b { background: var(--accent); color: var(--accent-ink); border-radius: 8px; padding: 0 6px; font-size: .75rem; }
+.proc-tools { display: flex; gap: 12px; align-items: center; }
+.proc-tools input[type="search"] { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.proc-tools .check { margin: 0; font-weight: 500; white-space: nowrap; }
+.proc-groups { max-height: 340px; overflow: auto; display: grid; gap: 8px; padding-right: 2px; }
+.proc-group { border: 0; border-top: 1px solid var(--line); margin: 0; padding: 6px 0 0; display: grid; gap: 2px; }
+.proc-group legend { font-weight: 700; font-size: .85rem; color: var(--ink-2); padding: 0 4px 0 0; }
+.proc-opt { display: grid; grid-template-columns: 1fr minmax(120px, 190px); gap: 8px; align-items: center; padding: 3px 6px; border-radius: 8px; font-size: .9rem; }
+.proc-opt:hover { background: var(--surface); }
+.proc-opt.changed { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.proc-opt.changed .proc-label { font-weight: 700; }
+.proc-label { min-width: 0; }
+.proc-ctl { display: flex; gap: 4px; align-items: center; min-width: 0; }
+.proc-ctl select { flex: 1; min-width: 0; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.proc-ctl input[type="checkbox"] { width: 18px; height: 18px; }
+.proc-num { display: flex; gap: 4px; align-items: center; flex: 1; min-width: 0; }
+.proc-num input { width: 100%; min-width: 0; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.proc-num small { color: var(--ink-2); font-size: .75rem; white-space: nowrap; }
+.proc-reset { background: transparent; color: var(--accent); border: 0; padding: 0 4px; font-size: 1rem; cursor: pointer; }
+.proc-was { grid-column: 2; color: var(--ink-2); font-size: .75rem; }
+.proc-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.proc-actions input { flex: 1; min-width: 140px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+@media (max-width: 640px) {
+  .proc-opt { grid-template-columns: 1fr; gap: 2px; }
+  .proc-was { grid-column: 1; }
+}

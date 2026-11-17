@@ -146,6 +146,32 @@ def apply_process(config: dict, process: dict) -> None:
         diff[0] = ""
 
 
+def apply_overrides(config: dict, overrides: dict) -> None:
+    """Put single settings (the Slice dialog's process settings) into a
+    process preset or project settings, keeping each value's shape: a list
+    setting stays a list of the same length."""
+    for key, value in overrides.items():
+        one = value[0] if isinstance(value, list) and value else value
+        old = config.get(key)
+        if isinstance(old, list):
+            config[key] = [one] * max(1, len(old))
+        else:
+            config[key] = value
+    diff = config.get("different_settings_to_system")
+    if overrides and isinstance(diff, list) and diff:
+        diff[0] = ""
+
+
+def read_settings(path: Path) -> dict:
+    """A project 3MF's own settings ({} when it has none)."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            data = json.loads(zf.read(SETTINGS)) if SETTINGS in zf.namelist() else {}
+    except (OSError, ValueError, zipfile.BadZipFile, KeyError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def pad_filaments(config: dict, count: int, filament_keys, nozzles: int = 1) -> bool:
     """Grow the project's per-filament lists to ``count`` filaments.
 
@@ -189,10 +215,10 @@ def pad_filaments(config: dict, count: int, filament_keys, nozzles: int = 1) -> 
 
 def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
                      filaments: int = 0, filament_keys=(), nozzles: int = 1,
-                     colours: list[str] | None = None) -> None:
+                     colours: list[str] | None = None, overrides: dict | None = None) -> None:
     """Copy a 3MF, padding its per-extruder settings (see pad_per_extruder)
     and per-filament lists (see pad_filaments), and, when given, writing a
-    process preset into its settings."""
+    process preset and single setting overrides into its settings."""
     with zipfile.ZipFile(src) as zin:
         try:
             settings = json.loads(zin.read(SETTINGS)) if SETTINGS in zin.namelist() else None
@@ -208,6 +234,9 @@ def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
                 changed = True
             if process:
                 apply_process(settings, process)
+                changed = True
+            if overrides:
+                apply_overrides(settings, overrides)
                 changed = True
             if changed:
                 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
