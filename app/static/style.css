@@ -341,7 +341,7 @@ button .muted { opacity: .75; font-weight: 400; }
 .flash code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
 
 /* ---------------------------------------------------------------- slicing */
-.slice-dialog { width: min(680px, calc(100vw - 32px)); }
+.slice-dialog { width: min(980px, calc(100vw - 32px)); }
 .slice-dialog .notice { margin: 10px 0; }
 .slice-dialog pre { white-space: pre-wrap; font-size: .75rem; max-height: 200px; overflow: auto; }
 .slice-dialog .modes { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -1111,4 +1111,9 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 @media (max-width: 640px) {
   .proc-opt { grid-template-columns: 1fr; gap: 2px; }
   .proc-was { grid-column: 1; }
+}
+@media (min-width: 900px) {
+  .slice-dialog .field { grid-template-columns: 130px 1fr; }
+  .slice-dialog .proc-groups { grid-template-columns: 1fr 1fr; align-items: start; max-height: 460px; }
+  .slice-dialog .obj-preview { height: 320px; }
 }

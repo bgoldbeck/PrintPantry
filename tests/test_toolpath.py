@@ -27,3 +27,11 @@ def test_toolpath_splits_by_tool(tmp_path):
     data = toolpath.encode(p)
     assert data[:4] == b"PPTP"
     assert struct.unpack_from("<4fI", data, 4) == (0, 0, 270, 270, 2)
+
+
+def test_bambu_ams_loads_and_macros(tmp_path):
+    p = tmp_path / "b.gcode"
+    p.write_text("G90\nM83\nM620 S2A\nT2\nM621 S2A\nT1000\nG1 Z0.2\nG1 X10 Y10\nG1 X20 Y10 E1\n"
+                 "M620 S3A\nT3\nM621 S3A\nG1 X30 Y30 E1\nM620 S255\nT255\n")
+    _, segs = toolpath.parse(p)
+    assert set(segs) == {2, 3}

@@ -739,8 +739,10 @@ def create_app(
             for old in cache.parent.glob(f"{f.id}-{plate}-*.bin"):
                 old.unlink(missing_ok=True)
             cache.write_bytes(data)
+        # Re-slicing replaces the file under the same id, so the browser must
+        # check back (it gets a quick 304 when nothing changed).
         return FileResponse(cache, media_type="application/octet-stream",
-                            headers={"Cache-Control": "private, max-age=3600"})
+                            headers={"Cache-Control": "private, no-cache"})
 
     @app.get("/api/files/{file_id}/thumb")
     def thumb(file_id: str, plate: int = 1):

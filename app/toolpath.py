@@ -136,7 +136,13 @@ def parse(path: Path, plate: int = 1) -> tuple[tuple[float, float, float, float]
                 w = _words(line)
                 if "E" in w:
                     e = w["E"]
-            elif cmd[0] == "T" and cmd[1:].isdigit():
+            elif cmd == "M620" and (m := re.match(r"\s*M620\s+S(\d+)A", line)) and int(m.group(1)) < 255:
+                # Bambu: "M620 S<n>A" loads filament n from the AMS; the T
+                # that follows can be the T1000 macro instead of T<n>.
+                if sx is not None:
+                    flush_to(x, y)
+                tool = int(m.group(1))
+            elif cmd[0] == "T" and cmd[1:].isdigit() and int(cmd[1:]) < 255:  # T255 unload, T1000 macro
                 if sx is not None:
                     flush_to(x, y)
                 tool = int(cmd[1:])
