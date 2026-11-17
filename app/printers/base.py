@@ -7,7 +7,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 # States the UI understands. Drivers map their own words onto these.
@@ -39,6 +39,7 @@ class Toolhead:
     active: bool = False
     custom_color: bool = False  # colour set by hand in Print Pantry, not by the printer
     label: str = ""  # shown name when not "T<index+1>", e.g. "A1" or "Ext" for Bambu AMS trays
+    spool: str = ""  # the Print Pantry spool on this toolhead, if any
 
 
 @dataclass
@@ -121,6 +122,24 @@ def same_value(a, b) -> bool:
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return abs(a - b) < 0.6
     return a == b
+
+
+# Fill in a printer's toolheads with what Print Pantry knows about them (a spool
+# put on a toolhead in the Spools page): fn(printer_id, toolheads) edits copies.
+# Applied to what the pages and the print check see, never to the printer's own
+# report (spool sync compares against that).
+HEAD_FILLERS: list = []
+
+
+def shown_heads(printer: "Printer") -> list[Toolhead]:
+    heads = [replace(t) for t in printer.status.toolheads]
+    if heads and printer.status.online:
+        for fn in HEAD_FILLERS:
+            try:
+                fn(printer.profile.id, heads)
+            except Exception as exc:  # noqa: BLE001 - never break status over this
+                log.warning("toolhead filler failed: %s", exc)
+    return heads
 
 
 class Printer:
@@ -409,7 +428,7 @@ class Printer:
             "ams_mapping": self.ams_mapping,
             "calibrations": [asdict(c) for c in self.calibrations] if self.configured else [],
             "calibrating": self.calibrating,
-            "status": self.status.to_json(),
+            "status": {**self.status.to_json(), "toolheads": [asdict(t) for t in shown_heads(self)]},
             "light_auto": getattr(self, "light_auto", False),
             "has_settings": self.configured and type(self).settings is not Printer.settings,
         }

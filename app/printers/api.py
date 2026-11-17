@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from . import IDLE_STATES, PrinterError, PrinterHub
+from .base import shown_heads
 
 log = logging.getLogger("printpantry.printers")
 
@@ -110,7 +111,7 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
     else:
         plates = f.info.plates if f.info else []
         file_fils = plates[0].filaments if plates else []
-    heads = {t.index: t for t in st.toolheads}
+    heads = {t.index: t for t in shown_heads(printer)}
 
     def label(i: int) -> str:
         h = heads.get(i)

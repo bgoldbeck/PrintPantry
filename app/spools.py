@@ -377,6 +377,29 @@ class Spools:
         scored.sort(key=lambda x: x[:3])
         return scored[0][3]
 
+    def fill_heads(self, printer_id: str, heads: list) -> None:
+        """Show the spool on a toolhead as what's loaded there: its material and
+        brand, and its colour unless one was set by hand on the Printers page.
+        (For a spool without a tag the printer doesn't know what it is.)"""
+        with self._lock:
+            rows = {r["toolhead"]: dict(r) for r in self._db.execute(
+                "SELECT * FROM spools WHERE printer = ? AND archived = 0", (printer_id,))}
+        for t in heads:
+            s = rows.get(t.index)
+            if not s:
+                continue
+            t.spool = self._label(s)
+            if s["material"]:
+                t.type = s["material"]
+                t.vendor = s["vendor"] or ""
+                t.loaded = True
+            try:
+                col = _norm_color(s["color"] or "")
+            except ValueError:
+                col = ""
+            if col and not t.custom_color:
+                t.color = col
+
     def on_head(self, printer_id: str, toolhead: int) -> dict | None:
         with self._lock:
             r = self._db.execute("SELECT * FROM spools WHERE printer = ? AND toolhead = ?", (printer_id, toolhead)).fetchone()

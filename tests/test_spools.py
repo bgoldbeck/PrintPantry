@@ -133,3 +133,24 @@ def test_api_roundtrip(tmp_path, library):  # noqa: F811
         assert c.post("/api/spools", json={"color": "red"}).status_code == 400
         assert c.delete(f"/api/spools/{s['id']}").json()["ok"]
         assert c.get(f"/api/spools/{s['id']}").status_code == 404
+
+
+def test_spool_on_head_fills_what_printer_doesnt_know(sp):
+    """A spool put on a toolhead whose filament the printer doesn't know (U1 "NONE")
+    shows as what's loaded there; the printer's own report is left alone."""
+    sp.hub.printers["u1"].status.toolheads[2] = Toolhead(2, "", "", "", True)
+    black = add(sp, vendor="Elegoo", material="PLA", color="#111111")
+    sp.assign(black["id"], AssignIn(printer="u1", toolhead=2))
+    sp.sync()
+    from app.printers.base import HEAD_FILLERS, shown_heads
+    p = sp.hub.printers["u1"]
+    p.profile = SimpleNamespace(id="u1")
+    HEAD_FILLERS[:] = [sp.fill_heads]
+    try:
+        t3 = shown_heads(p)[2]
+    finally:
+        HEAD_FILLERS[:] = []
+    assert (t3.type, t3.color, t3.vendor, t3.loaded) == ("PLA", "#111111", "Elegoo", True)
+    assert t3.spool == "Elegoo PLA"
+    assert p.status.toolheads[2].type == ""  # raw report untouched
+    assert sp.get(black["id"])["toolhead"] == 2  # and the spool stays put

@@ -791,6 +791,8 @@ def create_app(
     spools = Spools(settings.data / "printpantry.db", store, hub)
     app.state.spools = spools
     printers_api.EXTRA_CHECKS[:] = [spools.check_tools]
+    from .printers import base as printers_base
+    printers_base.HEAD_FILLERS[:] = [spools.fill_heads]
     app.include_router(spools_router(spools))
     history.on_finish(lambda rec: spools.on_print_finished(rec, history))
 
