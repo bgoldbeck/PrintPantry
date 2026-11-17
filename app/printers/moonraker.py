@@ -149,6 +149,13 @@ def _color(value) -> str:
     return ""
 
 
+def _known(value) -> str:
+    """The U1 says "NONE" for a toolhead whose filament was never set (no RFID read,
+    nothing picked on the screen)."""
+    v = str(value or "").strip()
+    return "" if v.upper() in ("NONE", "UNKNOWN", "-") else v
+
+
 def _at(seq, i, default=None):
     return seq[i] if isinstance(seq, list) and i < len(seq) else default
 
@@ -240,12 +247,14 @@ class MoonrakerPrinter(Printer):
         count = max(len(types), sum(1 for n in EXTRUDERS if n in s))
         for i in range(count):
             exist = _at(cfg.get("filament_exist"), i)
+            kind = _known(_at(types, i, ""))
             st.toolheads.append(
                 Toolhead(
                     index=i,
-                    type=str(_at(types, i, "") or ""),
-                    color=_color(_at(cfg.get("filament_color_rgba"), i) or _at(cfg.get("filament_color"), i)),
-                    vendor=str(_at(cfg.get("filament_vendor"), i, "") or ""),
+                    type=kind,
+                    # With no filament set (type "NONE") the U1 still reports white; that's not a colour.
+                    color=_color(_at(cfg.get("filament_color_rgba"), i) or _at(cfg.get("filament_color"), i)) if kind else "",
+                    vendor=_known(_at(cfg.get("filament_vendor"), i, "")) if kind else "",
                     loaded=bool(exist) if exist is not None else None,
                     active=(active == EXTRUDERS[i]) if i < len(EXTRUDERS) else False,
                 )

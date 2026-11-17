@@ -142,6 +142,10 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
                 if t.loaded is False:
                     warnings.append(f"{label(idx)} looks empty, but the file needs {fl.type or 'filament'} there")
                     row["ok"] = False
+                elif not t.type:
+                    warnings.append(f"{label(idx)} doesn't say what's loaded; set the filament on the "
+                                    f"printer's screen (the file needs {fl.type or 'filament'})")
+                    row["ok"] = False
                 elif not same_material(fl.type, t.type):
                     warnings.append(f"{label(idx)} has {t.type}, but the file was sliced for {fl.type}")
                     row["ok"] = False
