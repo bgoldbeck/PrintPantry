@@ -160,6 +160,7 @@ export function createProcessPanel(box, ctx) {
 
   function render() {
     if (!state.cat) return;
+    api_.onChange?.();
     const scroll = root.querySelector(".proc-groups")?.scrollTop || 0;
     const focus = document.activeElement?.matches?.("[data-filter]");
     root.innerHTML = `
@@ -291,7 +292,7 @@ export function createProcessPanel(box, ctx) {
     else render();
   })();
 
-  return {
+  const api_ = {
     refresh: refreshBase,
     // Settings to send with the slice; checks values the way the app will.
     overrides() {
@@ -301,5 +302,10 @@ export function createProcessPanel(box, ctx) {
       return { ...state.overrides };
     },
     get name() { return state.loaded; },
+    // One setting from outside the panel (e.g. "one object at a time" by Copies).
+    value(k) { return k in state.overrides ? shown(state.cat?.byKey[k] || {}, state.overrides[k]) : shown({}, state.base[k]); },
+    set(k, v) { if (state.cat?.byKey[k]) { setValue(k, v); render(); } },
+    onChange: null,
   };
+  return api_;
 }

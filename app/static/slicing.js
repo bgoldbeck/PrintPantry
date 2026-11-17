@@ -240,6 +240,15 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     printerId, fileId: file.id,
     base: () => ({ mode: start() === "author" ? "project" : "presets", process: processSel.value, machine: machineSel.value }),
   });
+  // Keep "one object at a time" (by Copies) in step with the panel's Print sequence.
+  let lastSeq = null;
+  panel.onChange = () => {
+    const v = panel.value("print_sequence");
+    if (v === lastSeq) return;
+    lastSeq = v;
+    const c = dlg.querySelector("[data-byobj]");
+    if (c) c.checked = v === "by object"; else if (v === "by object" && typeof renderCopies === "function") renderCopies();
+  };
   machineSel.onchange = () => { fillFor(machineSel.value, true); check(); };
   processSel.onchange = check;
   bedSel.onchange = check;
@@ -327,12 +336,18 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     const bed = BEDS[printerId];
     const painted = !isStl && objs.items.some((it) => it.painted);
     if (!objs.items.length || !bed || painted) { box.innerHTML = ""; return; }
+    const pieces = objs.items.filter((it) => !isOff(it)).length + (objs.copies > 1 ? 1 : 0);
+    const byObj = panel?.value("print_sequence") === "by object";
     objs.max = maxCopies(footprints(groupsOf()), bed);
     if (objs.copies > objs.max) objs.copies = objs.max;
     box.innerHTML = `<label class="field"><span>Copies</span><div class="copies">
       <input type="number" data-copy min="1" max="${objs.max}" value="${objs.copies}" style="width:5em">
       <button type="button" class="ghost" data-copy-max${objs.max < 2 ? " disabled" : ""}>Max (${objs.max})</button>
-      <small class="hint">${objs.max > 1 ? `Up to ${objs.max} fit on the ${bed.join(" × ")} mm bed; the slicer arranges them.` : "Only one fits on the bed."}</small></div></label>`;
+      <small class="hint">${objs.max > 1 ? `Up to ${objs.max} fit on the ${bed.join(" × ")} mm bed; the slicer arranges them.` : "Only one fits on the bed."}</small></div></label>
+      ${pieces > 1 || byObj ? `<label class="field"><span></span><span class="check" style="margin:0"><input type="checkbox" data-byobj${byObj ? " checked" : ""}>
+        <span>Print one object at a time<small class="hint" style="font-weight:400">Each object is printed whole before the next starts, so one can be solid black and another solid white with no colour changes between layers. The slicer re-arranges the plate with room for the toolhead; if they don't fit, slicing says so. Pieces stay separate objects.</small></span></span></label>` : ""}`;
+    const byBox = box.querySelector("[data-byobj]");
+    if (byBox) byBox.onchange = () => panel?.set("print_sequence", byBox.checked ? "by object" : "by layer");
     const input = box.querySelector("[data-copy]");
     const set = (n) => {
       objs.copies = Math.max(1, Math.min(objs.max, Math.round(Number(n)) || 1));

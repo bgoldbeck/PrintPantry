@@ -353,6 +353,11 @@ class Job:
     started: float | None = None
     finished: float | None = None
 
+    @property
+    def by_object(self) -> bool:
+        """Print each object whole, one after the other (OrcaSlicer's "by object")."""
+        return self.overrides.get("print_sequence") == "by object"
+
     def to_json(self) -> dict:
         d = dict(self.__dict__)
         d["log"] = self.log[-4000:]
@@ -443,6 +448,8 @@ def submit(body: dict) -> Job:
         keep_positions=bool(body.get("keep_positions", True)), copies=copies,
         overrides=clean_overrides(body.get("overrides")),
     )
+    if job.by_object:
+        job.keep_positions = False  # each STL its own object, printed whole one after another
     return queue_job(job)
 
 
@@ -734,7 +741,9 @@ def run_job(job: Job) -> None:
         combine = info.kind == "stl" and (bool(job.extra_paths or job.assign) or job.copies > 1)
         if rebuild:
             args[args.index("--slice") + 1] = "0"  # only the chosen plate is in the rebuilt file
-        if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model):
+        # One object at a time needs room around each for the toolhead, so the
+        # slicer lays the plate out again with that clearance.
+        if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model) or job.by_object:
             args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         if printer.output == "gcode.3mf":
             args += ["--export-3mf", "result.gcode.3mf"]  # relative to --outputdir
@@ -802,6 +811,11 @@ def run_job(job: Job) -> None:
             msg = result.get("error_string") or ""
             if crashed:
                 msg = "the slicer crashed"
+            if job.by_object and re.search(r"too close|collid|too tall|arrange", msg + (proc.stderr or "")[-3000:], re.I):
+                raise RuntimeError("These objects don't fit on the bed one at a time: printing each object whole "
+                                   "needs room around it for the toolhead (and objects lower than the gantry). "
+                                   "Try fewer copies or pieces, or print by layer. "
+                                   f"(Slicer: {msg or code})")
             raise RuntimeError(f"Slicer failed ({code}): {msg or 'see log'}")
         for plate in result.get("sliced_plates", []) or []:
             if plate.get("warning_message"):
