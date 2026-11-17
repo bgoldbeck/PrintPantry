@@ -19,6 +19,7 @@ import struct
 import zipfile
 from pathlib import Path
 
+VERSION = 2  # bump when parsing changes, so cached toolpaths are made again
 SCALE = 20  # 1/20 mm per int16 step: +-1638 mm range
 MAX_SEGMENTS = 400_000
 MIN_LEN = 0.6  # mm; shorter continuous pieces are merged into one line

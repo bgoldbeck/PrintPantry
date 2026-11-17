@@ -729,7 +729,7 @@ def create_app(
         f, path = resolve(file_id)
         if f.kind not in ("gcode", "sliced3mf"):
             raise HTTPException(400, "Only sliced files have toolpaths")
-        cache = settings.data / "toolpaths" / f"{f.id}-{plate}-{int(f.mtime)}-{f.size}.bin"
+        cache = settings.data / "toolpaths" / f"{f.id}-{plate}-{int(f.mtime)}-{f.size}-v{toolpath.VERSION}.bin"
         if not cache.is_file():
             try:
                 data = toolpath.encode(path, plate)
