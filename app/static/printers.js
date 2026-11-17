@@ -55,6 +55,33 @@ export async function loadPrinters() {
 export const canPrintOn = (id) => !!PRINTERS?.find((p) => p.id === id && p.can_print);
 export const printerById = (id) => PRINTERS?.find((p) => p.id === id);
 
+// What's loaded on a printer's toolheads, as one comparable string.
+export const headsSig = (heads) => JSON.stringify((heads || []).map((t) => [t.index, t.type, t.color, t.vendor, t.loaded]));
+
+// Keep a dialog in step with the printer: re-reads the printers right away and
+// then every few seconds, and calls onChange(toolheads, printer) whenever the
+// loaded filaments change (a spool swapped, colour edited on the screen, RFID
+// read). Returns a function that stops watching.
+export function watchToolheads(id, onChange, initial, every = 3000) {
+  let stopped = false, timer = null;
+  let sig = headsSig(initial ?? printerById(id)?.status?.toolheads);
+  const tick = async () => {
+    if (stopped) return;
+    if (!document.hidden) {
+      await loadPrinters();
+      const p = printerById(id);
+      const now = headsSig(p?.status?.toolheads);
+      if (!stopped && p?.status?.online && now !== sig) {
+        sig = now;
+        try { await onChange(p.status.toolheads || [], p); } catch (e) { console.error(e); }
+      }
+    }
+    if (!stopped) timer = setTimeout(tick, every);
+  };
+  timer = setTimeout(tick, 0);
+  return () => { stopped = true; clearTimeout(timer); };
+}
+
 // ---------------------------------------------------------------- one word for what a printer is doing
 // kind: ok (free), busy, warn (needs a look), bad (can't print), off (not set up).
 function heating(st) {
@@ -269,7 +296,7 @@ export function startPrinterDock(el) {
     for (;;) {
       if (!document.hidden) await loadPrinters();
       const busy = (PRINTERS || []).some((p) => ["busy", "warn"].includes(printerState(p).kind));
-      await new Promise((r) => setTimeout(r, busy ? 5000 : 15000));
+      await new Promise((r) => setTimeout(r, busy ? 4000 : 6000));
     }
   })();
 }
@@ -542,7 +569,8 @@ export async function openPrintDialog(fileId, printerId) {
   document.body.appendChild(dlg);
   let stopCam = null;
   let platePreview = null;
-  dlg.addEventListener("close", () => { stopCam?.(); platePreview?.dispose(); dlg.remove(); });
+  let stopHeads = null;
+  dlg.addEventListener("close", () => { stopCam?.(); stopHeads?.(); platePreview?.dispose(); dlg.remove(); });
   dlg.showModal();
 
   let chk;
@@ -558,6 +586,7 @@ export async function openPrintDialog(fileId, printerId) {
   const plate = (f.plates || [])[0] || {};
   const heads = () => chk.printer.status.toolheads || [];
   let map = { ...chk.tool_map };  // file filament -> toolhead, as the server suggested
+  let picked = false;  // the user chose toolheads by hand (else the server re-suggests)
 
   // One button per toolhead, showing its colour, so you can see which spool you're picking.
   const headChip = (t, h) => {
@@ -606,6 +635,7 @@ export async function openPrintDialog(fileId, printerId) {
     const sel = e.target.closest("[data-head]");
     if (!sel || sel.getAttribute("aria-pressed") === "true") return;
     map[sel.dataset.map] = Number(sel.dataset.head);
+    picked = true;
     const q = Object.entries(map).map(([k, v]) => `${k}:${v}`).join(",");
     try {
       chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}&map=${q}`);
@@ -616,6 +646,18 @@ export async function openPrintDialog(fileId, printerId) {
     update();
   });
   dlg.querySelector("[data-close]").onclick = () => dlg.close();
+
+  // A spool loaded or swapped while the dialog is open: check again with the same picks.
+  stopHeads = watchToolheads(printerId, async () => {
+    const q = picked ? Object.entries(map).map(([k, v]) => `${k}:${v}`).join(",") : "";
+    const acked = !!ack()?.checked;
+    chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}${q ? `&map=${q}` : ""}`);
+    map = { ...chk.tool_map };
+    checks.innerHTML = checksHtml();
+    if (acked && ack()) ack().checked = true;
+    paintPlate();
+    update();
+  }, chk.printer.status.toolheads);
 
   // Build plate preview: the sliced lines, each filament in the colour of the
   // toolhead it's mapped to (updates when you pick another toolhead).

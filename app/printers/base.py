@@ -406,6 +406,7 @@ class Printer:
             "setup_hint": self.setup_hint,
             "can_print": self.can_print and self.configured,
             "can_camera": self.can_camera and self.configured,
+            "ams_mapping": self.ams_mapping,
             "calibrations": [asdict(c) for c in self.calibrations] if self.configured else [],
             "calibrating": self.calibrating,
             "status": self.status.to_json(),

@@ -145,6 +145,25 @@ def test_partial_updates_merge(p1s):
     assert len(st.toolheads) == 5  # AMS info kept from the full report
 
 
+def test_spool_change_asks_for_a_full_report(p1s):
+    p1s.refresh()
+    pushall = {"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}}
+    before = p1s.fake.sent.count(pushall)
+    # A partial update: tray A4 now has PETG loaded.
+    new = report()["print"]
+    new["ams"]["ams"][0]["tray"][3] = {"id": "3", "tray_type": "PETG", "tray_color": "0000FFFF"}
+    p1s.fake.state = {"print": new}
+    p1s.on_report({"print": {"ams": {"ams": [{"id": "0", "tray": [{"id": "3", "tray_type": "PETG"}]}]}}})
+    st = p1s.refresh()
+    assert p1s.fake.sent.count(pushall) == before + 1
+    a4 = next(t for t in st.toolheads if t.label == "A4")
+    assert (a4.type, a4.color, a4.loaded) == ("PETG", "#0000FF", True)
+    assert len(st.toolheads) == 5
+    # The full report changed nothing more, so no further full reports are asked for.
+    p1s.refresh()
+    assert p1s.fake.sent.count(pushall) == before + 1
+
+
 def test_failed_and_cancelled(p1s):
     p1s.refresh()
     p1s.on_report(report(gcode_state="FAILED", print_error=50348044, subtask_name="a.gcode.3mf"))
