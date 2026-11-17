@@ -127,3 +127,12 @@ def test_app_author_profile_carries_project_settings(app_client):
     assert "author_profile" not in sent
     vals = c.get(f"/api/slicer/process?printer=u1&file_id={proj['id']}&mode=project").json()["values"]
     assert vals == {"wall_loops": "6", "seam_gap": "-1", "layer_height": "0.16"}
+
+
+def test_by_object_keeps_pieces_separate(svc, monkeypatch):
+    from tests.test_slicer import make_3mf
+    make_3mf(svc / "Tools" / "hook.3mf", {"printer_model": "Bambu Lab P1S"})
+    monkeypatch.setattr(service, "QUEUE", __import__("queue").Queue())
+    job = service.submit({"path": "Tools/hook.3mf", "printer": "u1", "machine": "m", "process": "p", "filaments": ["f"],
+                          "keep_positions": True, "overrides": {"print_sequence": "by object"}})
+    assert job.by_object and job.keep_positions is False
