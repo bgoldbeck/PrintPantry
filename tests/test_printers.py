@@ -376,3 +376,12 @@ def test_colour_api(pclient, u1):
 def test_ui_files_revalidate(pclient):
     assert pclient.get("/static/printers.js").headers["cache-control"] == "no-cache"
     assert "no-cache" not in pclient.get("/static/vendor/three/LICENSE").headers.get("cache-control", "")
+
+
+def test_unset_filament_reads_as_unknown(u1, fake):
+    """The U1 says NONE (and white) for a toolhead whose filament was never set."""
+    fake.types = ["PLA", "NONE", "PLA", "TPU"]
+    st = u1.refresh()
+    t2 = st.toolheads[1]
+    assert (t2.type, t2.color, t2.vendor) == ("", "", "")
+    assert st.toolheads[0].type == "PLA"
