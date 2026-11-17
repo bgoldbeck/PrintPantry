@@ -636,7 +636,7 @@ export async function openPrintDialog(fileId, printerId) {
   (async () => {
     const box = dlg.querySelector("[data-plate]"), note = dlg.querySelector("[data-plate-note]");
     try {
-      const res = await fetch(`/api/files/${encodeURIComponent(fileId)}/toolpath`);
+      const res = await fetch(`/api/files/${encodeURIComponent(fileId)}/toolpath?plate=1`);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "No preview");
       const buf = await res.arrayBuffer();
       if (!dlg.isConnected) return;
