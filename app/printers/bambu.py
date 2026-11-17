@@ -49,6 +49,7 @@ CANCEL_CODES = {0, 50348044}  # print_error after "stop" (0300-400C = task cance
 PUSHALL_EVERY = 300.0  # the P1 series asks to be sparing with full reports
 # Link watchdog. The P1S sends a report every few seconds even when idle.
 RELINK_DOWN = 45.0  # down this long (paho didn't get back): start a fresh connection
+NEVER = float("-inf")  # time.monotonic() starts near 0 after a reboot
 AMS_PUSH_GAP = 10.0  # after a partial AMS/spool update, ask for a full report (at most this often)
 QUIET_PROBE = 60.0  # connected but silent this long: ask for a full report
 QUIET_RELINK = 120.0  # still silent: the connection is dead, start a fresh one
@@ -362,10 +363,10 @@ class BambuPrinter(Printer):
         self._report: dict = {}
         self._report_lock = threading.Lock()
         self._got_report = threading.Event()
-        self._pushed_at = 0.0
-        self._probe_at = 0.0
+        self._pushed_at = NEVER
+        self._probe_at = NEVER
         self._ams_dirty = False
-        self._ams_push_at = 0.0
+        self._ams_push_at = NEVER
         self._snap: tuple[bytes, float] | None = None
         self._snap_at = 0.0
         self._cam_lock = threading.Lock()
@@ -393,7 +394,7 @@ class BambuPrinter(Printer):
 
     def _link_state(self, up: bool) -> None:
         if up:
-            self._pushed_at = 0.0  # ask for a full report right away
+            self._pushed_at = NEVER  # ask for a full report right away
 
     def stop(self) -> None:
         super().stop()
@@ -440,8 +441,8 @@ class BambuPrinter(Printer):
                 old.stop()
             except Exception:  # noqa: BLE001
                 pass
-        self._pushed_at = 0.0
-        self._probe_at = 0.0
+        self._pushed_at = NEVER
+        self._probe_at = NEVER
 
     def _watch_link(self) -> None:
         """Replace the MQTT link when it is dead, stuck reconnecting, or silent."""
