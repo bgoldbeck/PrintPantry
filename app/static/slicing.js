@@ -3,6 +3,7 @@
 // "sliced" folder and show up under Print files.
 import { printerById, stateBadge } from "./printers.js";
 import { createPartsViewer } from "./viewer.js";
+import { createProcessPanel } from "./process.js";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -103,7 +104,12 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const has = (list, v) => v && list.includes(v);
   const machineNames = o.machines.map((m) => m.name);
   const d = { ...o.defaults };
-  if (o.project_matches && (last.mode === "project" || last.mode === "presets")) d.mode = last.mode;
+  // "Start from": the author's profile (the 3MF's own settings) or one of our
+  // process presets. On another printer the author's settings go on top of
+  // that printer's process preset.
+  const hasOwn = proj.kind === "3mf" && !!proj.printer_model;
+  d.start = hasOwn ? "author" : "presets";
+  if (hasOwn && (last.start === "author" || last.start === "presets")) d.start = last.start;
   if (has(machineNames, last.machine)) d.machine = last.machine;
   if (has((o.processes[d.machine] || {}).names || [], last.process)) d.process = last.process;
   // A remembered plate counts only from the time the presets had temperatures for every
@@ -133,10 +139,10 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     <p class="sub" style="margin-bottom:12px"><strong>${esc(file.name)}</strong>${
       proj.printer_model ? ` · set up for ${esc(proj.printer_model)}` : ""}</p>
     <div data-toomany>${tooMany ? `<div class="notice">Checking which of the project's ${slots.length} filaments its objects use...</div>` : ""}</div>
-    ${o.project_matches ? `<div class="modes">
-        <label class="check"><input type="radio" name="mode" value="project"${d.mode === "project" ? " checked" : ""}> Use the project's own settings</label>
-        <label class="check"><input type="radio" name="mode" value="presets"${d.mode === "presets" ? " checked" : ""}> Pick presets</label>
-      </div>` : ""}
+    ${hasOwn ? `<div class="field"><span>Start from</span><div class="modes">
+        <label class="check"><input type="radio" name="start" value="author"${d.start === "author" ? " checked" : ""}> Author's profile (from the file)</label>
+        <label class="check"><input type="radio" name="start" value="presets"${d.start === "presets" ? " checked" : ""}> Our process preset</label>
+      </div></div>` : ""}
     <div data-presets>
       <label class="field"><span>Printer</span><select data-machine>${o.machines.map((m) =>
         option(m.name, m.user ? `${m.name} (yours)` : m.name, m.name === d.machine)).join("")}</select></label>
@@ -146,6 +152,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       <div class="field"><span>Filaments</span><div class="fil-rows" data-fil-rows></div>${Object.keys(o.calibrated || {}).length
         ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
     </div>
+    <div data-process-panel></div>
     <div data-objects></div>
     <div data-copies></div>
     ${plates}
@@ -177,7 +184,15 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   }
   const presetsBox = $("[data-presets]"), warnBox = $("[data-warn]"), progress = $("[data-progress]");
   const go = $("[data-go]");
-  const mode = () => dlg.querySelector('input[name="mode"]:checked')?.value || "presets";
+  const isStl = proj.kind === "stl";
+  const isOff = (it) => objs.assign[it.key] === 0;  // left off the plate
+  // Changing what's on the plate of a project needs presets (the slicer gets a re-made file).
+  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff) || objs.compact || objs.copies > 1);
+  const start = () => dlg.querySelector('input[name="start"]:checked')?.value || "presets";
+  // "project": the slicer uses the 3MF as it is. Changing what's on the plate
+  // needs presets, with the author's settings carried over (author()).
+  const mode = () => (start() === "author" && o.project_matches && !reshaped() ? "project" : "presets");
+  const author = () => start() === "author" && mode() === "presets";
 
   function fillFor(machine, keep) {
     const procs = o.processes[machine] || { names: [], user: [], default: "" };
@@ -207,6 +222,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   function check() {
     const usePresets = mode() === "presets";
     presetsBox.hidden = !usePresets;
+    processSel.closest(".field").querySelector("span").textContent = author() ? "Base preset" : "Process";
+    panel?.refresh();
     if (!usePresets) { warnBox.innerHTML = ""; return; }
     const fils = o.filaments[machineSel.value] || [];
     const cold = filSels().map((s) => fils.find((f) => f.name === s.value)).filter((f) => f && !(f.beds[bedSel.value] > 0));
@@ -215,27 +232,28 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       : "";
   }
 
+  let panel = null;
   renderFilRows();
   fillFor(machineSel.value, false);
   check();
+  panel = createProcessPanel($("[data-process-panel]"), {
+    printerId, fileId: file.id,
+    base: () => ({ mode: start() === "author" ? "project" : "presets", process: processSel.value, machine: machineSel.value }),
+  });
   machineSel.onchange = () => { fillFor(machineSel.value, true); check(); };
+  processSel.onchange = check;
   bedSel.onchange = check;
-  dlg.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = () => { check(); objectsChanged(); }));
+  dlg.querySelectorAll('input[name="start"]').forEach((r) => (r.onchange = () => { check(); objectsChanged(); }));
 
   // ------------------------------------------------ objects, each with its own toolhead
-  const isStl = proj.kind === "stl";
   // A painted project keeps its own filaments (repainting isn't possible here).
   const choices = () => ((mode() === "project" || objs.items.some((it) => it.painted)) && !isStl ? Math.max(1, baseCount)
     : Math.min(o.printer.max_filaments, Math.max(4, baseCount)));
   const loadedCount = () => Math.max(1, heads.filter((h) => h.loaded !== false && h.index < choices()).length || 1);
   // Filament slot of a piece (1-based); 0 = left off the plate.
   const slotOf = (it) => (objs.assign[it.key] === 0 ? 0 : Math.min(objs.assign[it.key] || it.extruder || 1, choices()));
-  const isOff = (it) => slotOf(it) === 0;
-  // Changing what's on the plate of a project needs presets (the slicer gets a re-made file).
-  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff) || objs.compact || objs.copies > 1);
   function forcePresets() {
-    const r = dlg.querySelector('input[name="mode"][value="presets"]');
-    if (reshaped() && r && !r.checked) { r.checked = true; check(); }
+    check();  // mode() turns to presets (keeping the author's settings) once the plate changes
   }
   // What's on the plate, remembered per file in this browser.
   const PLATE_KEY = "pp.slice.plate";
@@ -486,6 +504,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   $("[data-close]").onclick = () => dlg.close();
 
   go.onclick = async () => {
+    let overrides;
+    try { overrides = panel.overrides(); } catch (e) {
+      progress.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+      return;
+    }
     go.disabled = true;
     go.textContent = "Slicing...";
     dlg.querySelectorAll("select, input").forEach((x) => (x.disabled = true));
@@ -493,6 +516,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       file_id: file.id, printer: printerId, mode: mode(),
       machine: machineSel.value, process: processSel.value, bed_type: bedSel.value,
       filaments: filSels().map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
+      overrides, author_profile: author(),
     };
     if (objs.active) {
       const assign = {};
@@ -510,7 +534,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     if (objs.copies > 1) body.copies = objs.copies;
     const byType = {};
     body.filaments.forEach((n, i) => { if (slots[i]?.type) byType[slots[i].type.toUpperCase()] = n; });
-    saveLast(printerId, { mode: o.project_matches ? body.mode : last.mode, machine: body.machine,
+    saveLast(printerId, { start: hasOwn ? start() : last.start, machine: body.machine,
       process: body.process, bed_type: body.bed_type, bedV: 2, filaments: body.filaments, byType });
     progress.innerHTML = `<div class="notice">Sending to the slicer...</div>`;
     let job;
@@ -520,7 +544,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       progress.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
       go.disabled = false;
       go.textContent = "Slice";
-      dlg.querySelectorAll("select, input").forEach((x) => (x.disabled = false));
+      dlg.querySelectorAll("select, input, button").forEach((x) => (x.disabled = false));
       return;
     }
     const started = Date.now();

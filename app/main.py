@@ -795,7 +795,10 @@ def create_app(
     # ------------------------------------------------------------ slicing and calibration
     slicer = slicer or client_from_env()
     calib = CalibrationStore(settings.data / "calibration.json")
-    app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios))
+    from .process_settings import ProcessPresets
+
+    app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios,
+                                     ProcessPresets(settings.data / "process-presets.json")))
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
     # OpenSCAD / FreeCAD models are rendered by the slicer container too.
     app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))

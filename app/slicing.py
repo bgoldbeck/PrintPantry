@@ -16,6 +16,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from . import process_settings as PS
+
 log = logging.getLogger("printpantry.slicing")
 SLICEABLE = ("project3mf", "stl")
 
@@ -34,6 +36,16 @@ class SliceRequest(BaseModel):
     colours: list[str] = []  # colour per filament slot, e.g. what the toolhead has loaded
     keep_positions: bool = True  # STLs together keep their places (colours of one model)
     copies: int = 1  # the plate this many times (the slicer arranges them)
+    overrides: dict = {}  # process setting -> value (see process_settings.py)
+    author_profile: bool = False  # presets mode: carry the 3MF's own process settings over first
+
+
+class ProcessPresetBody(BaseModel):
+    printer: str
+    name: str
+    process: str = ""
+    machine: str = ""
+    overrides: dict = {}
 
 
 class SlicerClient:
@@ -74,9 +86,11 @@ class SlicerClient:
         return data
 
 
-def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIRouter:
+def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
+                presets: PS.ProcessPresets | None = None) -> APIRouter:
     """``resolve(file_id)`` -> (LibFile, Path) or 404; ``rescan()`` scans the library (blocking);
-    ``flow_ratios(printer)`` -> {filament preset: calibrated flow ratio}."""
+    ``flow_ratios(printer)`` -> {filament preset: calibrated flow ratio};
+    ``presets``: saved process settings per printer."""
     flow_ratios = flow_ratios or (lambda printer: {})
     router = APIRouter(prefix="/api/slicer")
     rescanned: set[str] = set()
@@ -127,8 +141,15 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIR
     @router.post("/jobs")
     def start(req: SliceRequest):
         f = sliceable(req.file_id)
-        body = req.model_dump(exclude={"file_id", "extra_files"})
+        body = req.model_dump(exclude={"file_id", "extra_files", "author_profile"})
         body["path"] = f.relpath
+        overrides = PS.normalise(req.overrides)
+        if req.author_profile and req.mode == "presets" and f.kind == "project3mf":
+            # The author's settings (e.g. a MakerWorld profile) on top of this
+            # printer's process preset, and the user's changes on top of those.
+            own = client.call("GET", "/process", params={"printer": req.printer, "mode": "project", "path": f.relpath})
+            overrides = {**PS.carry_over(own.get("values", {})), **overrides}
+        body["overrides"] = overrides
         if req.extra_files:
             body["extra_paths"] = object_paths(req.file_id, ",".join(req.extra_files))[1:]
         if req.mode == "presets":
@@ -137,6 +158,41 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None) -> APIR
         job = client.call("POST", "/jobs", json=body)
         log.info("slice job %s: %s for %s", job.get("id"), f.relpath, req.printer)
         return job
+
+    @router.get("/process")
+    def process_values(printer: str = "u1", process: str = "", file_id: str = "", mode: str = "presets"):
+        """The values the process settings panel starts from: the picked
+        process preset's, or the project's own (mode "project")."""
+        params = {"printer": printer, "name": process, "mode": "project" if mode == "project" else "presets"}
+        if mode == "project":
+            params["path"] = sliceable(file_id).relpath
+        data = client.call("GET", "/process", params=params)
+        cat = PS.catalog()
+        vals = data.get("values", {})
+        data["values"] = {k: (v[0] if isinstance(v, list) and v else v) for k, v in vals.items() if k in cat}
+        return data
+
+    def printer_id(printer: str) -> str:
+        if not printer.isalnum() or len(printer) > 20:
+            raise HTTPException(400, "Unknown printer")
+        return printer
+
+    @router.get("/process-presets")
+    def list_presets():
+        return {"presets": presets.list() if presets else []}
+
+    @router.put("/process-presets")
+    def save_preset(body: ProcessPresetBody):
+        if not presets:
+            raise HTTPException(503, "Presets aren't set up")
+        return presets.save(body.name, printer_id(body.printer), body.process, body.machine, body.overrides)
+
+    @router.delete("/process-presets")
+    def delete_preset(name: str):
+        if not presets:
+            raise HTTPException(503, "Presets aren't set up")
+        presets.delete(name)
+        return {"ok": True}
 
     @router.get("/jobs/{job_id}")
     def job(job_id: str):
