@@ -10,6 +10,16 @@ async function api(path, opts) {
 }
 const json = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
+// A short message at the bottom of the screen, e.g. what the printer was told.
+function note(text) {
+  const el = document.createElement("div");
+  el.textContent = text;
+  el.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:1000;max-width:90vw;" +
+    "padding:10px 16px;border-radius:8px;background:#222;color:#fff;box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:14px";
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
 const MATERIALS = ["PLA", "PLA+", "PETG", "ABS", "ASA", "TPU", "PA", "PC", "PVA", "Other"];
 const PRINTER_NAMES = { u1: "Snapmaker U1", p1s: "Bambu P1S" };
 
@@ -236,8 +246,9 @@ function placeDialog(s, printers, done) {
     const at = dlg.querySelector("[name=at]").value;
     const [printer, toolhead] = at ? at.split(":") : [null, null];
     try {
-      await api(`/api/spools/${s.id}/assign`, json("POST", { printer, toolhead: toolhead == null ? null : Number(toolhead) }));
+      const res = await api(`/api/spools/${s.id}/assign`, json("POST", { printer, toolhead: toolhead == null ? null : Number(toolhead) }));
       dlg.close(); done();
+      if (res && res.printer_note) note(res.printer_note);
     } catch (err) { alert(err.message); }
   };
 }

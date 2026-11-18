@@ -17,6 +17,12 @@ from test_library import library  # noqa: F401  pytest fixture
 class FakePrinter:
     def __init__(self, heads):
         self.status = Status(online=True, state="idle", toolheads=heads)
+        self.sent = []
+
+    def set_filament(self, index, kind, vendor="", color=""):
+        self.sent.append((index, kind, vendor, color))
+        t = self.status.toolheads[index]
+        t.type, t.color, t.vendor, t.loaded = kind, color, vendor or "Generic", True
 
 
 class FakeHub:
@@ -139,6 +145,7 @@ def test_spool_on_head_fills_what_printer_doesnt_know(sp):
     """A spool put on a toolhead whose filament the printer doesn't know (U1 "NONE")
     shows as what's loaded there; the printer's own report is left alone."""
     sp.hub.printers["u1"].status.toolheads[2] = Toolhead(2, "", "", "", True)
+    sp.hub.printers["u1"].set_filament = lambda *a: None  # printer ignores it (e.g. offline)
     black = add(sp, vendor="Elegoo", material="PLA", color="#111111")
     sp.assign(black["id"], AssignIn(printer="u1", toolhead=2))
     sp.sync()
@@ -154,3 +161,36 @@ def test_spool_on_head_fills_what_printer_doesnt_know(sp):
     assert t3.spool == "Elegoo PLA"
     assert p.status.toolheads[2].type == ""  # raw report untouched
     assert sp.get(black["id"])["toolhead"] == 2  # and the spool stays put
+
+
+def test_placing_a_spool_tells_the_printer(sp):
+    s = add(sp, vendor="eSun", material="ABS Matte", color="#123456")
+    res = sp.assign(s["id"], AssignIn(printer="u1", toolhead=3))
+    p = sp.hub.printers["u1"]
+    assert p.sent == [(3, "ABS", "eSun", "#123456")]
+    assert "T4" in res["printer_note"]
+    sp.sync()  # the printer's new report is ours, not a swap
+    assert sp.get(s["id"])["toolhead"] == 3
+
+
+def test_no_push_when_printer_already_agrees_or_has_a_tag(sp):
+    red = add(sp, vendor="Snapmaker", material="PLA", color="#FE0101")
+    sp.assign(red["id"], AssignIn(printer="u1", toolhead=0))
+    p = sp.hub.printers["u1"]
+    assert p.sent == []
+    p.status.toolheads[1].tagged = True
+    s = add(sp, material="PLA", color="#FFFFFF")
+    res = sp.assign(s["id"], AssignIn(printer="u1", toolhead=1))
+    assert p.sent == [] and "RFID" in res["printer_note"]
+
+
+def test_push_waits_for_running_print(sp):
+    p = sp.hub.printers["u1"]
+    p.status.state = "printing"
+    s = add(sp, material="PETG", color="#000000")
+    res = sp.assign(s["id"], AssignIn(printer="u1", toolhead=3))
+    assert p.sent == [] and "busy" in res["printer_note"]
+    p.status.state = "complete"
+    sp.sync()
+    assert p.sent == [(3, "PETG", "", "#000000")]
+    assert sp.get(s["id"])["toolhead"] == 3

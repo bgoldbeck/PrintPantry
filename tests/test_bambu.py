@@ -372,3 +372,24 @@ def test_mqtt_link_survives_a_bad_report():
     link._message(None, None, Msg())
     assert seen == [{"print": {}}]
     assert not link.alive and link.down_for() >= 0
+
+
+def test_set_filament_sends_ams_filament_setting(p1s):
+    p1s.set_filament(5, "PLA Matte", "", "#112233")
+    cmd = p1s.fake.sent[-1]["print"]
+    assert cmd["command"] == "ams_filament_setting"
+    assert (cmd["ams_id"], cmd["tray_id"], cmd["tray_type"]) == (1, 1, "PLA")
+    assert cmd["tray_info_idx"] == "GFL99" and cmd["tray_color"] == "112233FF"
+    p1s.set_filament(bambu.EXTERNAL, "PETG", "", "")
+    cmd = p1s.fake.sent[-1]["print"]
+    assert (cmd["ams_id"], cmd["tray_id"], cmd["tray_info_idx"]) == (255, 254, "GFG99")
+    with pytest.raises(PrinterError):
+        p1s.set_filament(0, "WOOD", "", "")
+
+
+def test_rfid_tray_is_tagged():
+    t = BambuPrinter._tray(0, {"tray_type": "PLA", "tray_color": "FF0000FF",
+                               "tray_uuid": "A1B2C3", "tag_uid": "0000000000000000"}, 1, "255")
+    assert t.tagged
+    t = BambuPrinter._tray(1, {"tray_type": "PLA", "tray_uuid": "00000000000000000000000000000000"}, 1, "255")
+    assert not t.tagged
