@@ -1117,3 +1117,14 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
   .slice-dialog .proc-groups { grid-template-columns: 1fr 1fr; align-items: start; max-height: 460px; }
   .slice-dialog .obj-preview { height: 320px; }
 }
+
+/* Printer problems: what happened and how to fix it */
+.problem .problem-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.problem .problem-code { font-size: .78rem; opacity: .7; }
+.problem .problem-detail { margin-top: 4px; color: var(--ink); }
+.problem .problem-fix { margin: 6px 0 0 1.2em; padding: 0; color: var(--ink); }
+.problem .problem-fix li { margin: 2px 0; }
+.problem .file-actions { margin-top: 8px; }
+.dock-trouble { color: #c0392b; font-weight: 600; }
+.fil-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.fil-row b { min-width: 2.5em; }

@@ -19,6 +19,12 @@ log = logging.getLogger("printpantry.printers")
 EXTRA_CHECKS: list = []
 
 
+class FilamentRequest(BaseModel):
+    type: str
+    vendor: str = ""
+    color: str = ""  # #RRGGBB, optional
+
+
 class ColorRequest(BaseModel):
     color: str | None = None  # "#RRGGBB", or null to go back to the printer's colour
 
@@ -245,6 +251,15 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
         p = get(printer_id)
         try:
             p.set_color(index, req.color)
+        except PrinterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return p.to_json()
+
+    @router.put("/{printer_id}/toolheads/{index}/filament")
+    def set_filament(printer_id: str, index: int, req: FilamentRequest):
+        p = get(printer_id)
+        try:
+            p.set_filament(index, req.type, req.vendor, req.color)
         except PrinterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return p.to_json()

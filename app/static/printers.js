@@ -99,9 +99,9 @@ export function printerState(p) {
   const temps = st.temps || [];
   switch (st.state) {
     case "printing": return { key: "printing", kind: "busy", label: heating({ temps }) && !pct ? "Heating" : withPct("Printing"), free: false, detail: st.file };
-    case "paused": return { key: "paused", kind: "warn", label: withPct("Paused"), free: false, detail: st.file };
+    case "paused": return { key: "paused", kind: "warn", label: withPct("Paused"), free: false, detail: st.problem?.title || st.file };
     case "starting": return { key: "starting", kind: "busy", label: heating({ temps }) ? "Heating" : "Starting", free: false, detail: st.file || st.message };
-    case "error": return { key: "error", kind: "bad", label: "Error", free: false, detail: st.message };
+    case "error": return { key: "error", kind: "bad", label: "Error", free: false, detail: st.problem?.title || st.message };
     case "failed": return { key: "failed", kind: "warn", label: "Failed", free: true, detail: st.message || st.file };
     case "complete": return { key: "complete", kind: "ok", label: "Finished", free: true, detail: st.file };
     case "cancelled": return { key: "cancelled", kind: "ok", label: "Cancelled", free: true, detail: st.file };
@@ -197,6 +197,8 @@ export function paintDock() {
     const jobName = st.file ? st.file.replace(/\.gcode(\.3mf)?$/i, "") : "";
 
     let jobHtml = "";
+    const trouble = st.problem || st.blockers?.[0];
+    const troubleHtml = trouble ? `<div class="dock-row-sub dock-trouble">⚠ ${esc(trouble.title)}</div>` : "";
     if (isPrinting && st.file) {
       jobHtml = `<div class="dock-row-job">
         <div class="dock-job-name" title="${esc(st.file)}">${esc(jobName || st.file)}</div>
@@ -219,6 +221,7 @@ export function paintDock() {
         <span class="dock-printer-name">${esc(p.name)}</span>
         ${stateBadge(p, false)}
       </div>
+      ${troubleHtml}
       ${jobHtml}
     </a>`;
   }).join("");
@@ -411,6 +414,78 @@ function colorDialog(p, t, onSaved) {
   dlg.showModal();
 }
 
+// One printer problem, explained: what happened, steps to fix it, and a button where the app can fix it.
+function problemHtml(x, st) {
+  const heads = x.heads || (x.head != null ? [x.head] : []);
+  const btn = x.action === "set_filament" && heads.length
+    ? `<button type="button" class="small" data-setfil="${heads.join(",")}">Set filament${st.state === "paused" ? " and resume" : ""}</button>` : "";
+  return `<div class="notice ${x.level === "warning" ? "warn" : "error"} small-notice problem">
+    <div class="problem-title"><b>${esc(x.title)}</b>${x.code ? ` <span class="problem-code" title="${esc(x.raw || "")}">code ${esc(x.code)}</span>` : ""}</div>
+    ${x.detail ? `<div class="problem-detail">${esc(x.detail)}</div>` : ""}
+    ${x.fix?.length ? `<ol class="problem-fix">${x.fix.map((f) => `<li>${esc(f)}</li>`).join("")}</ol>` : ""}
+    ${btn ? `<div class="file-actions">${btn}</div>` : ""}
+  </div>`;
+}
+
+const FIL_TYPES = ["PLA", "PETG", "ABS", "ASA", "TPU", "PLA-CF", "PETG-CF", "PA-CF", "PC", "PVA"];
+// Tell the printer what filament is in some toolheads (the U1 won't resume without it), then maybe resume.
+function filamentDialog(p, heads, onSaved) {
+  const st = p.status;
+  const byIdx = new Map((st.toolheads || []).map((t) => [t.index, t]));
+  const rows = heads.map((i) => {
+    const t = byIdx.get(i) || { index: i };
+    const type = (t.type || "PLA").toUpperCase();
+    const types = FIL_TYPES.includes(type) ? FIL_TYPES : [type, ...FIL_TYPES];
+    const vendor = /snapmaker/i.test(t.vendor || "") ? "Snapmaker" : /polymaker/i.test(t.vendor || "") ? "Polymaker" : "Generic";
+    return `<div class="dialog-row fil-row" data-head="${i}">
+      <b>${esc(headName(t))}</b>
+      <select data-type>${types.map((x) => `<option${x === type ? " selected" : ""}>${esc(x)}</option>`).join("")}</select>
+      <select data-vendor>${["Generic", "Snapmaker", "Polymaker"].map((x) => `<option${x === vendor ? " selected" : ""}>${x}</option>`).join("")}</select>
+      <input type="color" data-color value="${esc(t.color || "#FFFFFF")}" title="Colour">
+    </div>`;
+  }).join("");
+  const dlg = document.createElement("dialog");
+  const paused = st.state === "paused";
+  dlg.innerHTML = `<h2>Set filament on ${esc(p.name)}</h2>
+    <p class="sub" style="margin-bottom:12px">Tells the printer what's loaded, the same as picking it on its Filament page.
+      Filled in from your Spools page where a spool is on that toolhead.</p>
+    ${rows}
+    <div class="dialog-actions">
+      <button type="button" class="ghost" data-close>Cancel</button>
+      ${paused ? `<button type="button" class="ghost" data-save>Save only</button>` : ""}
+      <button type="button" data-save="${paused ? "resume" : ""}">${paused ? "Save and resume" : "Save"}</button>
+    </div>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if ("close" in b.dataset) { dlg.close(); return; }
+    if (!("save" in b.dataset)) return;
+    dlg.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+    try {
+      let res;
+      for (const row of dlg.querySelectorAll("[data-head]")) {
+        res = await api(`/api/printers/${p.id}/toolheads/${row.dataset.head}/filament`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: row.querySelector("[data-type]").value,
+            vendor: row.querySelector("[data-vendor]").value,
+            color: row.querySelector("[data-color]").value,
+          }),
+        });
+      }
+      if (b.dataset.save === "resume") res = await api(`/api/printers/${p.id}/resume`, { method: "POST" });
+      dlg.close();
+      if (res) onSaved(res);
+    } catch (err) {
+      alert(err.message);
+      dlg.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+    }
+  });
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.showModal();
+}
+
 function cardBody(p) {
   const st = p.status;
   if (!p.configured) return `<p class="empty">${esc(p.setup_hint)}</p>`;
@@ -445,8 +520,11 @@ function cardBody(p) {
   if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);
   if (["printing", "paused"].includes(st.state)) buttons.push(`<button class="small danger" data-act="cancel">Cancel print</button>`);
   if (p.has_settings && st.online) buttons.push(`<button class="small ghost" data-settings title="AI detection, AMS, fans and more">Settings</button>`);
+  const problems = [st.problem, ...(st.blockers || [])].filter(Boolean);
+  const plainMsg = st.message && !problems.length && ["error", "failed", "offline", "starting", "paused"].includes(st.state);
   return `
-    ${st.message && (st.state === "error" || st.state === "failed" || st.state === "offline" || st.state === "starting") ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
+    ${plainMsg ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
+    ${problems.map((x) => problemHtml(x, st)).join("")}
     ${job ? `<div class="job">
         <div class="job-file" title="${esc(st.file)}">${esc(st.file)}</div>
         ${pct != null ? `<div class="bar"><i style="width:${pct}%"></i></div><div class="job-facts"><span><b>${pct}%</b></span>${facts}</div>` : ""}
@@ -499,6 +577,12 @@ export async function printersPage(view) {
     if (cal) {
       const p = latest.get(cal.closest(".printer-card").dataset.id);
       if (p) calibrationDialog(p, cal.dataset.calib, paint);
+      return;
+    }
+    const sf = e.target.closest("[data-setfil]");
+    if (sf) {
+      const p = latest.get(sf.closest(".printer-card").dataset.id);
+      if (p) filamentDialog(p, sf.dataset.setfil.split(",").map(Number), paint);
       return;
     }
     const sb = e.target.closest("[data-settings]");

@@ -56,6 +56,8 @@ class Status:
     temps: list[Temp] = field(default_factory=list)
     toolheads: list[Toolhead] = field(default_factory=list)
     light: bool | None = None  # chamber light on/off; None = printer has none we can see
+    problem: dict | None = None  # why it stopped, explained (see errors.py)
+    blockers: list[dict] = field(default_factory=list)  # what will stop Resume working
     updated_at: float = 0.0
 
     def to_json(self) -> dict:
@@ -319,6 +321,9 @@ class Printer:
 
     def action(self, name: str) -> None:
         raise PrinterError(f"'{name}' isn't supported on this printer yet")
+
+    def set_filament(self, index: int, kind: str, vendor: str = "", color: str = "") -> None:
+        raise PrinterError("Set the filament on the printer itself")
 
     # -- printer settings
     def settings(self) -> list[Setting]:

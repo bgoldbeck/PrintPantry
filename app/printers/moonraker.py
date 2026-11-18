@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from email.utils import parsedate_to_datetime
@@ -24,6 +25,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from . import errors
 from .base import IDLE_STATES, Calibration, Printer, PrinterError, Setting, Status, Temp, Toolhead
 
 log = logging.getLogger("printpantry.moonraker")
@@ -49,6 +51,10 @@ STATE_MAP = {
     "error": "error",
 }
 ACTIONS = {"pause", "resume", "cancel"}
+FILAMENT_WORD = re.compile(r"[A-Z0-9][A-Z0-9+-]{0,15}")
+HEX6 = re.compile(r"[0-9A-F]{6}")
+# Vendors the U1's filament table knows; anything else is set as Generic.
+U1_VENDORS = {"snapmaker": "Snapmaker", "polymaker": "Polymaker", "generic": "Generic"}
 # Settings (checked against the U1's own Klipper code, Snapmaker/u1-klipper, and
 # tried on Brandon's U1 in Nov 2026). Each is read back after it is set.
 RUNOUT_SENSORS = tuple(f"e{i}_filament" for i in range(4))
@@ -243,6 +249,7 @@ class MoonrakerPrinter(Printer):
 
         cfg = s.get("print_task_config") or {}
         self._task_cfg = cfg
+        self._problems(st, ps, cfg)
         types = cfg.get("filament_type") or []
         count = max(len(types), sum(1 for n in EXTRUDERS if n in s))
         for i in range(count):
@@ -260,6 +267,21 @@ class MoonrakerPrinter(Printer):
                 )
             )
         return st
+
+    def _problems(self, st: Status, ps: dict, cfg: dict) -> None:
+        """What stopped the print, and what will stop it resuming, in plain words."""
+        if st.state not in ("paused", "error", "starting"):
+            return
+        st.problem = errors.u1_exception(ps.get("exception")) or errors.u1_text(st.message)
+        if st.state != "paused":
+            return
+        # The U1 refuses RESUME while a toolhead this print uses has no filament type
+        # ("eN not edit filament"), even after the cause of the pause is fixed.
+        used = cfg.get("extruders_used") or []
+        types = cfg.get("filament_type") or []
+        unset = [i for i, u in enumerate(used) if u and not _known(_at(types, i, ""))]
+        if unset:
+            st.blockers.append(errors.unset_heads_blocker(unset))
 
     def _eta(self, st: Status) -> float | None:
         p, done = st.progress, st.print_seconds
@@ -528,7 +550,38 @@ class MoonrakerPrinter(Printer):
             return
         if name not in ACTIONS:
             raise PrinterError(f"Unknown action '{name}'")
-        self._post(f"/printer/print/{name}")
+        try:
+            self._post(f"/printer/print/{name}")
+        except PrinterError as exc:
+            self.refresh()
+            p = errors.u1_text(str(exc))
+            if p:
+                raise PrinterError(f"{p['title']}. {' '.join(p['fix'][:1])}") from exc
+            raise
+        self.refresh()
+
+    # ------------------------------------------------------------ filament
+    def set_filament(self, index: int, kind: str, vendor: str = "", color: str = "") -> None:
+        """Tell the U1 what filament is in a toolhead, like its Filament page does.
+
+        Uses SET_PRINT_FILAMENT_CONFIG from the U1's Klipper (print_task_config.py).
+        Heads with a Snapmaker RFID spool can't be changed (the printer refuses).
+        """
+        if not 0 <= index < len(EXTRUDERS):
+            raise PrinterError(f"No toolhead T{index + 1}")
+        kind = kind.strip().upper()
+        if not FILAMENT_WORD.fullmatch(kind):
+            raise PrinterError("Pick a filament type, e.g. PLA")
+        vendor = U1_VENDORS.get(vendor.strip().lower(), "Generic")
+        sub = "Basic" if (vendor, kind) == ("Snapmaker", "PLA") else ("PolyLite" if vendor == "Polymaker" else "generic")
+        script = (f"SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER={index} VENDOR={vendor} "
+                  f"FILAMENT_TYPE={kind} FILAMENT_SUBTYPE={sub}")
+        rgb = color.lstrip("#").upper()
+        if rgb:
+            if not HEX6.fullmatch(rgb):
+                raise PrinterError("Colour must look like #RRGGBB")
+            script += f" FILAMENT_COLOR_RGBA={rgb}FF"
+        self._post("/printer/gcode/script", timeout=20.0, params={"script": script})
         self.refresh()
 
 
