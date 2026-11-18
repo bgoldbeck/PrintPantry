@@ -102,6 +102,8 @@ class FakeMoonraker:
             self.started.append(request.url.params["filename"])
             self.state = "printing"
             return httpx.Response(200, json={"result": "ok"})
+        if path == "/printer/print/resume" and getattr(self, "resume_error", ""):
+            return httpx.Response(400, json={"error": {"code": 400, "message": self.resume_error}})
         if path in ("/printer/print/pause", "/printer/print/cancel", "/printer/print/resume"):
             self.state = {"pause": "paused", "cancel": "cancelled", "resume": "printing"}[path.rsplit("/", 1)[1]]
             return httpx.Response(200, json={"result": "ok"})
@@ -385,3 +387,50 @@ def test_unset_filament_reads_as_unknown(u1, fake):
     t2 = st.toolheads[1]
     assert (t2.type, t2.color, t2.vendor) == ("", "", "")
     assert st.toolheads[0].type == "PLA"
+
+
+# ---------------------------------------------------------------- errors and resume
+
+def test_paused_tangle_explained_with_unset_heads(u1, fake):
+    fake.state = "paused"
+    fake.types = ["PLA", "PLA", "NONE", "NONE"]
+    base = fake.status
+
+    def status():
+        s = base()
+        s["print_stats"]["exception"] = {"id": 523, "index": 2, "code": 38, "message": "detect filament tangled!", "level": 2}
+        s["print_task_config"]["extruders_used"] = [False, False, True, True]
+        return s
+
+    fake.status = status
+    st = u1.poll()
+    assert st.problem["title"] == "T3 filament looks tangled"
+    assert st.problem["head"] == 2 and st.problem["code"] == "523-38"
+    assert st.blockers and st.blockers[0]["heads"] == [2, 3]
+    assert st.blockers[0]["action"] == "set_filament"
+    assert "T3, T4" in st.blockers[0]["title"]
+
+
+def test_no_problem_while_printing(u1, fake):
+    fake.state = "printing"
+    st = u1.poll()
+    assert st.problem is None and st.blockers == []
+
+
+def test_refused_resume_is_explained(pclient, fake):
+    fake.state = "paused"
+    fake.resume_error = "e2 not edit filament"
+    r = pclient.post("/api/printers/u1/resume")
+    assert r.status_code == 502
+    assert "T3 has no filament type set" in r.json()["detail"]
+
+
+def test_set_filament_sends_u1_command(pclient, fake):
+    r = pclient.put("/api/printers/u1/toolheads/2/filament", json={"type": "pla", "vendor": "Generic", "color": "#112233"})
+    assert r.status_code == 200
+    assert fake.gcode[-1] == ("SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=2 VENDOR=Generic FILAMENT_TYPE=PLA "
+                              "FILAMENT_SUBTYPE=generic FILAMENT_COLOR_RGBA=112233FF")
+    r = pclient.put("/api/printers/u1/toolheads/0/filament", json={"type": "PLA", "vendor": "Snapmaker"})
+    assert "VENDOR=Snapmaker FILAMENT_TYPE=PLA FILAMENT_SUBTYPE=Basic" in fake.gcode[-1]
+    assert pclient.put("/api/printers/u1/toolheads/1/filament", json={"type": "PLA; G28"}).status_code == 400
+    assert pclient.put("/api/printers/u1/toolheads/9/filament", json={"type": "PLA"}).status_code == 400

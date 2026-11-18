@@ -497,6 +497,16 @@ class BambuPrinter(Printer):
                 st.message = f"Print failed (error {error_text(err)})"
         elif err and st.state in ("printing", "paused"):
             st.message = f"Printer error {error_text(err)}"
+        if err and err not in CANCEL_CODES and st.state in ("printing", "paused", "failed"):
+            code = error_text(err)
+            st.problem = {
+                "title": f"Printer error {code}", "head": None, "code": code, "raw": st.message, "level": "error",
+                "action": "",
+                "detail": "The P1S stopped with an error code. Its screen (and the Bambu Handy app) show the full text.",
+                "fix": ["Read the message on the printer's screen and fix what it asks for.",
+                        f"Search {code} on wiki.bambulab.com for step-by-step help.",
+                        "Press Resume when it's fixed, or Cancel."],
+            }
         hms = r.get("hms") or []
         if hms and not st.message and st.state in ("printing", "paused"):
             st.message = f"{len(hms)} printer warning(s) on the screen"
