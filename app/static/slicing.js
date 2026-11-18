@@ -39,6 +39,14 @@ function saveLast(printerId, choice) {
 }
 
 const swatch = (c) => (c ? `<i class="dot" style="--c:${esc(c)}"></i>` : "");
+// Dark or light text on a colour swatch.
+export function inkOn(hex) {
+  const m = /^#?([0-9a-f]{6})/i.exec(hex || "");
+  if (!m) return "#1b1712";
+  const n = parseInt(m[1], 16), lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return L > 0.3 ? "#1b1712" : "#ffffff";
+}
 
 // Preview colours for filament slots nobody has a colour for.
 const PALETTE = ["#E9A23B", "#3B82E9", "#E94B3B", "#3BBF6A", "#9B59D0", "#E9D63B", "#3BD0D0", "#E93BA8"];
@@ -140,31 +148,45 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       Array.from({ length: proj.plates }, (_, i) => option(i + 1, `Plate ${i + 1} only`)).join("")}</select></label>`
     : "";
 
+  // Laid out as: title, then the plate (preview + colours) beside the
+  // settings on wide screens, then a footer with the buttons that's always
+  // in view (the body scrolls, not the dialog).
   dlg.innerHTML = `
-    <h2 class="with-state">Slice for ${esc(o.printer.name)} ${printerById(o.printer.id) ? stateBadge(printerById(o.printer.id)) : ""}</h2>
-    <p class="sub" style="margin-bottom:12px"><strong>${esc(file.name)}</strong>${
-      proj.printer_model ? ` · set up for ${esc(proj.printer_model)}` : ""}</p>
-    <div data-toomany>${tooMany ? `<div class="notice">Checking which of the project's ${slots.length} filaments its objects use...</div>` : ""}</div>
-    ${hasOwn ? `<div class="field"><span>Start from</span><div class="modes">
-        <label class="check"><input type="radio" name="start" value="author"${d.start === "author" ? " checked" : ""}> Author's profile (from the file)</label>
-        <label class="check"><input type="radio" name="start" value="presets"${d.start === "presets" ? " checked" : ""}> Our process preset</label>
-      </div></div>` : ""}
-    <div data-presets>
-      <label class="field"><span>Printer</span><select data-machine>${o.machines.map((m) =>
-        option(m.name, m.user ? `${m.name} (yours)` : m.name, m.name === d.machine)).join("")}</select></label>
-      <label class="field"><span>Process</span><select data-process></select></label>
-      <label class="field"><span>Bed plate</span><select data-bed>${o.bed_types.map((b) =>
-        option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
-      <div class="field"><span>Filaments</span><div class="fil-rows" data-fil-rows></div>${Object.keys(o.calibrated || {}).length
-        ? `<small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small>` : ""}</div>
+    <header class="slice-head">
+      <h2 class="with-state">Slice for ${esc(o.printer.name)} ${printerById(o.printer.id) ? stateBadge(printerById(o.printer.id)) : ""}</h2>
+      <p class="sub"><strong>${esc(file.name)}</strong>${proj.printer_model ? ` · set up for ${esc(proj.printer_model)}` : ""}</p>
+    </header>
+    <div class="slice-body">
+      <div data-toomany>${tooMany ? `<div class="notice">Checking which of the project's ${slots.length} filaments its objects use...</div>` : ""}</div>
+      <div class="slice-cols">
+        <section class="slice-plate" data-objects></section>
+        <section class="slice-settings">
+          ${hasOwn ? `<div class="field"><span>Start from</span><div class="seg" role="radiogroup">
+              <label><input type="radio" name="start" value="author"${d.start === "author" ? " checked" : ""}><span>Author's profile</span></label>
+              <label><input type="radio" name="start" value="presets"${d.start === "presets" ? " checked" : ""}><span>Our preset</span></label>
+            </div></div>` : ""}
+          <div data-presets>
+            <div class="field-pair">
+              <label class="field"><span>Printer</span><select data-machine>${o.machines.map((m) =>
+                option(m.name, m.user ? `${m.name} (yours)` : m.name, m.name === d.machine)).join("")}</select></label>
+              <label class="field"><span>Plate</span><select data-bed>${o.bed_types.map((b) =>
+                option(b.name, b.label, b.name === d.bed_type)).join("")}</select></label>
+            </div>
+            <label class="field"><span>Process</span><select data-process></select></label>
+            <div class="field"><span>Filaments</span><div class="fil-rows" data-fil-rows></div></div>
+            ${Object.keys(o.calibrated || {}).length ? `<div class="field"><span></span><small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small></div>` : ""}
+          </div>
+          <div data-process-panel></div>
+          <div data-copies></div>
+          ${plates}
+        </section>
+      </div>
     </div>
-    <div data-process-panel></div>
-    <div data-objects></div>
-    <div data-copies></div>
-    ${plates}
-    <div data-warn></div>
-    <div data-progress></div>
-    <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button data-go${tooMany ? " disabled" : ""}>Slice</button></div>`;
+    <footer class="slice-foot">
+      <div data-warn></div>
+      <div data-progress></div>
+      <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button data-go${tooMany ? " disabled" : ""}>Slice</button></div>
+    </footer>`;
 
   const $ = (sel) => dlg.querySelector(sel);
   const machineSel = $("[data-machine]"), processSel = $("[data-process]"), bedSel = $("[data-bed]");
@@ -182,15 +204,17 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     if (lt) {
       const had = s.type && s.type.toUpperCase() !== lt.toUpperCase() ? ` · file had ${esc(s.type)}` : "";
-      return `${tag}${swatch(headColour(i) || s.colour)}<small>loaded: ${esc(lt)}${had}</small>`;
+      const v = loadedVendor(i);
+      return `${tag}${swatch(headColour(i) || s.colour)}<small>loaded: ${esc(lt)}${v ? ` · ${esc(v)}` : ""}${had}</small>`;
     }
     const col = objs.active ? slotColour(i) : s.colour;
     return `${tag}${s.type || col ? `${swatch(col)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}`;
   }
   function renderFilRows() {
     filRowsBox.innerHTML = slots.map((s, i) => `
-        <label class="fil-row"><span class="slot" title="What the project file was set up with. The preset on the right is what gets sliced.">${rowLabel(s, i)}</span>
+        <label class="fil-row"><span class="slot">${rowLabel(s, i)}</span>
           <select data-fil="${i}"></select></label>`).join("");
+    filRowsBox.querySelectorAll(".slot").forEach((el) => (el.title = `${el.textContent.trim()}. The preset beside it is what gets sliced.`));
     filSels().forEach((sel) => (sel.onchange = () => {
       chosen[Number(sel.dataset.fil)] = sel.value;
       byHand.add(Number(sel.dataset.fil));
@@ -202,7 +226,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const isStl = proj.kind === "stl";
   const isOff = (it) => objs.assign[it.key] === 0;  // left off the plate
   // Changing what's on the plate of a project needs presets (the slicer gets a re-made file).
-  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff) || objs.compact || objs.copies > 1);
+  const reshaped = () => !isStl && (objs.together.size > 0 || objs.items.some(isOff) || objs.compact || objs.copies > 1
+    || objs.items.some((it) => slotOf(it) > Math.max(1, baseCount)));
   const start = () => dlg.querySelector('input[name="start"]:checked')?.value || "presets";
   // "project": the slicer uses the 3MF as it is. Changing what's on the plate
   // needs presets, with the author's settings carried over (author()).
@@ -263,11 +288,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     filRowsBox.querySelectorAll(".fil-row .slot").forEach((el, i) => { if (slots[i]) el.innerHTML = rowLabel(slots[i], i); });
     fillFor(machineSel.value, true);
     check();
-    objBox.querySelectorAll("[data-brush]").forEach((b) => {
-      const n = Number(b.dataset.brush);
-      if (n > 0) b.querySelector("i")?.style.setProperty("--c", slotColour(n - 1));
-    });
-    if (objs.items.length) paintObjects();
+    if (objs.active && objBox.querySelector("[data-obj-dynamic]")) objectsChanged();
   }, heads);
   panel = createProcessPanel($("[data-process-panel]"), {
     printerId, fileId: file.id,
@@ -289,7 +310,9 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
 
   // ------------------------------------------------ objects, each with its own toolhead
   // A painted project keeps its own filaments (repainting isn't possible here).
-  const choices = () => ((mode() === "project" || objs.items.some((it) => it.painted)) && !isStl ? Math.max(1, baseCount)
+  // Any toolhead can be picked: a project whose objects move to a toolhead it
+  // has no filament for is sliced with presets (the author's settings carried over).
+  const choices = () => (objs.items.some((it) => it.painted) && !isStl ? Math.max(1, baseCount)
     : Math.min(o.printer.max_filaments, Math.max(4, baseCount)));
   const loadedCount = () => Math.max(1, heads.filter((h) => h.loaded !== false && h.index < choices()).length || 1);
   // Filament slot of a piece (1-based); 0 = left off the plate.
@@ -332,12 +355,12 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   }
 
   function paintObjects() {
-    objBox.querySelectorAll("[data-obj]").forEach((sel) => {
-      const it = objs.items[Number(sel.dataset.obj)];
-      sel.value = String(slotOf(it));
-      const row = sel.closest(".obj-row");
+    objBox.querySelectorAll("[data-row]").forEach((row) => {
+      const it = objs.items[Number(row.dataset.row)];
+      const slot = slotOf(it);
       row.classList.toggle("off", isOff(it));
-      row.querySelector(".dot").style.setProperty("--c", isOff(it) ? "transparent" : slotColour(slotOf(it) - 1));
+      row.style.setProperty("--c", isOff(it) ? "transparent" : slotColour(slot - 1));
+      row.querySelectorAll("[data-set]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.set) === slot)));
     });
     objBox.querySelectorAll("[data-brush]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.brush) === objs.brush)));
     viewer?.setColours(objs.items.map((it) => (isOff(it) ? null : slotColour(slotOf(it) - 1))));
@@ -373,12 +396,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     const byObj = panel?.value("print_sequence") === "by object";
     objs.max = maxCopies(footprints(groupsOf()), bed);
     if (objs.copies > objs.max) objs.copies = objs.max;
-    box.innerHTML = `<label class="field"><span>Copies</span><div class="copies">
-      <input type="number" data-copy min="1" max="${objs.max}" value="${objs.copies}" style="width:5em">
+    box.innerHTML = `<div class="field"><span>Copies</span><div class="copies">
+      <input type="number" data-copy min="1" max="${objs.max}" value="${objs.copies}" aria-label="Copies">
       <button type="button" class="ghost" data-copy-max${objs.max < 2 ? " disabled" : ""}>Max (${objs.max})</button>
-      <small class="hint">${objs.max > 1 ? `Up to ${objs.max} fit on the ${bed.join(" × ")} mm bed; the slicer arranges them.` : "Only one fits on the bed."}</small></div></label>
-      ${pieces > 1 || byObj ? `<label class="field"><span></span><span class="check" style="margin:0"><input type="checkbox" data-byobj${byObj ? " checked" : ""}>
-        <span>Print one object at a time<small class="hint" style="font-weight:400">Each object is printed whole before the next starts, so one can be solid black and another solid white with no colour changes between layers. The slicer re-arranges the plate with room for the toolhead; if they don't fit, slicing says so. Pieces stay separate objects.</small></span></span></label>` : ""}`;
+      ${pieces > 1 || byObj ? `<label class="check" title="Each object is printed whole before the next starts, so one can be solid black and another solid white with no colour changes between layers. The slicer re-arranges the plate with room for the toolhead; if they don't fit, slicing says so. Pieces stay separate objects."><input type="checkbox" data-byobj${byObj ? " checked" : ""}> One object at a time</label>` : ""}
+      </div></div>`;
     const byBox = box.querySelector("[data-byobj]");
     if (byBox) byBox.onchange = () => panel?.set("print_sequence", byBox.checked ? "by object" : "by layer");
     const input = box.querySelector("[data-copy]");
@@ -399,37 +421,55 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     paintObjects();
   }
 
+  // What's on toolhead i (0-based): colour, material and the spool's brand.
+  function headInfo(i) {
+    const h = head(i);
+    const colour = slotColour(i);
+    if (h && h.loaded === false) return { colour, empty: true, type: "Empty", detail: "nothing loaded" };
+    const type = (h?.type || "").trim() || slots[i]?.type || "";
+    const detail = (h?.spool || "").trim() || (h?.vendor || "").trim() || (!h && slots[i]?.type ? "as in the file" : "");
+    return { colour, type: type || "Not set", detail };
+  }
+  const headTitle = (i) => { const k = headInfo(i); return [slotTag(i), k.type, k.detail].filter(Boolean).join(" · "); };
   function renderObjects(withPreview) {
     const n = choices();
-    const opts = Array.from({ length: n }, (_, i) => {
-      const h = head(i);
-      const what = !h ? "" : h.loaded === false ? " · empty" : h.type ? ` · ${h.type}` : "";
-      return option(i + 1, `${slotTag(i)}${what}`);
-    }).join("") + option(0, "Don't print");
     const stlCount = (isStl ? 1 : 0) + objs.together.size;
-    const together = siblings.length ? `<div class="together"><small>Also put on the plate</small>${siblings.map((s) =>
+    const together = siblings.length ? `<details class="together"${objs.together.size ? " open" : ""}><summary>Also put on the plate${
+      objs.together.size ? ` (${objs.together.size})` : ""}</summary>${siblings.map((s) =>
       `<label class="check"><input type="checkbox" data-with="${esc(s.id)}"${objs.together.has(s.id) ? " checked" : ""}> ${esc(s.name)}</label>`).join("")}
-      ${stlCount > 1 ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</div>` : "";
+      ${stlCount > 1 ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</details>` : "";
     const many = objs.items.length > 1;
     const painted = objs.items.some((it) => it.painted);
     const box = objBox.querySelector("[data-obj-dynamic]");
+    // Big swatches, one per toolhead: the brush for clicking pieces in the preview.
+    const cards = Array.from({ length: n }, (_, i) => {
+      const k = headInfo(i);
+      return `<button type="button" class="head-card${k.empty ? " empty" : ""}" data-brush="${i + 1}" style="--c:${esc(k.colour)};--on:${inkOn(k.colour)}" title="${esc(headTitle(i))}">
+        <span class="chip">${esc(slotTag(i))}</span><span class="head-txt"><b>${esc(k.type)}</b><small>${esc(k.detail) || "&nbsp;"}</small></span></button>`;
+    }).join("");
+    // Small swatches on each piece's row: click one to put the piece on that toolhead.
+    const sws = Array.from({ length: n }, (_, i) => {
+      const c = slotColour(i);
+      return `<button type="button" class="sw${headInfo(i).empty ? " empty" : ""}" data-set="${i + 1}" style="--c:${esc(c)};--on:${inkOn(c)}" title="${esc(headTitle(i))}">${esc(slotTag(i))}</button>`;
+    }).join("") + (many ? `<button type="button" class="sw off" data-set="0" title="Don't print this piece">✕</button>` : "");
     const dynamic = `
-      ${many ? `<div class="brush"><small>Click a piece to give it</small>${Array.from({ length: n }, (_, i) =>
-        `<button type="button" class="tool" data-brush="${i + 1}"><i style="--c:${esc(slotColour(i))}"></i>${esc(slotTag(i))}</button>`).join("")}<button type="button" class="tool" data-brush="0" title="Leave it off the plate">Off</button></div>` : ""}
+      ${many ? `<div class="brush"><div class="brush-hint"><small>Pick a colour, then click pieces in the preview</small>
+          <button type="button" class="head-off" data-brush="0" title="Click pieces to leave them off the plate">✕ Don't print</button></div><div class="head-cards">${cards}</div></div>`
+        : `<div class="brush"><small>Toolhead</small></div>`}
       <div class="obj-rows">${objs.items.map((it, i) => `
-        <div class="obj-row" data-row="${i}"><i class="dot"></i>
+        <div class="obj-row" data-row="${i}">
           <span class="obj-name">${esc(it.name)}<small>${it.size.map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
-          <select data-obj="${i}" aria-label="Toolhead for ${esc(it.name)}">${opts}</select></div>`).join("")}</div>
+          <span class="sws" role="group" aria-label="Toolhead for ${esc(it.name)}">${sws}</span></div>`).join("")}</div>
       ${painted ? `<small class="hint">Painted pieces keep their painted colours; the toolhead here is for the unpainted rest.</small>` : ""}`;
     if (!withPreview) renderCopies();
     if (box && !withPreview) {
+      const top = box.querySelector(".obj-rows")?.scrollTop || 0;
       box.innerHTML = dynamic;
+      box.querySelector(".obj-rows").scrollTop = top;
     } else {
-      objBox.innerHTML = `<div class="field obj-field"><span>Colours</span><div>
-        ${together}
-        ${many || objs.together.size || objs.copies > 1 ? `<div class="obj-preview" data-preview><small class="muted">Loading preview...</small></div>
-          <small class="hint">Build plate preview${BEDS[printerId] ? ` (${BEDS[printerId].join(" × ")} mm)` : ""}. The slicer centres the model, or lays pieces out when they print separately or as copies.</small>` : ""}
-        <div data-obj-dynamic>${dynamic}</div></div></div>`;
+      objBox.innerHTML = `<div class="plate-head"><h3>Colours</h3>${together}</div>
+        <div class="obj-preview" data-preview title="Build plate${BEDS[printerId] ? ` (${BEDS[printerId].join(" × ")} mm)` : ""}. Drag to turn, scroll to zoom${many ? ", click a piece to colour it" : ""}. The slicer centres the model, or lays pieces out when they print separately or as copies."><small class="muted">Loading preview...</small></div>
+        <div data-obj-dynamic>${dynamic}</div>`;
       objBox.querySelectorAll("[data-with]").forEach((c) => (c.onchange = () => {
         if (c.checked) objs.together.add(c.dataset.with); else objs.together.delete(c.dataset.with);
         forcePresets();
@@ -440,18 +480,18 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       if (keep) keep.onchange = () => { objs.keep = keep.checked; paintObjects(); };
     }
     const dyn = objBox.querySelector("[data-obj-dynamic]");
-    dyn.onchange = (e) => {
-      const sel = e.target.closest("[data-obj]");
-      if (!sel) return;
-      objs.assign[objs.items[Number(sel.dataset.obj)].key] = Number(sel.value);
+    dyn.onclick = (e) => {
+      const b = e.target.closest("[data-brush]");
+      if (b) { objs.brush = Number(b.dataset.brush); paintObjects(); return; }
+      const set = e.target.closest("[data-set]");
+      if (!set) return;
+      const before = choices();
+      objs.assign[objs.items[Number(set.closest("[data-row]").dataset.row)].key] = Number(set.dataset.set);
       forcePresets();
       savePlate();
       syncRows();
+      if (choices() !== before) renderObjects(false);
       paintObjects();
-    };
-    dyn.onclick = (e) => {
-      const b = e.target.closest("[data-brush]");
-      if (b) { objs.brush = Number(b.dataset.brush); paintObjects(); }
     };
     dyn.onmouseover = (e) => { const r = e.target.closest("[data-row]"); viewer?.highlight(r ? Number(r.dataset.row) : null); };
     dyn.onmouseleave = () => viewer?.highlight(null);
@@ -485,7 +525,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     compactFilaments();
     forcePresets();
-    objs.active = objs.items.length > 1 || objs.together.size > 0 || siblings.length > 0 || objs.compact || objs.copies > 1;
+    objs.active = objs.items.length > 0 || objs.together.size > 0 || objs.copies > 1;
     objs.q = q;
     objs.mesh = null;
     showObjects();
@@ -534,7 +574,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         bed: BEDS[printerId],
         onPick: (i) => {
           const it = objs.items[i];
-          if (!it) return;
+          if (!it || objs.items.length < 2) return;
           objs.assign[it.key] = objs.brush;
           forcePresets();
           savePlate();
@@ -566,7 +606,10 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       filaments: filSels().map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
       overrides, author_profile: author(),
     };
-    if (objs.active) {
+    // A lone piece left on its own toolhead slices the file as it is.
+    const lone = objs.items.length === 1 && !objs.together.size && !siblings.length && !objs.compact && objs.copies === 1
+      && slotOf(objs.items[0]) === objs.items[0].extruder;
+    if (objs.active && !lone) {
       const assign = {};
       objs.items.forEach((it) => {
         const slot = slotOf(it);

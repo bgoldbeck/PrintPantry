@@ -341,7 +341,6 @@ button .muted { opacity: .75; font-weight: 400; }
 .flash code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
 
 /* ---------------------------------------------------------------- slicing */
-.slice-dialog { width: min(980px, calc(100vw - 32px)); }
 .slice-dialog .notice { margin: 10px 0; }
 .slice-dialog pre { white-space: pre-wrap; font-size: .75rem; max-height: 200px; overflow: auto; }
 .slice-dialog .modes { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -1112,11 +1111,6 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
   .proc-opt { grid-template-columns: 1fr; gap: 2px; }
   .proc-was { grid-column: 1; }
 }
-@media (min-width: 900px) {
-  .slice-dialog .field { grid-template-columns: 130px 1fr; }
-  .slice-dialog .proc-groups { grid-template-columns: 1fr 1fr; align-items: start; max-height: 460px; }
-  .slice-dialog .obj-preview { height: 320px; }
-}
 
 /* Printer problems: what happened and how to fix it */
 .problem .problem-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -1128,3 +1122,93 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 .dock-trouble { color: #c0392b; font-weight: 600; }
 .fil-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .fil-row b { min-width: 2.5em; }
+
+/* ---------------------------------------------------------------- slice dialog
+   Title, a scrolling body (plate + colours beside the settings on wide
+   screens) and a footer whose buttons are always in view. */
+.slice-dialog { width: min(1200px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 0; overflow: hidden; }
+.slice-dialog[open] { display: flex; flex-direction: column; }
+.slice-head { padding: 16px 22px 8px; border-bottom: 1px solid var(--line); }
+.slice-head h2 { margin: 0; font-size: 1.25rem; }
+.slice-head .sub { margin: 2px 0 0; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slice-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 22px; }
+.slice-foot { flex: none; border-top: 1px solid var(--line); padding: 10px 22px 14px; background: var(--surface); display: grid; gap: 6px; }
+.slice-foot:has([data-warn]:empty):has([data-progress]:empty) { gap: 0; }
+.slice-foot .notice { margin: 0; }
+.slice-foot [data-progress] { max-height: 28vh; overflow: auto; }
+.slice-foot .dialog-actions button { min-width: 110px; }
+.slice-cols { display: grid; gap: 14px 24px; }
+.slice-cols > section { min-width: 0; }
+.slice-plate { display: grid; gap: 8px; align-content: start; }
+.slice-plate:empty { display: none; }
+.slice-settings .field { grid-template-columns: 96px 1fr; margin: 8px 0; }
+.slice-settings .field:first-child { margin-top: 0; }
+.field-pair { display: grid; grid-template-columns: 1.35fr 1fr; gap: 0 12px; }
+.field-pair .field { grid-template-columns: auto 1fr; }
+.field-pair .field:first-child { grid-template-columns: 96px 1fr; }
+.slice-dialog .field select { padding: 6px 10px; }
+.slice-dialog .proc-groups { grid-template-columns: 1fr; max-height: 340px; }
+@media (min-width: 900px) {
+  .slice-cols { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+  .slice-cols:has(> .slice-plate:empty) { grid-template-columns: 1fr; }
+}
+
+/* Start from: a two-way switch */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; justify-self: start; }
+.seg label { margin: 0; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; padding: 6px 12px; font-size: .9rem; font-weight: 500; }
+.seg label + label span { border-left: 1px solid var(--line); }
+.seg input:checked + span { background: var(--accent); color: var(--accent-ink); }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+.slice-dialog .fil-row { margin-bottom: 0; display: grid; grid-template-columns: minmax(0, 11em) minmax(0, 1fr); gap: 8px; flex-wrap: nowrap; }
+.slice-dialog .fil-row .slot { min-width: 0; overflow: hidden; white-space: nowrap; }
+.slice-dialog .fil-row .slot small { overflow: hidden; text-overflow: ellipsis; }
+.slice-dialog .fil-row b { min-width: 1.8em; }
+.slice-dialog .fil-rows { gap: 6px; }
+.slice-dialog .fil-row .dot { width: 18px; height: 18px; }
+.slice-dialog .copies { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.slice-dialog .copies input[type="number"] { width: 4.5em; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.slice-dialog .copies button { padding: 6px 12px; }
+.slice-dialog .copies .check { margin: 0 0 0 4px; font-weight: 500; }
+
+/* Plate side: preview, toolhead swatches, pieces */
+.plate-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.plate-head h3 { margin: 0; font-size: 1rem; }
+.together { font-size: .9rem; }
+.together summary { cursor: pointer; color: var(--ink-2); }
+.together[open] { flex-basis: 100%; display: grid; gap: 2px; }
+.slice-dialog .obj-preview { height: clamp(190px, 30vh, 400px); }
+.brush { display: grid; gap: 6px; }
+.brush > small { color: var(--ink-2); }
+.head-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; }
+.head-card { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 12px; border: 2px solid var(--line);
+  background: var(--surface); color: var(--ink); text-align: left; cursor: pointer; min-width: 0; font-weight: 400; }
+.head-card:hover { border-color: var(--c, var(--ink-2)); }
+.head-card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+.head-card .chip { flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--c); color: var(--on, var(--ink));
+  display: grid; place-items: center; font-weight: 800; font-size: .85rem; border: 1px solid rgb(0 0 0 / 22%); }
+.head-card.empty .chip, .sw.empty { background: repeating-linear-gradient(45deg, var(--surface-2) 0 5px, var(--line) 5px 7px); color: var(--ink-2); }
+.brush-hint { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.brush-hint small { color: var(--ink-2); }
+.head-off { padding: 3px 10px; border-radius: 10px; border: 2px solid var(--line); background: var(--surface); color: var(--ink-2); font-size: .8rem; font-weight: 600; cursor: pointer; }
+.head-off[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); }
+.head-txt { min-width: 0; display: grid; line-height: 1.2; }
+.head-txt b, .head-txt small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.head-txt small { color: var(--ink-2); font-size: .75rem; }
+.slice-dialog .obj-rows { gap: 2px; max-height: none; }
+.slice-dialog .obj-row { grid-template-columns: 1fr auto; padding: 4px 6px 4px 10px; border-left: 4px solid var(--c, transparent); border-radius: 8px; }
+.sws { display: inline-flex; gap: 4px; }
+.sw { width: 30px; height: 30px; padding: 0; border-radius: 50%; background: var(--c); color: var(--on, var(--ink)); border: 1px solid rgb(0 0 0 / 25%);
+  font-size: .72rem; font-weight: 800; cursor: pointer; display: grid; place-items: center; }
+.sw.off { background: var(--surface-2); color: var(--ink-2); }
+.sw[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.sw:hover { filter: brightness(1.08); }
+@media (max-width: 640px) {
+  .slice-head, .slice-body, .slice-foot { padding-left: 14px; padding-right: 14px; }
+  .field-pair { grid-template-columns: 1fr; }
+  .slice-settings .field, .field-pair .field:first-child { grid-template-columns: 1fr; }
+  .sw { width: 28px; height: 28px; }
+  .slice-dialog .fil-row { grid-template-columns: 1fr; gap: 2px; }
+}
