@@ -122,6 +122,28 @@ def _color(value) -> str:
     return ""
 
 
+# Bambu's generic filament presets (tray_info_idx) and nozzle range, by material.
+GENERIC_FILAMENT = {
+    "PLA": ("GFL99", 190, 240),
+    "PETG": ("GFG99", 220, 260),
+    "ABS": ("GFB99", 240, 270),
+    "ASA": ("GFB98", 240, 280),
+    "TPU": ("GFU99", 200, 250),
+    "PA": ("GFN99", 260, 290),
+    "PC": ("GFC99", 260, 280),
+    "PVA": ("GFS99", 190, 210),
+}
+
+
+def _tagged(tray: dict) -> bool:
+    """A Bambu spool whose RFID tag was read has a non-zero tray_uuid / tag_uid."""
+    for key in ("tray_uuid", "tag_uid"):
+        v = str(tray.get(key) or "").strip("0 ")
+        if v:
+            return True
+    return False
+
+
 def error_text(code: int) -> str:
     """Bambu shows print errors as e.g. 0300-400C."""
     h = f"{code:08X}"
@@ -567,7 +589,31 @@ class BambuPrinter(Printer):
             loaded=loaded,
             active=(now == str(idx)),
             label=tray_label(idx, units),
+            tagged=bool(kind) and _tagged(tray),
         )
+
+    # ------------------------------------------------------------ filament
+    def set_filament(self, index: int, kind: str, vendor: str = "", color: str = "") -> None:
+        """Tell the P1S what's in an AMS tray (or the external spool), like
+        Bambu Studio's tray edit does (ams_filament_setting)."""
+        kind = kind.strip().upper()
+        base = next((k for k in sorted(GENERIC_FILAMENT, key=len, reverse=True) if kind.startswith(k)), None)
+        if base is None:
+            raise PrinterError(f"The P1S has no generic preset for {kind or 'that filament'}")
+        code, lo, hi = GENERIC_FILAMENT[base]
+        if index == EXTERNAL:
+            ams_id, tray_id = 255, EXTERNAL
+        elif 0 <= index < 16:
+            ams_id, tray_id = index // 4, index % 4
+        else:
+            raise PrinterError("No such AMS tray")
+        rgb = color.lstrip("#").upper() or "FFFFFF"
+        if len(rgb) != 6 or any(c not in "0123456789ABCDEF" for c in rgb):
+            raise PrinterError("Colour must look like #RRGGBB")
+        self._print_cmd("ams_filament_setting", ams_id=ams_id, tray_id=tray_id, tray_info_idx=code,
+                        tray_color=rgb + "FF", nozzle_temp_min=lo, nozzle_temp_max=hi,
+                        tray_type=base, setting_id="")
+        self._ams_dirty = True  # ask for a full report so the change shows up
 
     # ------------------------------------------------------------ job tracking (history)
     def _load_jobs(self) -> list[dict]:

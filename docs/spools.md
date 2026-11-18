@@ -24,6 +24,14 @@ reports something different for a toolhead, its spool goes back on the shelf.
 Use **Load / Move** to place a spool by hand; untick "Match it to a toolhead
 automatically" on spools that should never be placed by themselves.
 
+Placing a spool by hand also tells the printer what's loaded there: the U1
+gets the head's filament type, brand and colour (SET_PRINT_FILAMENT_CONFIG,
+so an untagged spool no longer reports "NONE" and blocks Resume); the P1S gets
+the AMS tray's material and colour (ams_filament_setting, Bambu's generic
+preset for that material). Nothing is sent when the printer already reports
+the same material and colour, or when it read the spool's RFID tag. During a
+print the change waits until the print ends.
+
 The print dialog shows the spool on each toolhead and warns when it has fewer
 grams left than the file needs.
 

@@ -81,6 +81,21 @@ def same_material(a: str, b: str) -> bool:
     return x.startswith(y) or y.startswith(x)
 
 
+BASE_TYPES = ("PETG", "PLA", "ABS", "ASA", "TPU", "PVA", "HIPS", "PET", "PA", "PC")
+PUSH_GRACE = 90.0  # seconds a pushed toolhead may change its report without shelving the spool
+BUSY = ("printing", "starting")
+
+
+def base_type(material: str) -> str:
+    """The plain material a printer understands: "PLA Matte" -> "PLA"."""
+    m = _material(material)
+    for b in BASE_TYPES:
+        if m.startswith(b):
+            return b
+    word = (material or "").strip().split()
+    return "".join(ch for ch in (word[0] if word else "").upper() if ch.isalnum() or ch in "+-")[:16]
+
+
 def _rgb(c: str) -> tuple[int, int, int] | None:
     c = (c or "").strip().lstrip("#")
     if len(c) < 6:
@@ -144,6 +159,8 @@ class Spools:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
         self._db.commit()
+        self._pushed: dict[tuple[str, int], float] = {}  # (printer, toolhead) -> grace deadline
+        self._pending: dict[tuple[str, int], int] = {}  # waiting for a print to end: -> spool id
 
     # ------------------------------------------------------------ settings
     def settings(self) -> dict:
@@ -302,7 +319,68 @@ class Spools:
             self._db.execute("UPDATE spools SET printer = ?, toolhead = ?, seen = ?, archived = 0, updated = ? WHERE id = ?",
                              (a.printer, a.toolhead, seen, time.time(), sid))
             self._db.commit()
-        return self.get(sid)
+        out = self.get(sid)
+        out["printer_note"] = self.push(a.printer, a.toolhead, out)
+        return out
+
+    # ------------------------------------------------------------ tell the printer
+    def push(self, printer_id: str, toolhead: int, spool: dict) -> str:
+        """Set the toolhead's filament type and colour on the printer to this
+        spool's, so the printer (and its Resume checks) know what's loaded.
+        Leaves alone a head whose RFID tag was read, and one that already
+        reports the same thing. Waits for a running print to end. Returns a
+        short note for the person ("" when nothing needed doing)."""
+        p = self.hub.get(printer_id) if self.hub else None
+        if not p or not spool.get("material"):
+            return ""
+        key = (printer_id, toolhead)
+        self._pending.pop(key, None)
+        if not p.status.online:
+            return ""
+        head = {t.index: t for t in p.status.toolheads}.get(toolhead)
+        kind = base_type(spool["material"])
+        try:
+            color = _norm_color(spool.get("color") or "")
+        except ValueError:
+            color = ""
+        if head is not None:
+            if head.tagged and head.type:
+                return f"Kept the printer's RFID reading ({head.type}) for {head.label or f'T{toolhead + 1}'}."
+            same = head.type and same_material(head.type, kind) and \
+                (not color or (color_distance(color, head.color) or 999) <= 30)
+            if same:
+                return ""
+        if p.status.state in BUSY:
+            self._pending[key] = spool["id"]
+            return "The printer is busy; it'll be told about this spool when the print ends."
+        name = head.label if head and head.label else f"T{toolhead + 1}"
+        self._pushed[key] = time.monotonic() + PUSH_GRACE
+        try:
+            p.set_filament(toolhead, kind, spool.get("vendor") or "", color)
+        except Exception as exc:  # noqa: BLE001 - the spool is placed either way
+            self._pushed.pop(key, None)
+            log.info("couldn't set %s %s to spool %s: %s", printer_id, name, spool["id"], exc)
+            msg = str(exc)
+            if "rfid" in msg.lower() or "official" in msg.lower():
+                return f"The printer kept its RFID reading for {name}."
+            return f"Couldn't set {name} on the printer: {msg}"
+        log.info("%s %s set to %s %s from spool %s", printer_id, name, kind, color, spool["id"])
+        return f"Set {name} on the printer to {kind}{' ' + color if color else ''}."
+
+    def _retry_pending(self, pid: str) -> None:
+        p = self.hub.get(pid) if self.hub else None
+        if not p or p.status.state in BUSY or not p.status.online:
+            return
+        for (ppid, idx), sid in list(self._pending.items()):
+            if ppid != pid:
+                continue
+            self._pending.pop((ppid, idx), None)
+            try:
+                s = self.get(sid)
+            except Exception:  # noqa: BLE001 - deleted meanwhile
+                continue
+            if s.get("printer") == pid and s.get("toolhead") == idx:
+                self.push(pid, idx, s)
 
     def sync(self) -> None:
         """Follow spool swaps on every online printer."""
@@ -329,6 +407,10 @@ class Spools:
                 if r["seen"] is None:
                     self._db.execute("UPDATE spools SET seen = ? WHERE id = ?", (sig, r["id"]))
                     changed = True
+                elif r["seen"] != sig and self._pushed.get((pid, idx), 0) > time.monotonic():
+                    # We just told the printer about this spool; its new report is ours.
+                    self._db.execute("UPDATE spools SET seen = ? WHERE id = ?", (sig, r["id"]))
+                    changed = True
                 elif r["seen"] != sig:
                     log.info("%s T%d changed (%s -> %s); spool %s back on the shelf", pid, idx + 1, r["seen"], sig, r["id"])
                     self._db.execute("UPDATE spools SET printer = NULL, toolhead = NULL, seen = NULL, updated = ? WHERE id = ?",
@@ -351,6 +433,8 @@ class Spools:
                 changed = True
             if changed:
                 self._db.commit()
+        if self._pending:
+            self._retry_pending(pid)
 
     @staticmethod
     def _best_match(t, free: list[dict]) -> dict | None:

@@ -40,6 +40,7 @@ class Toolhead:
     custom_color: bool = False  # colour set by hand in Print Pantry, not by the printer
     label: str = ""  # shown name when not "T<index+1>", e.g. "A1" or "Ext" for Bambu AMS trays
     spool: str = ""  # the Print Pantry spool on this toolhead, if any
+    tagged: bool = False  # the printer read the spool's RFID tag (don't overwrite it)
 
 
 @dataclass
