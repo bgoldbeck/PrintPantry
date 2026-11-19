@@ -487,6 +487,8 @@ def list_objects(body: dict) -> dict:
         items = O.items_for(paths)
     except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
         raise BadRequest(str(exc)) from exc
+    # The dialog asks for the preview next: get it ready meanwhile.
+    threading.Thread(target=O.mesh_blob, args=(items,), daemon=True).start()
     stls = [p for p in paths if p.suffix.lower() == ".stl"]
     return {"items": [i.to_json() for i in items],
             "overlapping": O.overlapping(stls) if len(stls) > 1 else False}
