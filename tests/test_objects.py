@@ -304,3 +304,46 @@ def test_submit_copies(lib, monkeypatch):
         service.submit({**base, "path": "M/p.3mf", "mode": "project", "copies": 2})
     u1 = service.PRINTERS["u1"]
     assert service.output_name(Path("Clip.stl"), u1, None, 4) == f"Clip x4_{u1.tag}.gcode"
+
+
+def _sphere(n=200, r=20.0):
+    import math
+    from array import array
+    pts = [[(r * math.sin(math.pi * i / n) * math.cos(2 * math.pi * j / n),
+             r * math.sin(math.pi * i / n) * math.sin(2 * math.pi * j / n),
+             r * math.cos(math.pi * i / n)) for j in range(n)] for i in range(n + 1)]
+    t = array("f")
+    for i in range(n):
+        for j in range(n):
+            a, b, c, d = pts[i][j], pts[i + 1][j], pts[i + 1][(j + 1) % n], pts[i][(j + 1) % n]
+            t.extend(a + b + c + a + c + d)
+    return t
+
+
+def test_simplify_keeps_the_shape_within_budget():
+    tris = _sphere()
+    out = O.simplify(tris, 10_000)
+    assert 2_000 < len(out) // 9 <= 10_000
+    lo, hi = O.bbox(out)
+    assert all(abs(h - 20) < 1.5 for h in hi) and all(abs(v + 20) < 1.5 for v in lo)
+    # A closed surface: every edge is shared by two triangles (no see-through slivers).
+    edges = {}
+    pts = [tuple(out[i:i + 3]) for i in range(0, len(out), 3)]
+    for k in range(0, len(pts), 3):
+        for a, b in ((pts[k], pts[k + 1]), (pts[k + 1], pts[k + 2]), (pts[k + 2], pts[k])):
+            e = (min(a, b), max(a, b))
+            edges[e] = edges.get(e, 0) + 1
+    assert sum(1 for c in edges.values() if c != 2) < len(edges) * 0.02
+
+
+def test_simplify_leaves_small_meshes_alone():
+    tris = _sphere(20)
+    assert O.simplify(tris, 10_000) is tris
+
+
+def test_mesh_reader_handles_other_attribute_orders():
+    raw = (b'<vertices><vertex z="0" y="0" x="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>'
+           b'<triangles><triangle v1="0" v2="1" v3="2" paint_color="4"/></triangles>')
+    assert list(O._mesh_tris(raw)) == [0, 0, 0, 1, 0, 0, 0, 1, 0]
+    fast = raw.replace(b'z="0" y="0" x="0"', b'x="0" y="0" z="0"').replace(b' paint_color="4"', b"")
+    assert list(O._mesh_tris(fast, (1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0))) == [10, 0, 0, 11, 0, 0, 10, 1, 0]

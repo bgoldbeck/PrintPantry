@@ -23,6 +23,7 @@ import threading
 import zipfile
 from array import array
 from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -33,7 +34,7 @@ P_PATH = "{http://schemas.microsoft.com/3dmanufacturing/production/2015/06}path"
 
 MAX_SPLIT_TRIANGLES = 600_000  # bigger STLs aren't split into bodies (too slow in pure Python)
 MAX_BODIES = 200  # an STL with more pieces than this is treated as one (e.g. a texture)
-PREVIEW_TRIANGLES = 400_000  # the preview thins out bigger models
+PREVIEW_TRIANGLES = 250_000  # bigger models are simplified for the preview (see simplify)
 
 
 class ObjectsError(Exception):
@@ -385,11 +386,46 @@ def _slot(value, default: int) -> int:
 
 # ---------------------------------------------------------------- 3MF
 
-def _read_mesh(obj: ET.Element) -> array:
-    mesh = obj.find(NS + "mesh")
+_MESH_OPEN_RE = re.compile(rb"<((?:[\w.-]+:)?mesh)(?=[\s/>])[^>]*>")
+_VERTEX_RE = re.compile(rb'<(?:[\w.-]+:)?vertex\s+x="([^"]*)"\s+y="([^"]*)"\s+z="([^"]*)"')
+_TRIANGLE_RE = re.compile(rb'<(?:[\w.-]+:)?triangle\s+v1="(\d+)"\s+v2="(\d+)"\s+v3="(\d+)"')
+
+
+def _mesh_tris(raw: bytes, m: tuple = IDENTITY) -> array:
+    """Triangles (9 floats each, transformed by ``m``) of the inside of a 3MF <mesh>.
+
+    Regular expressions over the bytes: an ElementTree of a million-triangle
+    mesh (Bambu Studio writes STEP imports that fine) takes many seconds and
+    gigabytes. Attributes in another order fall back to ElementTree."""
+    nv, nt = raw.count(b"<vertex"), raw.count(b"<triangle ")
+    vs, ve = raw.find(b"<vertices"), raw.find(b"</vertices")
+    ts, te = raw.find(b"<triangles"), raw.find(b"</triangles")
+    # Fast path: plain x/y/z and v1/v2/v3 attributes, so every quoted value is a number we want.
+    vals = raw[raw.find(b">", vs) + 1:ve].split(b'"')[1::2] if 0 <= vs < ve else []
+    tvals = raw[raw.find(b">", ts) + 1:te].split(b'"')[1::2] if 0 <= ts < te else []
+    if len(vals) == 3 * nv and len(tvals) == 3 * nt:
+        verts = list(zip(*[iter(vals)] * 3))
+        faces = tvals
+    else:
+        verts = _VERTEX_RE.findall(raw)
+        faces = list(chain.from_iterable(_TRIANGLE_RE.findall(raw)))
+    if len(verts) != nv or len(faces) != 3 * nt:
+        mesh = ET.fromstring(b'<mesh xmlns="' + NS[1:-1].encode() + b'">' + raw + b"</mesh>")
+        return transformed(_read_mesh_el(mesh), m)
+    pts = [(float(x), float(y), float(z)) for x, y, z in verts]
+    if m != IDENTITY:
+        m00, m01, m02, m10, m11, m12, m20, m21, m22, tx, ty, tz = m
+        pts = [(x * m00 + y * m10 + z * m20 + tx, x * m01 + y * m11 + z * m21 + ty, x * m02 + y * m12 + z * m22 + tz)
+               for x, y, z in pts]
+    idx = list(map(int, faces))
+    if idx and max(idx) >= len(pts):  # broken file: skip triangles that point nowhere
+        n = len(pts)
+        idx = [i for k in range(0, len(idx) - 2, 3) if max(idx[k:k + 3]) < n for i in idx[k:k + 3]]
+    return array("f", chain.from_iterable(map(pts.__getitem__, idx)))
+
+
+def _read_mesh_el(mesh: ET.Element) -> array:
     out = array("f")
-    if mesh is None:
-        return out
     verts = [(float(v.get("x", 0)), float(v.get("y", 0)), float(v.get("z", 0)))
              for v in mesh.iter(NS + "vertex")]
     for t in mesh.iter(NS + "triangle"):
@@ -411,6 +447,7 @@ class _Model:
         self.with_mesh = with_mesh
         self.files: dict[str, dict[str, ET.Element]] = {}
         self.painted_files: set[str] = set()
+        self.raw_meshes: list[bytes] = []  # <mesh> insides, cut out before parsing the XML
 
     def objects(self, name: str) -> dict[str, ET.Element]:
         name = name.lstrip("/")
@@ -422,10 +459,30 @@ class _Model:
                 return self.files[name]
             if b"paint_color" in data or b"slic3rpe:mmu_segmentation" in data:
                 self.painted_files.add(name)
-            root = ET.fromstring(data)
+            root = ET.fromstring(self._cut_meshes(data))
+            del data
             res = root.find(NS + "resources")
             self.files[name] = {o.get("id"): o for o in (res.iter(NS + "object") if res is not None else [])}
         return self.files[name]
+
+    def _cut_meshes(self, data: bytes) -> bytes:
+        """The XML with each <mesh>'s inside moved to raw_meshes (parsed by _mesh_tris)."""
+        out, pos = [], 0
+        while (m := _MESH_OPEN_RE.search(data, pos)) is not None:
+            tag = m.group(1)
+            if m.group(0).endswith(b"/>"):
+                out.append(data[pos:m.end()])
+                pos = m.end()
+                continue
+            end = data.find(b"</" + tag, m.end())
+            close = data.find(b">", end) if end >= 0 else -1
+            if close < 0:
+                break  # let the XML parser complain
+            self.raw_meshes.append(data[m.end():end])
+            out.append(data[pos:m.start()] + b'<%s ppmesh="%d"/>' % (tag, len(self.raw_meshes) - 1))
+            pos = close + 1
+        out.append(data[pos:])
+        return b"".join(out)
 
     def parts(self, file: str, oid: str, m: tuple = IDENTITY, depth: int = 0):
         """(part id, file, transform) for each mesh under an object."""
@@ -446,7 +503,10 @@ class _Model:
 
     def mesh(self, file: str, oid: str, m: tuple) -> array:
         obj = self.objects(file).get(oid)
-        return transformed(_read_mesh(obj), m) if obj is not None else array("f")
+        mesh = obj.find(NS + "mesh") if obj is not None else None
+        if mesh is None or not mesh.get("ppmesh", "").isdigit():
+            return array("f")
+        return _mesh_tris(self.raw_meshes[int(mesh.get("ppmesh"))], m)
 
 
 def _settings(zf: zipfile.ZipFile) -> ET.Element | None:
@@ -605,22 +665,84 @@ def items_for(paths: list[Path]) -> list[Item]:
     return items
 
 
+def simplify(tris: array, budget: int) -> array:
+    """At most about ``budget`` triangles of the same shape (vertex clustering).
+
+    Vertices are snapped to a grid and merged per cell (to their average), and
+    triangles that collapse are dropped, so the surface stays closed and solid.
+    (Keeping every n-th triangle instead leaves a see-through mess of slivers.)
+    The grid gets coarser until the result fits."""
+    n = len(tris) // 9
+    if n <= budget or n == 0:
+        return tris
+    it = iter(tris)
+    ids: dict = {}
+    idx = [ids.setdefault(p, len(ids)) for p in zip(it, it, it)]
+    uniq = list(ids)
+    del ids
+    xs = [p[0] for p in uniq]
+    ys = [p[1] for p in uniq]
+    zs = [p[2] for p in uniq]
+    lo = (min(xs), min(ys), min(zs))
+    span = max(max(xs) - lo[0], max(ys) - lo[1], max(zs) - lo[2], 1e-6)
+    del xs, ys, zs
+    # A surface over a grid of res cells a side gives about 3-6 res² triangles.
+    res = max(8, int((budget / 3) ** 0.5))
+    x0, y0, z0 = lo
+    for _ in range(8):
+        inv = res / span
+        r1 = res + 2
+        cell: dict = {}
+        cmap = [cell.setdefault((int((x - x0) * inv) * r1 + int((y - y0) * inv)) * r1 + int((z - z0) * inv), len(cell))
+                for x, y, z in uniq]
+        faces = {}
+        ii = iter(idx)
+        for a, b, c in zip(ii, ii, ii):
+            a, b, c = cmap[a], cmap[b], cmap[c]
+            if a != b and b != c and a != c:
+                faces[(a, b, c) if a < b and a < c else (b, c, a) if b < c else (c, a, b)] = None
+        if len(faces) <= budget or res <= 8:
+            break
+        res = max(8, int(res * min(0.9, (budget / len(faces)) ** 0.5 * 0.97)))
+    m = len(cell)
+    cnt = [0] * m
+    sx = [0.0] * m
+    sy = [0.0] * m
+    sz = [0.0] * m
+    for c, (x, y, z) in zip(cmap, uniq):
+        cnt[c] += 1
+        sx[c] += x
+        sy[c] += y
+        sz[c] += z
+    rep = [(sx[c] / cnt[c], sy[c] / cnt[c], sz[c] / cnt[c]) for c in range(m)]
+    return array("f", [v for f in faces for k in f for v in rep[k]])
+
+
+_BLOB_CACHE: dict[int, tuple] = {}
+_BLOB_LOCK = threading.Lock()  # one at a time: the dialog's request waits for the warm-up
+
+
 def mesh_blob(items: list[Item]) -> bytes:
     """Little-endian: uint32 item count, then per item uint32 triangle count and
-    that many triangles of 9 float32 (mm, Z up). Thinned to PREVIEW_TRIANGLES."""
-    total = sum(len(i.tris) // 9 for i in items)
-    step = max(1, -(-total // PREVIEW_TRIANGLES))
-    out = bytearray(struct.pack("<I", len(items)))
-    for it in items:
-        tris = it.tris
-        if step > 1:
-            thin = array("f")
-            for t in range(0, len(tris) // 9, step):
-                thin.extend(tris[t * 9:t * 9 + 9])
-            tris = thin
-        if struct.pack("=f", 1.0) != struct.pack("<f", 1.0):
-            tris = array("f", tris)
-            tris.byteswap()
-        out += struct.pack("<I", len(tris) // 9)
-        out += tris.tobytes()
-    return bytes(out)
+    that many triangles of 9 float32 (mm, Z up). Models over PREVIEW_TRIANGLES
+    are simplified, each piece by its share. Cached with the items."""
+    with _BLOB_LOCK:
+        hit = _BLOB_CACHE.get(id(items))
+        if hit is not None and hit[0] is items:
+            return hit[1]
+        total = sum(len(i.tris) // 9 for i in items)
+        out = bytearray(struct.pack("<I", len(items)))
+        for it in items:
+            tris = it.tris
+            if total > PREVIEW_TRIANGLES:
+                tris = simplify(tris, max(2000, PREVIEW_TRIANGLES * (len(tris) // 9) // total))
+            if struct.pack("=f", 1.0) != struct.pack("<f", 1.0):
+                tris = array("f", tris)
+                tris.byteswap()
+            out += struct.pack("<I", len(tris) // 9)
+            out += tris.tobytes()
+        blob = bytes(out)
+        if len(_BLOB_CACHE) > 6:
+            _BLOB_CACHE.clear()
+        _BLOB_CACHE[id(items)] = (items, blob)
+        return blob
