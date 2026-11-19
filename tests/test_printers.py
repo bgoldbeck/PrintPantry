@@ -475,3 +475,19 @@ def test_cancel_failure_clears_flag(pclient, fake, u1):
     r = pclient.post("/api/printers/u1/cancel")
     assert r.status_code == 502
     assert u1.cancel_sent is None
+
+
+def test_u1_cancel_timeout_counts_as_sent(pclient, fake, u1):
+    fake.state = "printing"
+    u1.refresh()
+    real = fake.handler
+
+    def slow(request):  # CANCEL_PRINT still parking/cooling when the HTTP wait runs out
+        if request.url.path == "/printer/print/cancel":
+            raise httpx.ReadTimeout("timed out", request=request)
+        return real(request)
+
+    u1.http._transport = httpx.MockTransport(slow)
+    r = pclient.post("/api/printers/u1/cancel")
+    assert r.status_code == 200
+    assert r.json()["cancel"]["state"] == "stopping"

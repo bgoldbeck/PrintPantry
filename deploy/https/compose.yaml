@@ -13,11 +13,13 @@ services:
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:size=32m,mode=1777"]
     restart: unless-stopped
-    ports:
-      - "8484:8484"   # home network (http) and LAN https; picks by the first bytes
-      - "8486:8486"   # https from the internet (pfSense WAN 8484 -> here)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Host networking: nginx listens on the NAS's own ports 8484 (home network http and
+    # LAN https, picked by the first bytes) and 8486 (https from the internet, pfSense
+    # WAN 8484 -> here), and reaches the app at 127.0.0.1:8483. It used to go through
+    # host.docker.internal, which also resolved to an IPv6 gateway (fdd0::1) that
+    # resets every connection: GETs were retried quietly, but button presses (POSTs)
+    # came back as "Bad Gateway".
+    network_mode: host
     volumes:
       - __CERT_DIR__/public.crt:/etc/printpantry/tls.crt:ro
       - __CERT_DIR__/public.key:/etc/printpantry/tls.key:ro

@@ -569,6 +569,51 @@ function cardBody(p, local) {
     ${calibrationHtml(p)}`;
 }
 
+function askDialog(title, text, okLabel, noLabel = "Back") {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog";
+    dlg.innerHTML = `<h2>${esc(title)}</h2><p style="margin:0 0 16px">${esc(text)}</p>
+      <div class="dialog-actions"><button type="button" class="ghost" data-no>${esc(noLabel)}</button>
+      <button type="button" class="danger" data-ok>${esc(okLabel)}</button></div>`;
+    document.body.appendChild(dlg);
+    let answer = false;
+    dlg.querySelector("[data-no]").onclick = () => dlg.close();
+    dlg.querySelector("[data-ok]").onclick = () => { answer = true; dlg.close(); };
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(answer); });
+    dlg.showModal();
+    dlg.querySelector("[data-ok]").focus();
+  });
+}
+
+// Swap in new HTML without rebuilding the parts that didn't change. The page
+// repaints every 3 s; replacing a button between mouse-down and mouse-up eats
+// the click, which made Cancel print (and the other buttons) hit-and-miss.
+function patchHtml(el, html) {
+  if (el._html === html) return;
+  el._html = html;
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const next = [...tpl.content.childNodes].filter((n) => n.nodeType === 1 || n.textContent.trim());
+  const cur = [...el.childNodes].filter((n) => n.nodeType === 1 || n.textContent.trim());
+  if (next.length !== cur.length || next.some((n, i) => n.nodeName !== cur[i].nodeName)) {
+    el.replaceChildren(...tpl.content.childNodes);
+    return;
+  }
+  next.forEach((n, i) => {
+    const old = cur[i];
+    if (n.nodeType !== 1) { if (old.textContent !== n.textContent) old.textContent = n.textContent; return; }
+    if (old.outerHTML === n.outerHTML) return;
+    // Same kind of element: recurse so e.g. the button row survives a progress tick.
+    if (n.attributes.length === old.attributes.length && [...n.attributes].every((a) => old.getAttribute(a.name) === a.value)
+        && n.children.length) {
+      patchHtml(old, n.innerHTML);
+    } else {
+      old.replaceWith(n);
+    }
+  });
+}
+
 export async function printersPage(view) {
   document.title = "Printers · Print Pantry";
   const list = [...await loadPrinters()].sort((a, b) => b.configured - a.configured);
@@ -593,8 +638,8 @@ export async function printersPage(view) {
     const st = p.status;
     if (pending.get(p.id)?.phase === "error" && !["printing", "paused"].includes(st.state)) pending.delete(p.id);
     const s = card.querySelector("[data-state]");
-    s.innerHTML = stateBadge(p);
-    card.querySelector("[data-body]").innerHTML = cardBody(p, pending.get(p.id));
+    patchHtml(s, stateBadge(p));
+    patchHtml(card.querySelector("[data-body]"), cardBody(p, pending.get(p.id)));
   }
   list.forEach(paint);
   const flowBox = view.querySelector("[data-flow-panel]");
@@ -637,8 +682,10 @@ export async function printersPage(view) {
     const card = b.closest(".printer-card");
     if (!card) return;
     const act = b.dataset.act;
-    if (act === "cancel" && !confirm("Cancel this print? It can't be resumed.")) return;
-    if (act === "estop" && !confirm("Emergency stop? Motors and heaters stop at once and the printer's firmware restarts.")) return;
+    // In-page dialogs: the browser's confirm() can be silenced ("don't let this
+    // page create more dialogs") and then returns false with nothing shown.
+    if (act === "cancel" && !await askDialog("Cancel this print?", "It stops now and can't be resumed.", "Cancel print", "Keep printing")) return;
+    if (act === "estop" && !await askDialog("Emergency stop?", "Motors and heaters stop at once and the printer's firmware restarts.", "Emergency stop")) return;
     if (act === "cancel") {
       const id = card.dataset.id;
       pending.set(id, { phase: "sending" });
