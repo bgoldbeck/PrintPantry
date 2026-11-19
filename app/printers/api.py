@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
@@ -233,6 +234,7 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
             if pre["warnings"] and not req.accept_warnings:
                 raise HTTPException(409, "Confirm the toolhead warnings first: " + "; ".join(pre["warnings"]))
             log.info("starting %s on %s", f.relpath, printer_id)
+            p.cancel_sent = None  # a new print: forget any earlier "Cancelling..."
             try:
                 remote = p.start_print(path, f.name, tool_map=pre["tool_map"])
             except PrinterError as exc:
@@ -318,9 +320,14 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
             return p.to_json()
         if action not in ("pause", "resume", "cancel", "light_on", "light_off", "estop"):
             raise HTTPException(404, "Unknown action")
+        if action == "cancel":
+            before = p.cancel_sent
+            p.cancel_sent, p.cancel_stopped = time.time(), False
         try:
             p.action(action)
         except PrinterError as exc:
+            if action == "cancel":
+                p.cancel_sent = before
             raise HTTPException(502, str(exc)) from exc
         return p.to_json()
 

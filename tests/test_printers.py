@@ -1,6 +1,7 @@
 """Printer control against a fake Moonraker (no real printer needed)."""
 
 import json
+import time
 
 import httpx
 import pytest
@@ -434,3 +435,43 @@ def test_set_filament_sends_u1_command(pclient, fake):
     assert "VENDOR=Snapmaker FILAMENT_TYPE=PLA FILAMENT_SUBTYPE=Basic" in fake.gcode[-1]
     assert pclient.put("/api/printers/u1/toolheads/1/filament", json={"type": "PLA; G28"}).status_code == 400
     assert pclient.put("/api/printers/u1/toolheads/9/filament", json={"type": "PLA"}).status_code == 400
+
+
+def test_cancel_feedback(pclient, fake, u1):
+    fake.state = "printing"
+    u1.refresh()
+    body = pclient.post("/api/printers/u1/cancel").json()
+    assert body["status"]["state"] == "cancelled"
+    assert body["cancel"]["state"] == "done"
+
+
+def test_cancel_info_states(u1, fake, monkeypatch):
+    from app.printers import base
+
+    fake.state = "printing"
+    u1.refresh()
+    assert u1.to_json()["cancel"] is None
+    u1.cancel_sent = time.time()
+    assert u1.to_json()["cancel"]["state"] == "stopping"
+    u1.cancel_sent = time.time() - base.CANCEL_TIMEOUT - 1
+    assert u1.to_json()["cancel"]["state"] == "stuck"
+    fake.state = "cancelled"
+    u1.refresh()
+    assert u1.to_json()["cancel"]["state"] == "done"
+    fake.state = "printing"  # a new print later on is not "cancelling"
+    u1.refresh()
+    assert u1.to_json()["cancel"] is None
+
+
+def test_cancel_failure_clears_flag(pclient, fake, u1):
+    fake.state = "printing"
+    u1.refresh()
+
+    def boom(*a, **k):
+        from app.printers import PrinterError
+        raise PrinterError("Printer didn't answer")
+
+    u1.action = boom
+    r = pclient.post("/api/printers/u1/cancel")
+    assert r.status_code == 502
+    assert u1.cancel_sent is None

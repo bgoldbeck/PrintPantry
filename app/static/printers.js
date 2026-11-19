@@ -97,6 +97,8 @@ export function printerState(p) {
     return { key: "calibrating", kind: "busy", label: "Calibrating", free: false, detail: p.calibrating.name };
   }
   const temps = st.temps || [];
+  if (p.cancel?.state === "stopping") return { key: "cancelling", kind: "busy", label: "Cancelling…", free: false, detail: st.file };
+  if (p.cancel?.state === "stuck") return { key: "cancelling", kind: "warn", label: "Cancel not confirmed", free: false, detail: "Still printing after Cancel. Check the printer screen." };
   switch (st.state) {
     case "printing": return { key: "printing", kind: "busy", label: heating({ temps }) && !pct ? "Heating" : withPct("Printing"), free: false, detail: st.file };
     case "paused": return { key: "paused", kind: "warn", label: withPct("Paused"), free: false, detail: st.problem?.title || st.file };
@@ -486,7 +488,33 @@ function filamentDialog(p, heads, onSaved) {
   dlg.showModal();
 }
 
-function cardBody(p) {
+// What "Cancel print" is doing: the click (sending), the printer's answer
+// (server-side p.cancel: stopping / stuck / done) or the error if it failed.
+function cancelHtml(p, local) {
+  const c = p.cancel;
+  const secs = (n) => (n >= 60 ? `${Math.floor(n / 60)} min ${n % 60} s` : `${n} s`);
+  if (local?.phase === "sending") {
+    return `<div class="notice busy small-notice" role="status"><span class="spinner"></span>Sending cancel to ${esc(p.name)}…</div>`;
+  }
+  if (local?.phase === "error") {
+    return `<div class="notice error small-notice" role="alert"><b>Cancel didn't go through.</b> ${esc(local.message)}
+      The print is still running. Try again, or stop it on the printer's screen.</div>`;
+  }
+  if (c?.state === "stopping") {
+    return `<div class="notice busy small-notice" role="status"><span class="spinner"></span><b>Cancel sent.</b>
+      Waiting for ${esc(p.name)} to stop (${secs(c.age)})…</div>`;
+  }
+  if (c?.state === "stuck") {
+    return `<div class="notice warn small-notice" role="alert"><b>${esc(p.name)} still says it's printing</b>
+      ${secs(c.age)} after Cancel. Check the printer's screen, or press Cancel print again.</div>`;
+  }
+  if (c?.state === "done") {
+    return `<div class="notice ok small-notice" role="status">✓ Print cancelled. ${esc(p.name)} has stopped.</div>`;
+  }
+  return "";
+}
+
+function cardBody(p, local) {
   const st = p.status;
   if (!p.configured) return `<p class="empty">${esc(p.setup_hint)}</p>`;
   const job = ["printing", "paused"].includes(st.state) || (st.file && ["complete", "cancelled", "failed", "error"].includes(st.state));
@@ -516,13 +544,19 @@ function cardBody(p) {
           aria-pressed="${isAuto}" title="${autoTitle}">Auto</button>
       </div>`);
   }
-  if (st.state === "printing") buttons.push(`<button class="small ghost" data-act="pause">Pause</button>`);
-  if (st.state === "paused") buttons.push(`<button class="small" data-act="resume">Resume</button>`);
-  if (["printing", "paused"].includes(st.state)) buttons.push(`<button class="small danger" data-act="cancel">Cancel print</button>`);
+  const cancelling = local?.phase === "sending" || p.cancel?.state === "stopping";
+  if (st.state === "printing" && !cancelling) buttons.push(`<button class="small ghost" data-act="pause">Pause</button>`);
+  if (st.state === "paused" && !cancelling) buttons.push(`<button class="small" data-act="resume">Resume</button>`);
+  if (cancelling) buttons.push(`<button class="small danger" disabled><span class="spinner"></span>Cancelling…</button>`);
+  else if (["printing", "paused"].includes(st.state)) {
+    const again = local?.phase === "error" || p.cancel?.state === "stuck";
+    buttons.push(`<button class="small danger" data-act="cancel">${again ? "Cancel print again" : "Cancel print"}</button>`);
+  }
   if (p.has_settings && st.online) buttons.push(`<button class="small ghost" data-settings title="AI detection, AMS, fans and more">Settings</button>`);
   const problems = [st.problem, ...(st.blockers || [])].filter(Boolean);
   const plainMsg = st.message && !problems.length && ["error", "failed", "offline", "starting", "paused"].includes(st.state);
   return `
+    ${cancelHtml(p, local)}
     ${plainMsg ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
     ${problems.map((x) => problemHtml(x, st)).join("")}
     ${job ? `<div class="job">
@@ -551,14 +585,16 @@ export async function printersPage(view) {
 
   const stops = [];
   const latest = new Map(list.map((p) => [p.id, p]));
+  const pending = new Map();  // printer id -> {phase: "sending"|"error", message} for Cancel print
   function paint(p) {
     latest.set(p.id, p);
     const card = view.querySelector(`.printer-card[data-id="${p.id}"]`);
     if (!card) return;
     const st = p.status;
+    if (pending.get(p.id)?.phase === "error" && !["printing", "paused"].includes(st.state)) pending.delete(p.id);
     const s = card.querySelector("[data-state]");
     s.innerHTML = stateBadge(p);
-    card.querySelector("[data-body]").innerHTML = cardBody(p);
+    card.querySelector("[data-body]").innerHTML = cardBody(p, pending.get(p.id));
   }
   list.forEach(paint);
   const flowBox = view.querySelector("[data-flow-panel]");
@@ -603,6 +639,20 @@ export async function printersPage(view) {
     const act = b.dataset.act;
     if (act === "cancel" && !confirm("Cancel this print? It can't be resumed.")) return;
     if (act === "estop" && !confirm("Emergency stop? Motors and heaters stop at once and the printer's firmware restarts.")) return;
+    if (act === "cancel") {
+      const id = card.dataset.id;
+      pending.set(id, { phase: "sending" });
+      paint(latest.get(id));
+      try {
+        const p = await api(`/api/printers/${id}/cancel`, { method: "POST" });
+        pending.delete(id);
+        paint(p);
+      } catch (err) {
+        pending.set(id, { phase: "error", message: err.message });
+        paint(latest.get(id));
+      }
+      return;
+    }
     b.disabled = true;
     try {
       paint(await api(`/api/printers/${card.dataset.id}/${act}`, { method: "POST" }));
