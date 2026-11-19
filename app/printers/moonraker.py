@@ -51,6 +51,7 @@ STATE_MAP = {
     "error": "error",
 }
 ACTIONS = {"pause", "resume", "cancel"}
+ACTION_TIMEOUT = 15.0  # seconds to wait for pause/resume/cancel to be answered
 FILAMENT_WORD = re.compile(r"[A-Z0-9][A-Z0-9+-]{0,15}")
 HEX6 = re.compile(r"[0-9A-F]{6}")
 # Vendors the U1's filament table knows; anything else is set as Generic.
@@ -551,7 +552,19 @@ class MoonrakerPrinter(Printer):
         if name not in ACTIONS:
             raise PrinterError(f"Unknown action '{name}'")
         try:
-            self._post(f"/printer/print/{name}")
+            # Moonraker answers only when Klipper has finished the macro, and the
+            # U1's CANCEL_PRINT parks and cools for a while. Give it time, and if
+            # it is still busy treat the command as taken: the state poll shows
+            # when the printer has really stopped.
+            self._post(f"/printer/print/{name}", timeout=ACTION_TIMEOUT)
+        except httpx.TimeoutException:
+            log.info("%s on %s still running after %.0f s; following the printer state",
+                     name, self.profile.name, ACTION_TIMEOUT)
+            self.refresh()
+            return
+        except httpx.HTTPError as exc:
+            self.refresh()
+            raise PrinterError(f"Couldn't reach the printer: {exc}") from exc
         except PrinterError as exc:
             self.refresh()
             p = errors.u1_text(str(exc))
