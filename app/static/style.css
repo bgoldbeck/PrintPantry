@@ -1212,3 +1212,10 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
   .sw { width: 28px; height: 28px; }
   .slice-dialog .fil-row { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* Cancel print feedback on the Printers page */
+.notice.busy { border: 1px solid var(--accent, #2f6fdf); color: var(--ink); }
+.notice.ok { border: 1px solid #2e9e44; color: #1b6329; background: color-mix(in srgb, #2e9e44 12%, var(--surface)); }
+@media (prefers-color-scheme: dark) { .notice.ok { color: #7fd48f; } }
+.printer-card .notice.warn { color: var(--ink); background: color-mix(in srgb, #f2a900 10%, var(--surface)); }
+button .spinner { width: 10px; height: 10px; margin-right: 6px; }

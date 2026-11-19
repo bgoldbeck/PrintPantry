@@ -14,6 +14,9 @@ from pathlib import Path
 # "failed" is a Bambu print that stopped with an error; the printer is free again.
 IDLE_STATES = {"idle", "complete", "cancelled", "failed"}
 BUSY_STATES = {"printing", "paused", "starting"}
+CANCEL_TIMEOUT = 120.0  # seconds after "Cancel print" before we say the printer didn't stop
+CANCEL_DONE_SHOWN = 30.0  # how long "Print cancelled" stays up
+BUSY_STATES = {"printing", "paused", "starting"}
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 log = logging.getLogger("printpantry.printers")
 
@@ -178,6 +181,11 @@ class Printer:
         self.settings_file: Path | None = None
         self.saved_settings: dict = {}
         self._settings_lock = threading.Lock()
+        # When "Cancel print" was last sent (time.time()), so every page can show
+        # "Cancelling..." until the printer actually reports it has stopped.
+        self.cancel_sent: float | None = None
+        self.cancel_stopped = False
+        self.cancel_done_at = 0.0
 
     # -- lifecycle
     def start(self) -> None:
@@ -216,6 +224,7 @@ class Printer:
                     pass
         st.updated_at = time.time()
         self.status = st
+        self.cancel_info()  # notice the stop even while nobody has the page open
         return st
 
     # -- hand-set toolhead colours
@@ -420,9 +429,35 @@ class Printer:
     def run_script(self, script: str) -> None:
         raise PrinterError("Running commands isn't supported on this printer yet")
 
+    def cancel_info(self) -> dict | None:
+        """Progress of the last "Cancel print": stopping, stuck (still printing
+        long after) or done (stopped; shown for a little while), else None."""
+        if self.cancel_sent is None:
+            return None
+        age = time.time() - self.cancel_sent
+        st = self.status
+        if st.online and st.state in BUSY_STATES:
+            if self.cancel_stopped:  # stopped, and now a new print has started
+                self.cancel_sent = None
+                return None
+            return {"state": "stopping" if age < CANCEL_TIMEOUT else "stuck", "age": round(age)}
+        if not st.online:
+            if age > CANCEL_TIMEOUT:
+                self.cancel_sent = None
+                return None
+            return {"state": "stopping", "age": round(age)}
+        if not self.cancel_stopped:
+            self.cancel_stopped = True
+            self.cancel_done_at = time.time()
+        if time.time() - self.cancel_done_at > CANCEL_DONE_SHOWN:
+            self.cancel_sent = None
+            return None
+        return {"state": "done", "age": round(age)}
+
     def to_json(self) -> dict:
         p = self.profile
         return {
+            "cancel": self.cancel_info(),
             "id": p.id,
             "name": p.name,
             "color": p.color,
