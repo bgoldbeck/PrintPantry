@@ -502,6 +502,8 @@ p.sub .tag-cloud { display: inline-flex; margin: 0 0 0 6px; vertical-align: midd
 
 /* ---------------------------------------------------------------- import */
 .import-dialog { width: min(560px, calc(100vw - 32px)); }
+.import-dialog .import-logins { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.import-dialog .dialog-actions { flex-wrap: wrap; }
 .import-dialog label { display: block; font-weight: 600; margin: 14px 0 4px; }
 .import-dialog input, .import-dialog select {
   width: 100%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface);

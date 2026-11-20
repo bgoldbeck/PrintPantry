@@ -773,10 +773,10 @@ function openImport(prefill = "", resume = null) {
         <label for="imp-url">Printables, MakerWorld or Thingiverse link</label>
         <input id="imp-url" type="url" required placeholder="https://www.printables.com/model/..." value="${esc(prefill)}">
         ${err ? `<div class="notice error">${esc(err)}</div>` : ""}
+        <div class="import-logins">
+          <button type="button" class="ghost small" data-mw>Sign in to MakerWorld</button>
+          <button type="button" class="ghost small" data-tv>Thingiverse token</button></div>
         <div class="dialog-actions" style="margin-top:16px">
-          <button type="button" class="ghost" data-mw>Sign in to MakerWorld</button>
-          <button type="button" class="ghost" data-tv>Thingiverse token</button>
-          <span style="flex:1"></span>
           <button type="button" class="ghost" data-close>Cancel</button><button type="submit">Look up</button></div>
       </form>`;
     const input = dlg.querySelector("#imp-url");
