@@ -870,12 +870,13 @@ function openImport(prefill = "", resume = null) {
     dlg.innerHTML = `<h2>Thingiverse App Token</h2>
       <p class="muted">Thingiverse only answers apps that have a token. Getting one is free and takes a minute:</p>
       <ol class="muted">
-        <li>Sign in at <a href="https://www.thingiverse.com/developers" target="_blank" rel="noopener">thingiverse.com/developers</a>
-          and press <strong>Create an App</strong> (choose "Web App").</li>
+        <li>Open <a href="https://www.thingiverse.com/apps/create" target="_blank" rel="noopener">thingiverse.com/apps/create</a>
+          (sign in to Thingiverse if it asks) and choose <strong>Web App</strong>.</li>
         <li>Give it any name (e.g. Print Pantry), tick the terms, and save.</li>
         <li>Copy the <strong>App Token</strong> it shows and paste it here.</li>
       </ol>
       ${st.thingiverse_token ? `<div class="notice">A token is saved. Paste a new one to replace it.</div>` : ""}
+      <p><a class="button ghost small" href="https://www.thingiverse.com/apps/create" target="_blank" rel="noopener">Create a Thingiverse token ↗</a></p>
       <input id="tv-token" type="password" autocomplete="off" placeholder="Paste the App Token">
       <div class="dialog-actions" style="margin-top:16px">
         ${st.thingiverse_token ? `<button type="button" class="ghost" data-clear>Remove token</button>` : ""}
