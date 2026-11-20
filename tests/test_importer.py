@@ -61,7 +61,7 @@ def printables_handler(request: httpx.Request):
             return httpx.Response(200, json={"accessToken": "", "loginType": "verifyCode"})
         return httpx.Response(400, json={"error": "Incorrect password"})
     if host == "www.thingiverse.com":
-        return httpx.Response(200, text='<html><head><meta property="og:title" content="Gear Box by maker - Thingiverse">'
+        return httpx.Response(200, text='<html><head><meta property="og:title" content="Gear &amp;amp; Box by maker">'
                               '<meta property="og:image" content="https://cdn.thingiverse.com/p/gear.jpg">'
                               '<meta property="og:description" content="A &amp; B gears"></head></html>')
     if host == "api.thingiverse.com":
@@ -217,7 +217,7 @@ def test_makerworld_sign_in(client):
 def test_thingiverse_without_and_with_token(client, library):  # noqa: F811
     url = "https://www.thingiverse.com/thing:4135236"
     p = client.post("/api/import/preview", json={"url": url}).json()
-    assert p["site"] == "Thingiverse" and p["title"] == "Gear Box" and p["needs_login"] and p["files"] == []
+    assert p["site"] == "Thingiverse" and p["title"] == "Gear & Box" and p["author"] == "maker" and p["needs_login"] and p["files"] == []
     assert p["summary"] == "A & B gears" and p["pictures"] == ["https://cdn.thingiverse.com/p/gear.jpg"]
 
     assert client.put("/api/import/settings", json={"thingiverse_token": "tvtok"}).json()["thingiverse_token"] is True
