@@ -433,11 +433,15 @@ class Thingiverse:
         except httpx.HTTPError:
             page = ""
         title = _meta(page, "og:title") or _meta(page, "twitter:title")
-        title = re.sub(r"\s+(?:by\s+\S+\s+)?[-|]\s*Thingiverse\s*$", "", title).strip()
+        title = html.unescape(re.sub(r"\s*[-|]\s*Thingiverse\s*$", "", title)).strip()  # some pages double-escape
+        author = ""
+        m = re.match(r"(.+?)\s+by\s+(\S+)$", title)  # og:title is "<name> by <user>"
+        if m:
+            title, author = m.group(1).strip(), m.group(2)
         plan = Plan(
-            site="Thingiverse", id=thing_id, url=url,
+            site="Thingiverse", id=thing_id, url=url, author=author,
             title=title or f"Thingiverse {thing_id}",
-            summary=_meta(page, "og:description") or _meta(page, "description"),
+            summary=html.unescape(_meta(page, "og:description") or _meta(page, "description")),
             pictures=[p for p in [_meta(page, "og:image")] if p.startswith("https://")],
             needs_login=True,
             note=("Thingiverse only gives files and full details to apps with an App Token. Press "
