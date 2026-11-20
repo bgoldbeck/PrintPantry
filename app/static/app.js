@@ -759,7 +759,7 @@ function editCategory(name) {
   dlg.showModal();
 }
 
-// ---------------------------------------------------------------- import from Printables / MakerWorld
+// ---------------------------------------------------------------- import from Printables / MakerWorld / Thingiverse
 function openImport(prefill = "", resume = null) {
   const dlg = document.createElement("dialog");
   dlg.className = "import-dialog";
@@ -770,11 +770,12 @@ function openImport(prefill = "", resume = null) {
   function step1(err = "") {
     dlg.innerHTML = `<h2>Import a model</h2>
       <form id="imp-form">
-        <label for="imp-url">Printables or MakerWorld link</label>
+        <label for="imp-url">Printables, MakerWorld or Thingiverse link</label>
         <input id="imp-url" type="url" required placeholder="https://www.printables.com/model/..." value="${esc(prefill)}">
         ${err ? `<div class="notice error">${esc(err)}</div>` : ""}
         <div class="dialog-actions" style="margin-top:16px">
           <button type="button" class="ghost" data-mw>Sign in to MakerWorld</button>
+          <button type="button" class="ghost" data-tv>Thingiverse token</button>
           <span style="flex:1"></span>
           <button type="button" class="ghost" data-close>Cancel</button><button type="submit">Look up</button></div>
       </form>`;
@@ -782,6 +783,7 @@ function openImport(prefill = "", resume = null) {
     input.focus();
     dlg.querySelector("[data-close]").onclick = () => dlg.close();
     dlg.querySelector("[data-mw]").onclick = () => mwLogin();
+    dlg.querySelector("[data-tv]").onclick = () => tvToken();
     dlg.querySelector("form").onsubmit = async (e) => {
       e.preventDefault();
       prefill = input.value.trim();
@@ -862,6 +864,38 @@ function openImport(prefill = "", resume = null) {
     };
   }
 
+  // Thingiverse's API needs a (free) App Token for everything, even the details.
+  async function tvToken(back = step1) {
+    const st = await api("/api/import/settings").catch(() => ({}));
+    dlg.innerHTML = `<h2>Thingiverse App Token</h2>
+      <p class="muted">Thingiverse only answers apps that have a token. Getting one is free and takes a minute:</p>
+      <ol class="muted">
+        <li>Sign in at <a href="https://www.thingiverse.com/developers" target="_blank" rel="noopener">thingiverse.com/developers</a>
+          and press <strong>Create an App</strong> (choose "Web App").</li>
+        <li>Give it any name (e.g. Print Pantry), tick the terms, and save.</li>
+        <li>Copy the <strong>App Token</strong> it shows and paste it here.</li>
+      </ol>
+      ${st.thingiverse_token ? `<div class="notice">A token is saved. Paste a new one to replace it.</div>` : ""}
+      <input id="tv-token" type="password" autocomplete="off" placeholder="Paste the App Token">
+      <div class="dialog-actions" style="margin-top:16px">
+        ${st.thingiverse_token ? `<button type="button" class="ghost" data-clear>Remove token</button>` : ""}
+        <span style="flex:1"></span>
+        <button type="button" class="ghost" data-back>Back</button><button type="button" data-save>Save</button></div>`;
+    dlg.querySelector("#tv-token").focus();
+    dlg.querySelector("[data-back]").onclick = () => back();
+    const clear = dlg.querySelector("[data-clear]");
+    if (clear) clear.onclick = async () => {
+      await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thingiverse_token: "" }) });
+      flash("Thingiverse token removed."); back();
+    };
+    dlg.querySelector("[data-save]").onclick = async () => {
+      const token = dlg.querySelector("#tv-token").value.trim();
+      if (!token) { dlg.querySelector("#tv-token").focus(); return; }
+      await api("/api/import/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thingiverse_token: token }) });
+      flash("Thingiverse token saved."); back();
+    };
+  }
+
   // Look the link up again (after signing in) and show the preview.
   async function relook() {
     try {
@@ -885,7 +919,7 @@ function openImport(prefill = "", resume = null) {
       </div>
       ${plan.files.length ? `<ul class="files">${plan.files.map((f) => `<li>${esc(f.name)}${f.size ? ` (${fmtSize(f.size)})` : ""}</li>`).join("")}</ul>` : ""}
       ${plan.profile ? `<p class="muted">Print profile: <strong>${esc(plan.profile)}</strong></p>` : ""}
-      ${plan.note ? `<div class="notice">${esc(plan.note)}${plan.needs_login ? `<div style="margin-top:8px"><button type="button" class="small" data-signin>Sign in to MakerWorld</button></div>` : ""}</div>` : ""}
+      ${plan.note ? `<div class="notice">${esc(plan.note)}${plan.needs_login ? `<div style="margin-top:8px"><button type="button" class="small" data-signin>${plan.site === "Thingiverse" ? "Add Thingiverse token" : "Sign in to MakerWorld"}</button></div>` : ""}</div>` : ""}
       <label for="imp-cat">Category</label>
       <select id="imp-cat">
         ${pick ? "" : `<option value="" selected disabled>Pick a category</option>`}
@@ -901,7 +935,7 @@ function openImport(prefill = "", resume = null) {
     sel.onchange = () => { newcat.style.display = sel.value === "__new" ? "" : "none"; if (sel.value === "__new") newcat.focus(); };
     dlg.querySelector("[data-back]").onclick = () => step1();
     const signin = dlg.querySelector("[data-signin]");
-    if (signin) signin.onclick = () => mwLogin(relook);
+    if (signin) signin.onclick = () => (plan.site === "Thingiverse" ? tvToken(relook) : mwLogin(relook));
     dlg.querySelector("[data-go]").onclick = async (e) => {
       const category = sel.value === "__new" ? newcat.value.trim() : sel.value;
       if (!category) { sel.focus(); return; }

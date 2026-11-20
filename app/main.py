@@ -78,7 +78,8 @@ class ImportBody(BaseModel):
 
 
 class ImportSettings(BaseModel):
-    makerworld_token: str = ""
+    makerworld_token: str | None = None
+    thingiverse_token: str | None = None
 
 
 class SignIn(BaseModel):
@@ -655,7 +656,7 @@ def create_app(
         f, path = resolve(file_id)
         return FileResponse(path, media_type="application/octet-stream", filename=filename)
 
-    # ------------------------------------------------------------ import from Printables / MakerWorld
+    # ------------------------------------------------------------ import from Printables / MakerWorld / Thingiverse
     imp = importer or Importer(settings.library, store, scanner.scan, tags.add, make_id)
     imp.rescan, imp.add_tags, imp.make_model_id = scanner.scan, tags.add, make_id
     app.state.importer = imp
@@ -669,7 +670,10 @@ def create_app(
 
     @app.put("/api/import/settings")
     def put_import_settings(body: ImportSettings):
-        imp.set_makerworld_token(body.makerworld_token)
+        if body.makerworld_token is not None:
+            imp.set_makerworld_token(body.makerworld_token)
+        if body.thingiverse_token is not None:
+            imp.set_thingiverse_token(body.thingiverse_token)
         return import_settings()
 
     @app.post("/api/import/makerworld-login")

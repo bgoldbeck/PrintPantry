@@ -60,6 +60,34 @@ def printables_handler(request: httpx.Request):
         if body.get("password") == "needs-code":
             return httpx.Response(200, json={"accessToken": "", "loginType": "verifyCode"})
         return httpx.Response(400, json={"error": "Incorrect password"})
+    if host == "www.thingiverse.com":
+        return httpx.Response(200, text='<html><head><meta property="og:title" content="Gear Box by maker - Thingiverse">'
+                              '<meta property="og:image" content="https://cdn.thingiverse.com/p/gear.jpg">'
+                              '<meta property="og:description" content="A &amp; B gears"></head></html>')
+    if host == "api.thingiverse.com":
+        if request.headers.get("authorization") != "Bearer tvtok":
+            return httpx.Response(401, json={"error": "NO_TOKEN_PROVIDED"})
+        path = request.url.path
+        if path == "/things/4135236":
+            return httpx.Response(200, json={
+                "id": 4135236, "name": "Gear Box", "creator": {"name": "maker"}, "license": "CC BY",
+                "description_html": "<p>Two <b>gears</b></p>", "description": "Two gears",
+                "tags": [{"name": "gear"}, {"name": "mechanical"}]})
+        if path.endswith("/categories"):
+            return httpx.Response(200, json=[{"name": "Mechanical Parts"}])
+        if path.endswith("/images"):
+            return httpx.Response(200, json=[{"id": 1, "sizes": [
+                {"type": "thumb", "size": "large", "url": "https://cdn.thingiverse.com/t.jpg"},
+                {"type": "display", "size": "large", "url": "https://cdn.thingiverse.com/d.jpg"}]}])
+        if path.endswith("/files"):
+            return httpx.Response(200, json=[
+                {"id": 11, "name": "gear.stl", "size": 8, "direct_url": "https://cdn.thingiverse.com/gear.stl"},
+                {"id": 12, "name": "notes.txt", "size": 3, "direct_url": "https://cdn.thingiverse.com/notes.txt"},
+                {"id": 13, "name": "box.3mf", "size": 4}])
+        if path == "/files/13/download":
+            return httpx.Response(302, headers={"location": "https://cdn.thingiverse.com/box.3mf"})
+    if host == "cdn.thingiverse.com":
+        return httpx.Response(200, content=b"solid g\n" if request.url.path.endswith(".stl") else b"PK\x03\x04")
     if host in ("makerworld.bblmw.com", "s3.example.com"):
         return httpx.Response(200, content=b"PK\x03\x04")
     return httpx.Response(404)
@@ -89,8 +117,10 @@ def test_parse_link():
     assert parse_link("https://makerworld.com/en/models/1000000-lens-cap#profileId-5") == ("makerworld", "1000000")
     assert link_profile("https://makerworld.com/en/models/3564783-intensive-cleaner#profileId-4079808") == "4079808"
     assert link_profile("https://makerworld.com/en/models/3564783") == ""
+    assert parse_link("https://www.thingiverse.com/thing:4135236") == ("thingiverse", "4135236")
+    assert parse_link("thingiverse.com/thing:42/files") == ("thingiverse", "42")
     with pytest.raises(ImportError_):
-        parse_link("https://thingiverse.com/thing:1")
+        parse_link("https://example.com/thing:1")
 
 
 def test_safe_name_and_category():
@@ -176,11 +206,39 @@ def test_makerworld_sign_in(client):
     r = client.post("/api/import/makerworld-login", json={"email": "me@example.com", "password": "needs-code"}).json()
     assert r["step"] == "code" and "me@example.com" in r["message"]
     r = client.post("/api/import/makerworld-login", json={"email": "me@example.com", "code": "123456"}).json()
-    assert r == {"makerworld_token": True, "makerworld_account": "me@example.com"}
+    assert r == {"makerworld_token": True, "makerworld_account": "me@example.com", "thingiverse_token": False}
     assert client.imp.makerworld_token == "tok"
     assert "right" not in json.dumps(client.imp.store.get("import_settings"))
     client.put("/api/import/settings", json={"makerworld_token": ""})
-    assert client.get("/api/import/settings").json() == {"makerworld_token": False, "makerworld_account": ""}
+    assert client.get("/api/import/settings").json() == {"makerworld_token": False, "makerworld_account": "",
+                                                         "thingiverse_token": False}
+
+
+def test_thingiverse_without_and_with_token(client, library):  # noqa: F811
+    url = "https://www.thingiverse.com/thing:4135236"
+    p = client.post("/api/import/preview", json={"url": url}).json()
+    assert p["site"] == "Thingiverse" and p["title"] == "Gear Box" and p["needs_login"] and p["files"] == []
+    assert p["summary"] == "A & B gears" and p["pictures"] == ["https://cdn.thingiverse.com/p/gear.jpg"]
+
+    assert client.put("/api/import/settings", json={"thingiverse_token": "tvtok"}).json()["thingiverse_token"] is True
+    assert client.imp.makerworld_token == ""  # untouched
+    p = client.post("/api/import/preview", json={"url": url}).json()
+    assert not p["needs_login"] and p["author"] == "maker" and p["license"] == "CC BY"
+    assert [f["name"] for f in p["files"]] == ["gear.stl", "box.3mf"]
+    assert p["tags"] == ["gear", "mechanical"] and p["site_categories"] == ["Mechanical Parts"]
+    assert p["pictures"] == ["https://cdn.thingiverse.com/d.jpg"] and p["summary"] == "Two gears"
+
+    job = client.imp.run_sync(url, "Tools")
+    assert job.state == "done", job.error
+    folder = library / "Tools" / "Gear Box"
+    assert (folder / "gear.stl").read_bytes() == b"solid g\n"
+    assert (folder / "box.3mf").read_bytes() == b"PK\x03\x04"
+    assert (folder / "images" / "thingiverse-01.jpg").exists()
+    assert json.loads((folder / "pantry-source.json").read_text())["site"] == "Thingiverse"
+
+    client.imp.set_thingiverse_token("wrong")
+    r = client.post("/api/import/preview", json={"url": url})
+    assert r.status_code == 400 and "App Token" in r.json()["detail"]
 
 
 def test_import_api_validation(client):

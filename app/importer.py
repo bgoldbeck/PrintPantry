@@ -1,4 +1,4 @@
-"""Import a model from a Printables or MakerWorld link into the library folder.
+"""Import a model from a Printables, MakerWorld or Thingiverse link into the library folder.
 
 What each site allows (checked 2026-11-13 from the home network and the NAS):
 
@@ -11,6 +11,12 @@ What each site allows (checked 2026-11-13 from the home network and the NAS):
   ("Please log in to download models."). With a MakerWorld token saved in
   Print Pantry the importer downloads the 3MF too; without one it imports the
   details and pictures and says the file still has to be added.
+* **Thingiverse** has a documented REST API (api.thingiverse.com) that needs
+  an App Token for every call, details included (401 NO_TOKEN_PROVIDED
+  without one; checked 2026-11-20). The token is free: register an app at
+  thingiverse.com/developers and paste its App Token into Print Pantry once.
+  Without a token the importer reads the name, picture and description from
+  the public thing page and says the token is needed for the files.
 
 An import writes ``<library>/<Category>/<Model name>/`` with the files, an
 ``images/`` folder and ``pantry-source.json`` (where it came from), then
@@ -43,6 +49,7 @@ UA = (
 PRINTABLES_API = "https://api.printables.com/graphql/"
 PRINTABLES_MEDIA = "https://media.printables.com/"
 MAKERWORLD_API = "https://makerworld.com/api/v1/design-service"
+THINGIVERSE_API = "https://api.thingiverse.com"
 MODEL_EXTS = (".stl", ".3mf", ".obj", ".step", ".stp", ".scad", ".f3d", ".zip")
 MAX_FILE_BYTES = 1024 * 1024 * 1024  # 1 GB per file
 MAX_PICTURES = 8  # MakerWorld photos are full-size (2-3 MB each)
@@ -70,7 +77,12 @@ def parse_link(url: str) -> tuple[str, str]:
         m = re.search(r"/models/(\d+)", u.path)
         if m:
             return "makerworld", m.group(1)
-    raise ImportError_("Paste a Printables (printables.com/model/...) or MakerWorld (makerworld.com/.../models/...) link.")
+    if host.endswith("thingiverse.com"):
+        m = re.search(r"/thing:(\d+)", u.path)
+        if m:
+            return "thingiverse", m.group(1)
+    raise ImportError_("Paste a Printables (printables.com/model/...), MakerWorld (makerworld.com/.../models/...) "
+                       "or Thingiverse (thingiverse.com/thing:...) link.")
 
 
 def link_profile(url: str) -> str:
@@ -309,6 +321,132 @@ class MakerWorld:
         return link
 
 
+# ------------------------------------------------------------------ Thingiverse
+
+TV_PICTURE_ORDER = ("large", "medium", "featured", "card", "small")
+
+
+def _meta(page: str, prop: str) -> str:
+    m = re.search(r'<meta[^>]+(?:property|name)="%s"[^>]+content="([^"]*)"' % re.escape(prop), page) or re.search(
+        r'<meta[^>]+content="([^"]*)"[^>]+(?:property|name)="%s"' % re.escape(prop), page)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+class Thingiverse:
+    def __init__(self, http: httpx.Client, token: str = ""):
+        self.http = http
+        self.token = token.strip()
+
+    def _get(self, path: str):
+        r = self.http.get(THINGIVERSE_API + path, headers={
+            "Accept": "application/json", "Authorization": f"Bearer {self.token}"})
+        if r.status_code in (401, 403):
+            raise ImportError_("Thingiverse refused the App Token (HTTP %d). Check it under "
+                               "\"Thingiverse token\" in the Import dialog." % r.status_code)
+        if r.status_code == 404:
+            raise ImportError_("Thingiverse has no thing with that link (removed or private?).")
+        if r.status_code != 200:
+            raise ImportError_(f"Thingiverse answered with HTTP {r.status_code}.")
+        try:
+            return r.json()
+        except ValueError:
+            raise ImportError_("Thingiverse sent something that isn't JSON.") from None
+
+    def plan(self, thing_id: str, url: str) -> Plan:
+        if not self.token:
+            return self._plan_from_page(thing_id)
+        t = self._get(f"/things/{thing_id}")
+        if not isinstance(t, dict) or not t.get("name"):
+            raise ImportError_("Thingiverse has no thing with that link (removed or private?).")
+        creator = t.get("creator") or {}
+        plan = Plan(
+            site="Thingiverse",
+            id=str(t.get("id") or thing_id),
+            url=f"https://www.thingiverse.com/thing:{t.get('id') or thing_id}",
+            title=t.get("name") or f"Thingiverse {thing_id}",
+            author=creator.get("name") or creator.get("first_name") or "",
+            license=t.get("license") or "",
+            summary=html_to_text(t.get("description_html") or "") or (t.get("description") or "").strip(),
+            tags=[x["name"] for x in t.get("tags") or [] if isinstance(x, dict) and x.get("name")],
+        )
+        for path, fill in (("categories", self._fill_categories), ("images", self._fill_pictures)):
+            try:
+                fill(plan, self._get(f"/things/{thing_id}/{path}"))
+            except (ImportError_, httpx.HTTPError) as exc:
+                log.info("thingiverse %s for %s: %s", path, thing_id, exc)
+        if not plan.pictures:
+            img = t.get("default_image") or {}
+            u = img.get("url") if isinstance(img, dict) else ""
+            if u or t.get("thumbnail"):
+                plan.pictures = [u or t["thumbnail"]]
+        for f in self._get(f"/things/{thing_id}/files") or []:
+            name = f.get("name") or ""
+            if not name.lower().endswith(MODEL_EXTS):
+                continue
+            plan.files.append(RemoteFile(
+                name=name, size=int(f.get("size") or 0),
+                url=f.get("direct_url") or "",
+                resolve=lambda fid=f.get("id"), dl=f.get("download_url") or "": self._link(fid, dl),
+            ))
+        if not plan.files:
+            plan.note = "This thing has no STL or 3MF files on Thingiverse."
+        return plan
+
+    @staticmethod
+    def _fill_categories(plan: Plan, cats) -> None:
+        plan.categories = [c["name"] for c in cats or [] if isinstance(c, dict) and c.get("name")]
+
+    @staticmethod
+    def _fill_pictures(plan: Plan, images) -> None:
+        for img in images or []:
+            sizes = {(s.get("type"), s.get("size")): s.get("url") for s in img.get("sizes") or [] if s.get("url")}
+            best = next((sizes[("display", k)] for k in TV_PICTURE_ORDER if sizes.get(("display", k))), "")
+            best = best or img.get("url") or next(iter(sizes.values()), "")
+            if best and best not in plan.pictures:
+                plan.pictures.append(best)
+
+    def _link(self, file_id, download_url: str) -> str:
+        """direct_url is the CDN link; otherwise ask the API where the file's download goes."""
+        if file_id:
+            r = self.http.get(f"{THINGIVERSE_API}/files/{file_id}/download",
+                              headers={"Authorization": f"Bearer {self.token}"}, follow_redirects=False)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                return r.headers["location"]
+            if r.status_code == 200:
+                try:
+                    body = r.json()
+                except ValueError:
+                    body = {}
+                link = body.get("public_url") or body.get("direct_url") or body.get("url") if isinstance(body, dict) else ""
+                if link:
+                    return link
+        if download_url:
+            return download_url
+        raise ImportError_("Thingiverse gave no download link for a file.")
+
+    def _plan_from_page(self, thing_id: str) -> Plan:
+        """No token: the public page still has the name, a picture and the description."""
+        url = f"https://www.thingiverse.com/thing:{thing_id}"
+        try:
+            r = self.http.get(url, headers={"Accept": "text/html"})
+            page = r.text if r.status_code == 200 else ""
+        except httpx.HTTPError:
+            page = ""
+        title = _meta(page, "og:title") or _meta(page, "twitter:title")
+        title = re.sub(r"\s+(?:by\s+\S+\s+)?[-|]\s*Thingiverse\s*$", "", title).strip()
+        plan = Plan(
+            site="Thingiverse", id=thing_id, url=url,
+            title=title or f"Thingiverse {thing_id}",
+            summary=_meta(page, "og:description") or _meta(page, "description"),
+            pictures=[p for p in [_meta(page, "og:image")] if p.startswith("https://")],
+            needs_login=True,
+            note=("Thingiverse only gives files and full details to apps with an App Token. Press "
+                  "\"Add Thingiverse token\" once (it's free) and the files come along. Importing now "
+                  "brings the name, picture and description only."),
+        )
+        return plan
+
+
 # ------------------------------------------------------------------ MakerWorld sign-in
 #
 # MakerWorld uses the Bambu Lab account. Signing in goes through the same login
@@ -435,9 +573,25 @@ class Importer:
     def makerworld_token(self) -> str:
         return (self.store.get("import_settings", {}) or {}).get("makerworld_token", "")
 
+    @property
+    def thingiverse_token(self) -> str:
+        return (self.store.get("import_settings", {}) or {}).get("thingiverse_token", "")
+
     def makerworld_status(self) -> dict:
         st = self.store.get("import_settings", {}) or {}
-        return {"makerworld_token": bool(st.get("makerworld_token")), "makerworld_account": st.get("makerworld_account", "")}
+        return {"makerworld_token": bool(st.get("makerworld_token")), "makerworld_account": st.get("makerworld_account", ""),
+                "thingiverse_token": bool(st.get("thingiverse_token"))}
+
+    def set_thingiverse_token(self, token: str) -> None:
+        s = self.store.get("import_settings", {}) or {}
+        token = token.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if token:
+            s["thingiverse_token"] = token
+        else:
+            s.pop("thingiverse_token", None)
+        self.store.set("import_settings", s)
 
     def makerworld_sign_in(self, email: str, password: str = "", code: str = "", tfa_key: str = "", tfa_code: str = "") -> dict:
         """Returns the status, or {'step': 'code'|'tfa', 'message', 'tfa_key'} when Bambu wants more."""
@@ -473,6 +627,8 @@ class Importer:
         try:
             if site == "printables":
                 return Printables(self.http).plan(model_id, url)
+            if site == "thingiverse":
+                return Thingiverse(self.http, self.thingiverse_token).plan(model_id, url)
             return MakerWorld(self.http, self.makerworld_token).plan(model_id, url)
         except httpx.HTTPError as exc:
             raise ImportError_(f"Couldn't reach {site.title()}: {exc}") from None
