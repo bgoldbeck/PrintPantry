@@ -264,6 +264,30 @@ class History:
             "prints": [self._row(r) for r in rows],
         }
 
+    def last_file(self, printer_id: str) -> dict | None:
+        """The newest print on ``printer_id`` whose sliced file is still in the
+        library, for the Printers page's "Reprint" button. Jobs started from
+        the printer's own screen with a file we don't have are skipped."""
+        lib = self.library()
+        if not lib:
+            return None
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM prints WHERE printer = ? AND file_id IS NOT NULL"
+                " ORDER BY COALESCE(started, created) DESC, id DESC LIMIT 50",
+                (printer_id,),
+            ).fetchall()
+        for r in rows:
+            f = lib.files.get(r["file_id"])
+            if not f or f.kind not in ("gcode", "sliced3mf"):
+                continue
+            row = self._row(r)
+            return {
+                "print_id": row["id"], "file_id": f.id, "name": f.name, "model_id": row["model_id"],
+                "started": row["started"], "status": row["status"], "tool_map": row["tool_map"],
+            }
+        return None
+
     # ------------------------------------------------------------ editing
     def patch(self, print_id: int, p: Patch) -> dict:
         row = self.get(print_id)
@@ -589,6 +613,11 @@ def make_router(history: History) -> APIRouter:
     def list_prints(model_id: str = "", printer: str = "", status: str = "", limit: int = 100,
                     offset: int = 0, hide_empty: bool = False):
         return history.list(model_id, printer, status, limit, offset, hide_empty)
+
+    @router.get("/last")
+    def last(printer: str):
+        """Newest reprintable file for one printer ({"last": null} if none)."""
+        return {"last": history.last_file(printer)}
 
     @router.post("/sync")
     def sync():
