@@ -188,3 +188,20 @@ def test_hide_empty_cancels(happ, hfake):
     happ.post("/api/history/sync")
     assert happ.get("/api/history").json()["total"] == 2
     assert happ.get("/api/history", params={"hide_empty": True}).json()["total"] == 1
+
+
+def test_last_file_for_reprint(happ, hfake):
+    happ.post("/api/history/sync")
+    assert happ.get("/api/history/last", params={"printer": "u1"}).json() == {"last": None}
+    m = happ.get(f"/api/models/{by_name(happ, 'Gridfinity Bin 2x1')['id']}").json()
+    f = next(x for x in m["files"] if x["kind"] == "gcode")
+    r = happ.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True, "accept_warnings": True,
+                                                  "tool_map": {"0": 1}})
+    assert r.status_code == 200, r.text
+    # a newer job started from the printer's screen with a file we don't have is skipped
+    hfake.jobs = [job("00000B", "not_in_library.gcode", start=time.time() + 60)]
+    happ.post("/api/history/sync")
+    last = happ.get("/api/history/last", params={"printer": "u1"}).json()["last"]
+    assert last["file_id"] == f["id"] and last["name"] == f["name"] and last["model_id"] == m["id"]
+    assert last["tool_map"]["0"] == 1
+    assert happ.get("/api/history/last", params={"printer": "p1s"}).json() == {"last": None}

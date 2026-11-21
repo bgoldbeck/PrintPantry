@@ -514,7 +514,7 @@ function cancelHtml(p, local) {
   return "";
 }
 
-function cardBody(p, local) {
+function cardBody(p, local, last) {
   const st = p.status;
   if (!p.configured) return `<p class="empty">${esc(p.setup_hint)}</p>`;
   const job = ["printing", "paused"].includes(st.state) || (st.file && ["complete", "cancelled", "failed", "error"].includes(st.state));
@@ -551,6 +551,9 @@ function cardBody(p, local) {
   else if (["printing", "paused"].includes(st.state)) {
     const again = local?.phase === "error" || p.cancel?.state === "stuck";
     buttons.push(`<button class="small danger" data-act="cancel">${again ? "Cancel print again" : "Cancel print"}</button>`);
+  }
+  if (last && st.online && ["idle", "complete", "cancelled", "failed"].includes(st.state) && !cancelling) {
+    buttons.push(`<button class="small ghost" data-reprint title="Print ${esc(last.name)} again">↻ Reprint last</button>`);
   }
   if (p.has_settings && st.online) buttons.push(`<button class="small ghost" data-settings title="AI detection, AMS, fans and more">Settings</button>`);
   const problems = [st.problem, ...(st.blockers || [])].filter(Boolean);
@@ -639,9 +642,24 @@ export async function printersPage(view) {
     if (pending.get(p.id)?.phase === "error" && !["printing", "paused"].includes(st.state)) pending.delete(p.id);
     const s = card.querySelector("[data-state]");
     patchHtml(s, stateBadge(p));
-    patchHtml(card.querySelector("[data-body]"), cardBody(p, pending.get(p.id)));
+    patchHtml(card.querySelector("[data-body]"), cardBody(p, pending.get(p.id), lastFiles.get(p.id)));
+    // A print just ended or started: the "Reprint last" file may have changed.
+    if (seenState.has(p.id) && seenState.get(p.id) !== st.state) loadLast(p.id);
+    seenState.set(p.id, st.state);
+  }
+  // Newest print per printer whose file is still in the library, for "Reprint last".
+  const lastFiles = new Map();
+  const seenState = new Map();
+  async function loadLast(id) {
+    try {
+      const { last } = await api(`/api/history/last?printer=${encodeURIComponent(id)}`);
+      if (last) lastFiles.set(id, last); else lastFiles.delete(id);
+      const p = latest.get(id);
+      if (p) paint(p);
+    } catch { /* no button then */ }
   }
   list.forEach(paint);
+  list.filter((p) => p.configured).forEach((p) => loadLast(p.id));
   const flowBox = view.querySelector("[data-flow-panel]");
   const refreshFlow = () => flowSection(flowBox, () => [...latest.values()]);
   refreshFlow();
@@ -664,6 +682,13 @@ export async function printersPage(view) {
     if (sf) {
       const p = latest.get(sf.closest(".printer-card").dataset.id);
       if (p) filamentDialog(p, sf.dataset.setfil.split(",").map(Number), paint);
+      return;
+    }
+    const rp = e.target.closest("[data-reprint]");
+    if (rp) {
+      const id = rp.closest(".printer-card").dataset.id;
+      const last = lastFiles.get(id);
+      if (last) openPrintDialog(last.file_id, id, last.tool_map);
       return;
     }
     const sb = e.target.closest("[data-settings]");
@@ -743,7 +768,9 @@ export async function printersPage(view) {
 // ---------------------------------------------------------------- print dialog
 const swatch = (type, color) => swatchHtml(type, color);
 
-export async function openPrintDialog(fileId, printerId) {
+// ``startMap`` (file filament -> toolhead) starts the dialog with those picks,
+// e.g. the toolheads the last print of this file used.
+export async function openPrintDialog(fileId, printerId, startMap = null) {
   const dlg = document.createElement("dialog");
   dlg.className = "print-dialog";
   dlg.innerHTML = `<h2>Checking the printer...</h2>`;
@@ -756,7 +783,8 @@ export async function openPrintDialog(fileId, printerId) {
 
   let chk;
   try {
-    chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}`);
+    const q0 = startMap ? Object.entries(startMap).map(([k, v]) => `${k}:${v}`).join(",") : "";
+    chk = await api(`/api/printers/${printerId}/check?file_id=${encodeURIComponent(fileId)}${q0 ? `&map=${q0}` : ""}`);
   } catch (e) {
     dlg.innerHTML = `<h2>Can't print right now</h2><div class="notice error">${esc(e.message)}</div>
       <div class="dialog-actions"><button class="ghost" data-close>Close</button></div>`;
@@ -767,7 +795,7 @@ export async function openPrintDialog(fileId, printerId) {
   const plate = (f.plates || [])[0] || {};
   const heads = () => chk.printer.status.toolheads || [];
   let map = { ...chk.tool_map };  // file filament -> toolhead, as the server suggested
-  let picked = false;  // the user chose toolheads by hand (else the server re-suggests)
+  let picked = !!startMap && Object.keys(startMap).length > 0;  // toolheads chosen by hand (else the server re-suggests)
 
   // One button per toolhead, showing its colour, so you can see which spool you're picking.
   const headChip = (t, h) => {
