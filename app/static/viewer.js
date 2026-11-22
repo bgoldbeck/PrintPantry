@@ -167,6 +167,70 @@ export function renderThumbnail(url, color = "#e9a23b", px = 384) {
   return job;
 }
 
+// ---------------------------------------------------------------- build set picture
+// All the pieces of a build set laid out side by side (each copy), one colour
+// per file, rendered to an image. Geometries are kept so sets sharing files
+// (most of them) only download each STL once.
+const setGeoms = new Map();
+function setGeometry(url) {
+  if (!setGeoms.has(url)) {
+    setGeoms.set(url, loader.loadAsync(url).then((g) => { const size = prepareGeometry(g); g.computeVertexNormals(); return { g, size }; }));
+  }
+  return setGeoms.get(url);
+}
+
+/** parts: [{url, qty, color}] -> PNG blob of the pieces laid out on a bed. */
+export function renderSet(parts, { width = 640, height = 400 } = {}) {
+  const job = queue.then(async () => {
+    if (!thumbRenderer) {
+      thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    }
+    thumbRenderer.setPixelRatio(1);
+    thumbRenderer.setSize(width, height, false);
+    const loaded = await Promise.all(parts.map(async (p) => ({ ...p, ...(await setGeometry(p.url)) })));
+    // Biggest first, shelf-packed in rows about as wide as the set is deep.
+    const pieces = loaded.flatMap((p) => Array.from({ length: Math.max(1, p.qty) }, () => p))
+      .sort((a, b) => b.size.x * b.size.z - a.size.x * a.size.z);
+    const gap = Math.max(4, Math.max(...pieces.map((p) => Math.max(p.size.x, p.size.z))) * 0.06);
+    const area = pieces.reduce((n, p) => n + (p.size.x + gap) * (p.size.z + gap), 0);
+    const rowWidth = Math.max(Math.sqrt(area) * 1.5, ...pieces.map((p) => p.size.x + gap));
+    const { scene, key } = buildScene(new THREE.Color("#e9a23b"));
+    const mats = [];
+    let x = 0; let z = 0; let rowDepth = 0; let maxX = 0; let maxY = 0;
+    for (const p of pieces) {
+      if (x > 0 && x + p.size.x > rowWidth) { x = 0; z += rowDepth + gap; rowDepth = 0; }
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(p.color || "#e9a23b"), roughness: 0.55, metalness: 0.05 });
+      mats.push(mat);
+      const mesh = new THREE.Mesh(p.g, mat);
+      mesh.position.set(x + p.size.x / 2, 0, z + p.size.z / 2);
+      scene.add(mesh);
+      x += p.size.x + gap;
+      maxX = Math.max(maxX, x - gap);
+      maxY = Math.max(maxY, p.size.y);
+      rowDepth = Math.max(rowDepth, p.size.z);
+    }
+    const depth = z + rowDepth;
+    scene.position.set(-maxX / 2, 0, -depth / 2);
+    const size = new THREE.Vector3(maxX, maxY, depth);
+    const camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 100000);
+    const radius = Math.max(size.x, size.z, size.y) * (pieces.length > 1 ? 0.46 : 0.6) || 10;
+    const dist = radius / Math.sin((camera.fov * Math.PI) / 360);
+    camera.position.set(dist * 0.1, dist * 0.78, dist * 0.62);
+    camera.near = dist / 100;
+    camera.far = dist * 100;
+    camera.updateProjectionMatrix();
+    camera.lookAt(0, 0, 0);
+    key.position.set(0.6, 2, 1.2);
+    thumbRenderer.setClearColor(0x000000, 0);
+    thumbRenderer.render(scene, camera);
+    const blob = await new Promise((res) => thumbRenderer.domElement.toBlob(res, "image/png"));
+    mats.forEach((m) => m.dispose());
+    return blob;
+  });
+  queue = job.catch(() => {});
+  return job;
+}
+
 // ---------------------------------------------------------------- per-object preview
 // Shows the pieces of a model (from /api/slicer/objects/mesh), each in the
 // colour of the filament it will print with. Click a piece to pick it.
