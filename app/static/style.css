@@ -1278,23 +1278,29 @@ button .spinner { width: 10px; height: 10px; margin-right: 6px; }
 .ai-settings label { display: block; font-weight: 600; margin: 10px 0 4px; }
 .ai-settings input, .ai-settings select { width: 100%; box-sizing: border-box; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
 /* build sets ("What to print") */
-.panel.builds .builds-lead { margin: -6px 0 10px; font-size: .9rem; }
-.build-groups { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-.build-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
-.build-card { border: 1px solid var(--line); border-left: 5px solid #3f9b4f; border-radius: 12px; padding: 12px 14px; background: color-mix(in srgb, #3f9b4f 6%, var(--surface)); display: flex; flex-direction: column; gap: 8px; }
-.build-card header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.build-card h3 { margin: 0; font-size: 1.05rem; }
-.build-card .pieces { font-size: .8rem; color: var(--ink-2); white-space: nowrap; }
-.build-note { margin: 0; font-size: .88rem; color: var(--ink-2); }
-.build-parts { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.build-parts li { display: grid; grid-template-columns: 40px auto 1fr; align-items: center; gap: 8px; font-size: .88rem; }
-.build-parts .thumb { width: 40px; height: 40px; border-radius: 8px; background: var(--viewer-bg); display: grid; place-items: center; overflow: hidden; color: var(--ink-2); }
-.build-parts .thumb img { width: 100%; height: 100%; object-fit: contain; }
-.build-parts .thumb .ph svg { width: 20px; height: 20px; }
-.build-parts .qty { font-weight: 800; min-width: 2.2em; color: #3f9b4f; }
-.build-parts .pname { overflow-wrap: anywhere; }
-.build-parts li.missing { opacity: .6; }
-.build-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.panel.builds { padding: 14px 18px; }
+.builds-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.builds-head h2 { margin: 0; }
+.build-groups { display: flex; flex-wrap: wrap; gap: 6px; }
+.build-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.build-card { border: 1px solid var(--line); border-radius: 14px; padding: 10px; background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; }
+.set-pic { aspect-ratio: 16 / 10; border-radius: 10px; background: var(--viewer-bg); display: grid; place-items: center; overflow: hidden; }
+.set-pic img { width: 100%; height: 100%; object-fit: contain; }
+.set-pic .loading { font-size: .8rem; color: var(--ink-2); }
+.build-card header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 2px; }
+.build-card h3 { margin: 0; font-size: 1.15rem; }
+.build-card .pieces { font-size: .85rem; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
+.set-parts { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; }
+.set-parts li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.set-parts .thumb { width: 100%; aspect-ratio: 1; border-radius: 8px; background: var(--viewer-bg); display: grid; place-items: center; overflow: hidden; border-bottom: 4px solid var(--pc); color: var(--ink-2); }
+.set-parts .thumb img { width: 100%; height: 100%; object-fit: contain; }
+.set-parts .thumb .ph svg { width: 22px; height: 22px; }
+.set-parts .count { position: absolute; top: 3px; right: 3px; background: var(--accent); color: var(--accent-ink); font-size: .8rem; padding: 1px 6px; border-radius: 99px; }
+.set-parts small { font-size: .68rem; color: var(--ink-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-parts li.missing { opacity: .5; }
+.build-note { margin: 0; font-size: .8rem; color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.build-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-top: auto; }
+.build-actions button { width: 100%; padding: 10px 12px; font-weight: 700; }
 .together .check.main { font-weight: 600; }
 .together input.qty { width: 3.6em; padding: 2px 4px; margin-left: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
 .together details.others { margin: 4px 0 0 4px; } .together details.others summary { font-size: .85rem; color: var(--ink-2); cursor: pointer; }

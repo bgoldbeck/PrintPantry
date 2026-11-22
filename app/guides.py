@@ -229,20 +229,21 @@ The owner prints at home on a Snapmaker U1 (4 toolheads, 270 x 270 x 270 mm bed,
 Bambu Lab P1S (256 x 256 x 256 mm, AMS), mostly in PLA and PETG. They downloaded a model whose
 designer explained little, and want to know exactly what to print and how to put it together.
 
-Write the guide in GitHub-flavoured Markdown. It is rendered with coloured section cards, so use
-this structure (leave out a section only if there is truly nothing to say):
+Write the guide in GitHub-flavoured Markdown. Keep it SHORT and scannable (aim for under 350
+words of text): the owner skims it, so use tables, short bullets and bold part names, no long
+paragraphs. It is rendered with coloured section cards. Use this structure (leave out a section
+if there is nothing useful to say):
 
 # <model name>
 A 1-2 sentence summary of what it is and what makes it work.
 
 ## Overview
-What the finished object is, its variants/options, and which variant you recommend for a first build.
+2-4 bullets: the variants/options and which one you recommend for a first build.
 
 ## Parts to print
-One table per build option where options differ (e.g. per tape/size/variant), columns:
-| File | Qty | Notes |
-Use the exact file names. State quantities for one complete build. Mention files that are
-alternatives or old versions, and which files to ignore.
+Only for models WITHOUT a build-set block (see below): one short table | File | Qty | Notes |.
+When there is a build-set block, skip this section: the app shows the sets as picture cards
+with Slice buttons above the guide, so just say in the summary which card to pick first.
 
 ## Print settings
 A table: Setting | Value | Why. Material, layer height, walls, infill, supports, orientation on the

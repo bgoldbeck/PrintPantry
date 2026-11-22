@@ -176,7 +176,11 @@ function openAiSettings(current) {
   });
 }
 
-// "What to print": one card per build set, with part pictures and Slice buttons.
+// "What to print": one card per build set: a picture of all its pieces laid
+// out, the parts with counts, and big Slice buttons.
+const PART_COLOURS = ["#e9a23b", "#4f9fd6", "#5cb85c", "#c2477a", "#8e6cd6", "#d9822b", "#3fb0a0", "#b5b03a", "#8a8d8f", "#d65a4f"];
+const setPictures = new Map(); // build key -> object URL, kept while the page lives
+
 function buildsPanel(el, guide, opts) {
   if (!el) return;
   const builds = guide.builds || [];
@@ -185,31 +189,69 @@ function buildsPanel(el, guide, opts) {
   const groups = [...new Set(builds.map((b) => b.group || ""))];
   let group = groups.includes(el.dataset.group) ? el.dataset.group : groups[0];
   const slicers = opts.slicers || [];
+  const short = (n) => n.replace(/\.stl$/i, "");
   const render = () => {
     el.dataset.group = group;
     const shown = builds.filter((b) => (b.group || "") === group);
     el.innerHTML = `
-      <h2>What to print <span class="n">${builds.length} build set${builds.length === 1 ? "" : "s"}</span></h2>
-      <p class="muted builds-lead">Pick one build. Each card lists exactly which files to print and how many.</p>
+      <div class="builds-head"><h2>What to print</h2>
       ${groups.length > 1 ? `<div class="build-groups" role="tablist">${groups.map((g) =>
-        `<button type="button" class="small${g === group ? "" : " ghost"}" role="tab" aria-selected="${g === group}" data-group="${esc(g)}">${esc(g || "Other")}</button>`).join("")}</div>` : ""}
+        `<button type="button" class="small${g === group ? "" : " ghost"}" role="tab" aria-selected="${g === group}" data-group="${esc(g)}">${esc(g || "Other")}</button>`).join("")}</div>` : ""}</div>
       <div class="build-cards">${shown.map((b) => {
         const i = builds.indexOf(b);
-        const sliceable = b.parts.some((p) => p.id && p.kind === "stl");
+        const parts = b.parts.filter((p) => p.id);
+        const sliceable = parts.some((p) => p.kind === "stl");
         return `<article class="build-card">
-          <header><h3>${esc(b.name)}</h3><span class="pieces">${b.pieces} piece${b.pieces === 1 ? "" : "s"} · ${b.parts.length} file${b.parts.length === 1 ? "" : "s"}</span></header>
+          <div class="set-pic" data-pic="${i}" title="Everything you print for this build"><span class="loading">Loading picture…</span></div>
+          <header><h3>${esc(b.name)}</h3><span class="pieces">${b.pieces} piece${b.pieces === 1 ? "" : "s"}</span></header>
+          <ul class="set-parts">${b.parts.map((p, k) => `<li title="${esc(p.name)}${p.id ? "" : " (not in this folder)"}" class="${p.id ? "" : "missing"}" style="--pc:${PART_COLOURS[k % PART_COLOURS.length]}">
+            <span class="thumb"${p.id && p.kind === "stl" ? ` data-part="${esc(p.id)}" data-colour="${PART_COLOURS[k % PART_COLOURS.length]}"` : ""}>${p.id ? "" : "?"}</span>
+            ${p.qty > 1 ? `<b class="count">×${p.qty}</b>` : ""}<small>${esc(short(p.name))}</small></li>`).join("")}</ul>
           ${b.note ? `<p class="build-note">${esc(b.note)}</p>` : ""}
-          <ul class="build-parts">${b.parts.map((p) => `<li class="${p.id ? "" : "missing"}">
-            <span class="thumb">${p.id ? `<img loading="lazy" alt="" data-stl="${esc(p.id)}" src="/api/files/${esc(p.id)}/thumb">` : "?"}</span>
-            <span class="qty">×${p.qty}</span><span class="pname">${esc(p.name)}${p.id ? "" : " <small>(not in this folder)</small>"}</span></li>`).join("")}</ul>
           <div class="build-actions">${sliceable ? slicers.map((pr, k) =>
-            `<button type="button" class="small${k ? " ghost" : ""}" data-build="${i}" data-printer="${esc(pr.id)}">Slice this set for ${esc(pr.name)}</button>`).join("")
+            `<button type="button" class="${k ? "ghost" : ""}" data-build="${i}" data-printer="${esc(pr.id)}" title="Slice this set for ${esc(pr.name)}">Slice · ${esc(pr.name.split(" ").pop())}</button>`).join("")
             : ""}${!slicers.length && sliceable ? `<span class="muted">Slicer not available right now.</span>` : ""}</div>
         </article>`;
       }).join("")}</div>`;
     el.querySelectorAll("[data-group]").forEach((b) => (b.onclick = () => { group = b.dataset.group; render(); }));
     el.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => opts.slice?.(builds[Number(b.dataset.build)], b.dataset.printer)));
     opts.hydrate?.(el);
+    pictures(el, builds);
   };
   render();
+}
+
+async function pictures(el, builds) {
+  for (const box of el.querySelectorAll("[data-pic]")) {
+    const b = builds[Number(box.dataset.pic)];
+    const parts = b.parts.map((p, k) => ({ ...p, color: PART_COLOURS[k % PART_COLOURS.length] }))
+      .filter((p) => p.id && p.kind === "stl");
+    if (!parts.length) { box.innerHTML = ""; continue; }
+    const key = parts.map((p) => `${p.id}x${p.qty}`).join(",");
+    try {
+      if (!setPictures.has(key)) {
+        const { renderSet } = await import("./viewer.js");
+        const blob = await renderSet(parts.map((p) => ({ url: `/api/files/${p.id}/raw`, qty: p.qty, color: p.color })));
+        setPictures.set(key, URL.createObjectURL(blob));
+      }
+      if (box.isConnected) box.innerHTML = `<img alt="All pieces of ${esc(b.name)}" src="${setPictures.get(key)}">`;
+    } catch (e) {
+      console.warn("set picture failed", e);
+      if (box.isConnected) box.innerHTML = "";
+    }
+    if (!el.isConnected) return;
+  }
+  // Each part on its own, in the same colour as in the set picture.
+  for (const box of el.querySelectorAll("[data-part]")) {
+    const key = `${box.dataset.part}:${box.dataset.colour}`;
+    try {
+      if (!setPictures.has(key)) {
+        const { renderSet } = await import("./viewer.js");
+        const blob = await renderSet([{ url: `/api/files/${box.dataset.part}/raw`, qty: 1, color: box.dataset.colour }], { width: 160, height: 160 });
+        setPictures.set(key, URL.createObjectURL(blob));
+      }
+      if (box.isConnected) box.innerHTML = `<img alt="" src="${setPictures.get(key)}">`;
+    } catch { /* leave the tile empty */ }
+    if (!el.isConnected) return;
+  }
 }
