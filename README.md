@@ -54,6 +54,11 @@ as a container on **TrueNAS SCALE**.
     picks the print profile that gets downloaded.
   * Imported files exist only on the NAS (scripts\sync-library.cmd copies PC
     to NAS, not back). The app's library mount is writable for this.
+* **Replace STL.** On a model page, pick an STL and press **Replace STL** to
+  upload a new version from your computer. It keeps the file name, so its
+  matched project 3MFs, the model's tags and print history stay; previews
+  re-render. scripts\sync-library.cmd only copies files that are newer on the
+  PC, so a later sync won't put the old STL back.
 * **Parametric models.** Drop an OpenSCAD `.scad` file or a FreeCAD `.FCStd`
   file into a model folder and its page gets a **Customize** button: a form
   with sliders, boxes, drop-downs and check boxes, one per parameter. **Make

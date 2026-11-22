@@ -51,6 +51,17 @@ from .tags import Tags, clean_tag
 log = logging.getLogger("printpantry")
 STATIC = Path(__file__).parent / "static"
 MAX_RENDER_BYTES = 2 * 1024 * 1024
+MAX_REPLACE_BYTES = 1024 * 1024 * 1024
+
+
+def looks_like_stl(head: bytes, size: int) -> bool:
+    """Binary STL: 80-byte header, triangle count, 50 bytes per triangle.
+    ASCII STL starts with "solid"."""
+    if size >= 84 and len(head) >= 84:
+        count = int.from_bytes(head[80:84], "little")
+        if count and 84 + 50 * count == size:
+            return True
+    return head.lstrip().lower().startswith(b"solid")
 # Files whose picture the browser renders and stores: STLs, and sliced files
 # without their own thumbnail (drawn from the toolpath).
 RENDERED = ("stl", "gcode", "sliced3mf")
@@ -582,6 +593,35 @@ def create_app(
         scanner.scan()
         return {"ok": True}
 
+    @app.put("/api/files/{file_id}/content")
+    async def replace_file(file_id: str, request: Request):
+        """Swap an STL for a new one under the same name. Its id, its matched
+        project 3MFs, the model's tags and print history all stay; preview
+        caches are keyed by size and time, so they refresh on their own."""
+        f, path = resolve(file_id)
+        if f.kind != "stl":
+            raise HTTPException(400, "Only STL files can be replaced here")
+        check_writable(path.parent)
+        tmp = path.with_name(f".{path.name}.replace-{os.getpid()}.tmp")
+        size = 0
+        head = b""
+        try:
+            with open(tmp, "wb") as out:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_REPLACE_BYTES:
+                        raise HTTPException(413, "That file is too big (over 1 GB)")
+                    if len(head) < 84:
+                        head += chunk[: 84 - len(head)]
+                    out.write(chunk)
+            if not looks_like_stl(head, size):
+                raise HTTPException(400, "That doesn't look like an STL file")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        scanner.scan()
+        return {"ok": True, "id": file_id, "size": size}
+
     @app.delete("/api/models/{model_id}")
     def delete_model(model_id: str):
         """Delete a whole model: its folder, or its loose files. Print history
@@ -639,6 +679,7 @@ def create_app(
         return FileResponse(
             path,
             media_type=media,
+            headers={"Cache-Control": "private, no-cache"},
             filename=f.name,
             content_disposition_type="attachment" if download else "inline",
         )
@@ -771,7 +812,9 @@ def create_app(
         if f.kind in RENDERED:
             cached = render_path(f, plate)
             if cached.is_file():
-                return FileResponse(cached, media_type="image/png", headers=headers)
+                # Revalidate: the file can be replaced under the same id.
+                return FileResponse(cached, media_type="image/png",
+                                    headers={"Cache-Control": "private, no-cache"})
         raise HTTPException(404, "No thumbnail")
 
     def render_path(f, plate: int = 1) -> Path:

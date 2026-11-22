@@ -81,7 +81,7 @@ function coverHtml(m) {
     return `<img loading="lazy" alt="" src="/api/files/${c.file}/thumb${q}">`;
   }
   if (c && c.type === "stl") {
-    return `<img loading="lazy" alt="" data-stl="${c.file}" src="/api/files/${c.file}/thumb">`;
+    return `<img loading="lazy" alt="" data-stl="${c.file}" src="/api/files/${c.file}/thumb${c.v ? `?v=${c.v}` : ""}">`;
   }
   return `<span class="ph">${icon("cuboid")}</span>`;
 }
@@ -684,6 +684,11 @@ async function modelPage(id) {
       }
       return;
     }
+    const rep = e.target.closest("[data-replace-file]");
+    if (rep) {
+      replaceStl(rep.dataset.replaceFile, rep.dataset.fileName, rep);
+      return;
+    }
     const btn = e.target.closest("[data-rename-file]");
     if (!btn) return;
     const fileId = btn.dataset.renameFile;
@@ -751,6 +756,7 @@ async function modelPage(id) {
       <button class="small${parametric.length ? " ghost" : ""}" data-open="${f.id}" title="Open this STL in your slicer to make a new project 3MF">Create New Source
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
       <button type="button" class="small ghost" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename this STL file">Rename STL</button>
+      <button type="button" class="small ghost" data-replace-file="${f.id}" data-file-name="${esc(f.name)}" title="Swap in a new STL from your computer. Name, matched 3MFs, tags and history stay">Replace STL</button>
       ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>
       <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this STL (print history stays)">Delete STL</button>`;
@@ -768,6 +774,36 @@ async function modelPage(id) {
       show(stls.find((f) => f.id === b.dataset.part));
     }));
   show(stls[0]);
+}
+
+// Pick an STL on this computer and upload it over the library file (same name).
+function replaceStl(fileId, name, btn) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".stl,model/stl";
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const ok = await confirmDialog({ title: "Replace STL?", actionLabel: "Replace",
+      text: `<strong>${esc(name)}</strong> on the NAS will be overwritten with <strong>${esc(file.name)}</strong> (${fmtSize(file.size)}).
+             It keeps its name, matched project 3MFs, tags and print history.` });
+    if (!ok) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Uploading...";
+    try {
+      await api(`/api/files/${fileId}/content`, {
+        method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file,
+      });
+      await refreshLibrary();
+      route();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  };
+  input.click();
 }
 
 // ---------------------------------------------------------------- category editor
