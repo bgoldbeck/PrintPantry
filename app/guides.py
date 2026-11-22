@@ -162,6 +162,65 @@ class Facts:
         return "\n".join(lines)
 
 
+# ------------------------------------------------------------------ build sets
+
+BUILDS_RE = re.compile(r"^```builds[ \t]*\n(.*?)\n```[ \t]*$", re.S | re.M)
+
+
+def parse_builds(markdown: str) -> tuple[list[dict], str]:
+    """The guide's ```builds block: [{name, group, note, parts: [{file, qty}]}].
+    Returns (builds, error). Parts may also be written ["file.stl", 2]."""
+    m = BUILDS_RE.search(markdown or "")
+    if not m:
+        return [], ""
+    try:
+        raw = json.loads(m.group(1))
+    except ValueError as exc:
+        return [], f"The builds block isn't valid JSON: {exc}"
+    if isinstance(raw, dict):
+        raw = raw.get("builds") or []
+    out = []
+    for b in raw if isinstance(raw, list) else []:
+        if not isinstance(b, dict) or not b.get("name"):
+            continue
+        parts = []
+        for p in b.get("parts") or []:
+            if isinstance(p, (list, tuple)) and p:
+                name, qty = str(p[0]), p[1] if len(p) > 1 else 1
+            elif isinstance(p, dict) and p.get("file"):
+                name, qty = str(p["file"]), p.get("qty", 1)
+            elif isinstance(p, str):
+                name, qty = p, 1
+            else:
+                continue
+            try:
+                qty = max(1, min(50, int(qty)))
+            except (TypeError, ValueError):
+                qty = 1
+            parts.append({"file": name.strip(), "qty": qty})
+        if parts:
+            out.append({"name": str(b["name"])[:120], "group": str(b.get("group") or "")[:120],
+                        "note": str(b.get("note") or "")[:500], "parts": parts})
+    return out, ""
+
+
+def resolve_builds(builds: list[dict], files) -> list[dict]:
+    """Attach each part's library file (matched by file name, any case)."""
+    by_name: dict[str, object] = {}
+    for f in files:
+        by_name.setdefault(f.name.lower(), f)
+        by_name.setdefault(Path(f.name).stem.lower(), f)
+    out = []
+    for b in builds:
+        parts = []
+        for p in b["parts"]:
+            f = by_name.get(p["file"].lower()) or by_name.get(Path(p["file"]).stem.lower())
+            parts.append({**p, "id": f.id if f else None, "kind": f.kind if f else "", "name": f.name if f else p["file"]})
+        out.append({**b, "parts": parts, "pieces": sum(p["qty"] for p in parts),
+                    "missing": [p["file"] for p in parts if not p["id"]]})
+    return out
+
+
 # ------------------------------------------------------------------ writing
 
 
@@ -198,6 +257,20 @@ Numbered steps. Put part names in **bold**. One action per step.
 
 ## Tips and known problems
 What makers ran into (from their comments) and how they fixed it.
+
+When the model has several files to choose from (sizes, variants, old versions, add-ons), end
+with a build-set block. The app shows each set as a card with part pictures and a "Slice this set"
+button, so this is how the owner knows exactly which files go together. One set per complete,
+sensible build (e.g. one per size of a one-roll build, plus "add another ..." sets for modular
+add-ons). Use exact file names from <files> and counts for one build. Example:
+
+```builds
+[
+  {"group": "Glued, one roll", "name": "3/4 in roll", "note": "Most common size.",
+   "parts": [["LH frame glued.stl", 1], ["RH frame glued.stl", 1], ["Pin.stl", 2]]}
+]
+```
+Leave the block out for single-file models. Mention in the guide text that the sets are above.
 
 Callouts render as coloured boxes; use them for the most important points:
 > [!TIP] ...      > [!IMPORTANT] ...      > [!WARNING] ...      > [!NOTE] ...
@@ -379,9 +452,11 @@ class Guides:
             text = p.read_text("utf-8")
             mtime = p.stat().st_mtime
         except OSError:
-            return {"markdown": "", "updated": 0, "by": ""}
+            return {"markdown": "", "updated": 0, "by": "", "builds": [], "builds_error": ""}
         meta = (self.store.get(META_KEY, {}) or {}).get(m.id, {})
-        return {"markdown": text, "updated": mtime, "by": meta.get("by", "edited"), "ai_model": meta.get("model", "")}
+        builds, err = parse_builds(text)
+        return {"markdown": text, "updated": mtime, "by": meta.get("by", "edited"), "ai_model": meta.get("model", ""),
+                "builds": resolve_builds(builds, m.files), "builds_error": err}
 
     def save(self, m, markdown: str, by: str = "edited", ai_model: str = "") -> dict:
         if len(markdown.encode("utf-8")) > MAX_GUIDE_BYTES:

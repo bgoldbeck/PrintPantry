@@ -347,3 +347,16 @@ def test_mesh_reader_handles_other_attribute_orders():
     assert list(O._mesh_tris(raw)) == [0, 0, 0, 1, 0, 0, 0, 1, 0]
     fast = raw.replace(b'z="0" y="0" x="0"', b'x="0" y="0" z="0"').replace(b' paint_color="4"', b"")
     assert list(O._mesh_tris(fast, (1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0))) == [10, 0, 0, 11, 0, 0, 10, 1, 0]
+
+
+def test_same_stl_twice_is_two_pieces(lib, monkeypatch, tmp_path):
+    """Build sets: a part needed twice (e.g. 2 pins) is sent twice, the main file too."""
+    pin = write_stl(lib / "M" / "pin.stl", cube(s=4))
+    frame = write_stl(lib / "M" / "frame.stl", cube(s=20))
+    monkeypatch.setattr(service, "queue_job", lambda job: job)
+    base = {"printer": "u1", "path": "M/pin.stl", "machine": "m", "process": "p", "filaments": ["A"]}
+    job = service.submit({**base, "extra_paths": ["M/pin.stl", "M/frame.stl"], "keep_positions": False})
+    assert job.extra_paths == ["M/pin.stl", "M/frame.stl"]
+    out = tmp_path / "set.3mf"
+    O.plate_3mf([pin, pin, frame], {}, out, keep_positions=False)
+    assert len({i.key.split(":")[0] for i in O.threemf_items(out)}) == 3

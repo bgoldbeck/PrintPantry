@@ -493,6 +493,7 @@ async function modelPage(id) {
     <p class="sub">${esc(m.path.replace(/#.*/, ""))}${m.source ? ` · from <a href="${esc(m.source.url)}" target="_blank" rel="noopener">${esc(m.source.site)}</a>${m.source.author ? ` by ${esc(m.source.author)}` : ""}${m.source.license ? ` · ${esc(m.source.license)}` : ""}` : ""}</p>
     <div class="tags-edit" id="tags"></div>
     ${m.source?.summary || m.source?.description ? `<details class="source-summary"><summary>Description from ${esc(m.source.site)}</summary><p>${esc(m.source.description || m.source.summary).replaceAll("\n", "<br>")}</p></details>` : ""}
+    <section class="panel builds" id="builds" hidden></section>
     <section class="panel guide" id="guide"></section>
     <div class="model-layout">
       <div class="viewer-wrap">
@@ -517,7 +518,21 @@ async function modelPage(id) {
     </div>`;
 
   tagEditor(m, document.getElementById("tags"));
-  guidePanel(document.getElementById("guide"), m);
+  guidePanel(document.getElementById("guide"), m, {
+    buildsEl: document.getElementById("builds"),
+    slicers: slicerPrinters(),
+    hydrate: hydrateStlCovers,
+    // "Slice this set": the set's first STL opens the Slice dialog with the rest (and the counts) on the plate.
+    slice: (build, printerId) => {
+      const parts = build.parts.filter((p) => p.id && p.kind === "stl");
+      const main = m.files.find((x) => x.id === parts[0]?.id);
+      if (!main) return;
+      openSliceDialog(main, printerId, async () => { await refreshLibrary(); route(); }, {
+        siblings: m.files.filter((x) => x.kind === "stl" && x.id !== main.id),
+        set: { name: build.name, parts: parts.map((p) => ({ id: p.id, qty: p.qty })) },
+      });
+    },
+  });
   hydrateStlCovers(view);
   historyCtx([m]).then((ctx) => historyPanel(document.getElementById("history"), m.id, ctx));
   view.querySelectorAll("[data-print]").forEach((b) =>

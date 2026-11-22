@@ -81,7 +81,8 @@ function blocks(lines) {
       i++;
       while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
       i++;
-      html += `<pre><code>${escHtml(code.join("\n"))}</code></pre>`;
+      // ```builds holds the build sets, shown as cards above the guide.
+      if (!/^```builds/.test(line)) html += `<pre><code>${escHtml(code.join("\n"))}</code></pre>`;
     } else {
       const para = [];
       while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*>|```|\s*([-*+]|\d+[.)])\s+)/.test(lines[i])
