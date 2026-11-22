@@ -491,3 +491,23 @@ def test_delete_files(app_client):
     assert c.delete(f"/api/files/{stl['id']}").status_code == 200
     assert c.delete(f"/api/files/{sliced['id']}").status_code == 200
     assert c.delete(f"/api/files/{sliced['id']}").status_code == 404
+
+
+def test_replace_stl_keeps_id_and_name(app_client):
+    import struct
+
+    c, _ = app_client
+    stl = _file(c, "stl")
+    tri = struct.pack("<12fH", *([0.0] * 3), 0, 0, 0, 10, 0, 0, 0, 10, 0, 0)
+    body = b"\0" * 80 + struct.pack("<I", 2) + tri * 2
+    r = c.put(f"/api/files/{stl['id']}/content", content=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == stl["id"]
+    assert c.get(f"/api/files/{stl['id']}/raw").content == body
+    again = _file(c, "stl")
+    assert again["id"] == stl["id"] and again["name"] == stl["name"] and again["size"] == len(body)
+    # Not an STL, or not an STL slot: refused, file untouched.
+    assert c.put(f"/api/files/{stl['id']}/content", content=b"hello").status_code == 400
+    assert c.get(f"/api/files/{stl['id']}/raw").content == body
+    sliced = _file(c, "sliced3mf")
+    assert c.put(f"/api/files/{sliced['id']}/content", content=body).status_code == 400

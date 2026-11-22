@@ -114,7 +114,8 @@ class Model:
                 plate = next(p.index for p in f.info.plates if p.has_thumbnail)
                 return {"type": "plate", "file": f.id, "plate": plate}
         for f in self.by_kind("stl"):
-            return {"type": "stl", "file": f.id}
+            # v changes when the STL is replaced, so browsers drop the old picture.
+            return {"type": "stl", "file": f.id, "v": f"{int(f.mtime)}-{f.size}"}
         return None
 
     def summary(self) -> dict:
