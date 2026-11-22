@@ -105,7 +105,8 @@ def safe_name(name: str, fallback: str = "model") -> str:
 
 
 def html_to_text(s: str) -> str:
-    s = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>", "\n", s or "")
+    s = re.sub(r"(?i)<li[^>]*>", "\u2022 ", s or "")
+    s = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>", "\n", s)
     s = re.sub(r"<[^>]+>", "", s)
     s = html.unescape(s)
     return re.sub(r"\n{3,}", "\n\n", s).strip()
@@ -131,6 +132,7 @@ class Plan:
     author: str = ""
     license: str = ""
     summary: str = ""
+    description: str = ""  # the full write-up (summary is the one-liner)
     tags: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)  # site's own, broad to narrow
     files: list[RemoteFile] = field(default_factory=list)
@@ -167,6 +169,8 @@ _PRINT_QUERY = """query Print($id: ID!) { print(id: $id) {
 # Asked for separately: if Printables renames these, the import still works.
 _PRINT_EXTRA = """query PrintExtra($id: ID!) { print(id: $id) {
   user { publicUsername } license { name } } }"""
+# The full write-up (print settings, parts list, assembly), also asked for alone.
+PRINTABLES_DESCRIPTION = """query PrintDescription($id: ID!) { print(id: $id) { description } }"""
 _DOWNLOAD = """mutation GetDownloadLink($id: ID!, $modelId: ID!, $fileType: DownloadFileTypeEnum!, $source: DownloadSourceEnum!) {
   getDownloadLink(id: $id, printId: $modelId, fileType: $fileType, source: $source) {
     ok errors { field messages } output { link } } }"""
@@ -209,6 +213,11 @@ class Printables:
             categories=[c["name"] for c in ((p.get("category") or {}).get("path") or []) if c.get("name")],
             pictures=[PRINTABLES_MEDIA + i["filePath"].lstrip("/") for i in p.get("images") or [] if i.get("filePath")],
         )
+        try:
+            desc = self._gql(PRINTABLES_DESCRIPTION, {"id": model_id}).get("print") or {}
+            plan.description = html_to_text(desc.get("description") or "")
+        except (ImportError_, httpx.HTTPError):
+            pass
         for kind, items in (("stl", p.get("stls")), ("other", p.get("otherFiles"))):
             for f in items or []:
                 name = f.get("name") or ""
@@ -748,6 +757,7 @@ class Importer:
             "site": plan.site, "id": plan.id, "url": plan.url, "title": plan.title,
             "author": plan.author, "license": plan.license, "tags": plan.tags,
             "categories": plan.categories, "summary": plan.summary,
+            "description": plan.description,
             "files": [safe_name(Path(f.name).name) for f in plan.files],
             "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }

@@ -12,6 +12,7 @@ import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { openCustomizeDialog } from "./parametric.js";
 import { swatchHtml } from "./filament.js";
 import { historyPage, historyPanel } from "./history.js";
+import { guidePanel } from "./guide.js";
 import { costHtml, loadPricing, spoolsPage } from "./spools.js";
 
 const view = document.getElementById("view");
@@ -491,7 +492,8 @@ async function modelPage(id) {
     </div>
     <p class="sub">${esc(m.path.replace(/#.*/, ""))}${m.source ? ` · from <a href="${esc(m.source.url)}" target="_blank" rel="noopener">${esc(m.source.site)}</a>${m.source.author ? ` by ${esc(m.source.author)}` : ""}${m.source.license ? ` · ${esc(m.source.license)}` : ""}` : ""}</p>
     <div class="tags-edit" id="tags"></div>
-    ${m.source?.summary ? `<details class="source-summary"><summary>Description from ${esc(m.source.site)}</summary><p>${esc(m.source.summary).replaceAll("\n", "<br>")}</p></details>` : ""}
+    ${m.source?.summary || m.source?.description ? `<details class="source-summary"><summary>Description from ${esc(m.source.site)}</summary><p>${esc(m.source.description || m.source.summary).replaceAll("\n", "<br>")}</p></details>` : ""}
+    <section class="panel guide" id="guide"></section>
     <div class="model-layout">
       <div class="viewer-wrap">
         <div class="viewer" id="viewer"></div>
@@ -515,6 +517,7 @@ async function modelPage(id) {
     </div>`;
 
   tagEditor(m, document.getElementById("tags"));
+  guidePanel(document.getElementById("guide"), m);
   hydrateStlCovers(view);
   historyCtx([m]).then((ctx) => historyPanel(document.getElementById("history"), m.id, ctx));
   view.querySelectorAll("[data-print]").forEach((b) =>
