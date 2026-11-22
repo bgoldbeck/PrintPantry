@@ -63,6 +63,9 @@ function printerBadge(id) {
   return p ? `<span class="badge printer" style="--c:${p.color}">${esc(p.name)}</span>` : "";
 }
 const fileUrl = (id, download) => `/api/files/${id}/raw${download ? "?download=1" : ""}`;
+// Versioned URL for showing a file: changes when the file is replaced, so the
+// browser never shows an old copy from its cache.
+const viewUrl = (f) => `/api/files/${f.id}/raw?v=${Math.floor(f.mtime || 0)}-${f.size || 0}`;
 
 function setTitle(t) { document.title = t ? `${t} · Print Pantry` : "Print Pantry"; }
 
@@ -81,7 +84,7 @@ function coverHtml(m) {
     return `<img loading="lazy" alt="" src="/api/files/${c.file}/thumb${q}">`;
   }
   if (c && c.type === "stl") {
-    return `<img loading="lazy" alt="" data-stl="${c.file}" src="/api/files/${c.file}/thumb${c.v ? `?v=${c.v}` : ""}">`;
+    return `<img loading="lazy" alt="" data-stl="${c.file}" data-v="${esc(c.v || "")}" src="/api/files/${c.file}/thumb${c.v ? `?v=${c.v}` : ""}">`;
   }
   return `<span class="ph">${icon("cuboid")}</span>`;
 }
@@ -140,7 +143,7 @@ function hydrateStlCovers(root) {
       const holder = img.parentElement;
       holder.innerHTML = `<span class="ph">${icon("cuboid")}</span>`;
       try {
-        const blob = await renderThumbnail(fileUrl(id));
+        const blob = await renderThumbnail(`${fileUrl(id)}${img.dataset.v ? `?v=${img.dataset.v}` : ""}`);
         if (!blob) return;
         const url = URL.createObjectURL(blob);
         holder.innerHTML = `<img alt="" src="${url}">`;
@@ -762,7 +765,7 @@ async function modelPage(id) {
       <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this STL (print history stays)">Delete STL</button>`;
     showSources(f);
     try {
-      await viewer.load(fileUrl(f.id));
+      await viewer.load(viewUrl(f));
       loading.style.display = "none";
     } catch (e) {
       loading.textContent = `Couldn't open ${f.name}: ${e.message || e}`;
@@ -773,10 +776,36 @@ async function modelPage(id) {
       document.querySelectorAll("[data-part]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
       show(stls.find((f) => f.id === b.dataset.part));
     }));
-  show(stls[0]);
+  // After Replace STL, stay on the STL that was replaced.
+  const keep = stls.find((f) => f.id === showStlNext) || stls[0];
+  showStlNext = null;
+  if (keep !== stls[0]) {
+    document.querySelectorAll("[data-part]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.part === keep.id)));
+  }
+  show(keep);
 }
 
 // Pick an STL on this computer and upload it over the library file (same name).
+let showStlNext = null;
+
+function uploadWithProgress(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status === 401) { location.href = "/login"; return reject(new Error("login")); }
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else reject(new Error(body.detail || `${xhr.status} ${xhr.statusText || "upload failed"}`));
+    };
+    xhr.onerror = () => reject(new Error("Network error while uploading"));
+    xhr.send(file);
+  });
+}
+
 function replaceStl(fileId, name, btn) {
   const input = document.createElement("input");
   input.type = "file";
@@ -790,15 +819,20 @@ function replaceStl(fileId, name, btn) {
     if (!ok) return;
     const label = btn.textContent;
     btn.disabled = true;
-    btn.textContent = "Uploading...";
+    btn.textContent = "Uploading 0%";
+    flash(`Uploading <strong>${esc(file.name)}</strong> (${fmtSize(file.size)})...`);
     try {
-      await api(`/api/files/${fileId}/content`, {
-        method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file,
+      const r = await uploadWithProgress(`/api/files/${fileId}/content`, file, (p) => {
+        btn.textContent = p < 1 ? `Uploading ${Math.round(p * 100)}%` : "Saving on the NAS...";
       });
+      if (r.size !== file.size) throw new Error(`The NAS saved ${fmtSize(r.size)}, expected ${fmtSize(file.size)}. Try again.`);
+      showStlNext = fileId;
       await refreshLibrary();
       route();
+      const when = new Date((r.mtime || Date.now() / 1000) * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      flash(`<strong>Replaced ${esc(name)}</strong> with ${esc(file.name)}: ${fmtSize(r.size)}, saved on the NAS at ${when}. The 3D view now shows the new file.`);
     } catch (err) {
-      alert(err.message);
+      flash(`<strong>Replace failed.</strong> ${esc(err.message || err)}. ${esc(name)} was not changed.`);
       btn.disabled = false;
       btn.textContent = label;
     }
