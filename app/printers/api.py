@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import asdict
 
@@ -45,6 +46,9 @@ class PrintRequest(BaseModel):
     accept_warnings: bool = False
     # file filament (0-based) -> toolhead (0-based); missing = Print Pantry's default pick
     tool_map: dict[int, int] | None = None
+    # Send in the background: answer as soon as the checks pass, then upload and
+    # start on a thread. Progress shows as the printer's "sending" state.
+    background: bool = False
 
 
 def _material(value: str) -> str:
@@ -167,6 +171,63 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "tools": tools, "tool_map": chosen}
 
 
+class SendRefused(Exception):
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def send_print(hub: PrinterHub, p, f, path, tool_map=None, accept_warnings=False, on_start=None,
+               background=False) -> dict:
+    """Check a print, then upload and start it. With ``background`` the upload
+    runs on a thread and this returns at once; ``p.sending`` tells every page
+    how it went. Raises SendRefused when the checks fail."""
+    lock = hub.starting[p.profile.id]
+    if not lock.acquire(blocking=False):
+        raise SendRefused(409, "A print is already being sent to this printer")
+    try:
+        if p.configured:
+            p.refresh()
+        pre = preflight(p, f, tool_map=tool_map)
+        if pre["blockers"]:
+            raise SendRefused(409, "; ".join(pre["blockers"]))
+        if pre["warnings"] and not accept_warnings:
+            raise SendRefused(409, "Confirm the toolhead warnings first: " + "; ".join(pre["warnings"]))
+    except BaseException:
+        lock.release()
+        raise
+    p.sending = {"state": "sending", "file": f.name, "file_id": f.id, "started": time.time(), "message": ""}
+
+    def run():
+        try:
+            log.info("starting %s on %s", f.relpath, p.profile.id)
+            p.cancel_sent = None  # a new print: forget any earlier "Cancelling..."
+            remote = p.start_print(path, f.name, tool_map=pre["tool_map"])
+            p.sending = {**p.sending, "state": "sent", "finished": time.time()}
+            if on_start:
+                try:
+                    on_start(p.profile.id, f, remote, pre["tool_map"])
+                except Exception:  # noqa: BLE001 - the print is running; history is secondary
+                    log.exception("couldn't record the print start")
+        except Exception as exc:  # noqa: BLE001 - shown on the printer card
+            if not isinstance(exc, PrinterError):
+                log.exception("sending %s to %s failed", f.relpath, p.profile.id)
+            p.sending = {**p.sending, "state": "failed", "finished": time.time(), "message": str(exc) or type(exc).__name__}
+            if not background:
+                raise
+        finally:
+            lock.release()
+
+    if background:
+        threading.Thread(target=run, name=f"send-{p.profile.id}", daemon=True).start()
+        return {"ok": True, "queued": True, "printer": p.to_json()}
+    try:
+        run()
+    except PrinterError as exc:
+        raise SendRefused(502, str(exc)) from exc
+    return {"ok": True, "printer": p.to_json()}
+
+
 def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
     """``resolve(file_id)`` returns (LibFile, Path) or raises 404.
     ``on_start(printer_id, file, remote_name, tool_map)`` is told about each print started."""
@@ -222,31 +283,10 @@ def make_router(hub: PrinterHub, resolve, on_start=None) -> APIRouter:
         f, path = resolve(req.file_id)
         if not req.bed_clear:
             raise HTTPException(400, "Confirm the bed is clear first")
-        lock = starting[printer_id]
-        if not lock.acquire(blocking=False):
-            raise HTTPException(409, "A print is already being sent to this printer")
         try:
-            if p.configured:
-                p.refresh()
-            pre = preflight(p, f, tool_map=req.tool_map)
-            if pre["blockers"]:
-                raise HTTPException(409, "; ".join(pre["blockers"]))
-            if pre["warnings"] and not req.accept_warnings:
-                raise HTTPException(409, "Confirm the toolhead warnings first: " + "; ".join(pre["warnings"]))
-            log.info("starting %s on %s", f.relpath, printer_id)
-            p.cancel_sent = None  # a new print: forget any earlier "Cancelling..."
-            try:
-                remote = p.start_print(path, f.name, tool_map=pre["tool_map"])
-            except PrinterError as exc:
-                raise HTTPException(502, str(exc)) from exc
-            if on_start:
-                try:
-                    on_start(printer_id, f, remote, pre["tool_map"])
-                except Exception:  # noqa: BLE001 - the print is running; history is secondary
-                    log.exception("couldn't record the print start")
-            return {"ok": True, "printer": p.to_json()}
-        finally:
-            lock.release()
+            return send_print(hub, p, f, path, req.tool_map, req.accept_warnings, on_start, req.background)
+        except SendRefused as exc:
+            raise HTTPException(exc.code, str(exc)) from None
 
     @router.put("/{printer_id}/toolheads/{index}/color")
     def set_color(printer_id: str, index: int, req: ColorRequest):

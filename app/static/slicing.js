@@ -1,7 +1,7 @@
 // "Slice for U1 / P1S" dialog. The slicer runs on the NAS (OrcaSlicer's
 // command line in its own container); new files land in the model's
 // "sliced" folder and show up under Print files.
-import { printerById, stateBadge, watchToolheads } from "./printers.js";
+import { loadPrinters, printerById, stateBadge, watchToolheads } from "./printers.js";
 import { createPartsViewer } from "./viewer.js";
 import { createProcessPanel } from "./process.js";
 const esc = (s) =>
@@ -87,6 +87,19 @@ export function maxCopies(rects, bed) {
 // "Slice for ..." on an STL of a model that has other STLs, or on a 3MF with
 // several objects: each object (or STL, or separate body inside an STL) can
 // print with its own toolhead. ctx.siblings: the model's other STLs.
+// A slice left running when its dialog was closed: keep checking, then refresh
+// the page so the new print file shows up (unless you've moved on).
+function watchInBackground(job, onDone) {
+  const page = location.hash;
+  const poll = async () => {
+    try { job = await api(`/api/slicer/jobs/${job.id}`); } catch { /* try again */ }
+    if (job.state === "failed") return;
+    if (job.state !== "done") { setTimeout(poll, 3000); return; }
+    if (location.hash === page && !document.querySelector("dialog[open]")) onDone?.(job);
+  };
+  setTimeout(poll, 1500);
+}
+
 export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const dlg = document.createElement("dialog");
   dlg.className = "slice-dialog";
@@ -95,7 +108,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   let timer = null;
   let viewer = null;
   let stopHeads = null;
-  dlg.addEventListener("close", () => { clearTimeout(timer); stopHeads?.(); viewer?.dispose(); dlg.remove(); });
+  let running = null; // the slice job while it runs; closing the dialog doesn't stop it
+  dlg.addEventListener("close", () => {
+    clearTimeout(timer); stopHeads?.(); viewer?.dispose(); dlg.remove();
+    if (running) watchInBackground(running, onDone);
+  });
   dlg.showModal();
 
   let o;
@@ -127,6 +144,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const slots = proj.filaments.length ? proj.filaments.map((f) => ({ ...f })) : [{ type: "PLA", colour: "" }];
   let baseCount = slots.length;
   const tooMany = slots.length > o.printer.max_filaments;
+  const printerName = printerById(printerId)?.name || printerId;
+  const canPrintAfter = !!printerById(printerId)?.can_print;
   const listed = slots.length;  // filaments the project lists (before dropping unused ones)
   const isU1 = printerId === "u1";
   let heads = printerById(printerId)?.status?.toolheads || [];
@@ -199,7 +218,9 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     <footer class="slice-foot">
       <div data-warn></div>
       <div data-progress></div>
-      <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button data-go${tooMany ? " disabled" : ""}>Slice</button></div>
+      <div class="dialog-actions">${canPrintAfter ? `<label class="check print-after" title="Sends the sliced file to ${esc(printerName)} as soon as it's ready. You can close this window.">
+          <input type="checkbox" data-print-after> Print when sliced <small class="muted">(bed is clear)</small></label>` : ""}
+        <button class="ghost" data-close>Cancel</button><button data-go${tooMany ? " disabled" : ""}>Slice</button></div>
     </footer>`;
 
   const $ = (sel) => dlg.querySelector(sel);
@@ -623,6 +644,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   }
   loadObjects();
   $("[data-close]").onclick = () => dlg.close();
+  const printAfter = $("[data-print-after]");
+  if (printAfter) printAfter.onchange = () => { go.textContent = printAfter.checked ? "Slice & print" : "Slice"; };
 
   go.onclick = async () => {
     let overrides;
@@ -656,6 +679,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       body.colours = slots.map((s, i) => (headColour(i) || (objs.compact ? s.colour || "" : "")).slice(0, 7));
     }
     if (objs.copies > 1) body.copies = objs.copies;
+    if (printAfter?.checked) body.print_after = true;
     const byType = {};
     body.filaments.forEach((n, i) => {
       const t = loadedType(i) || slots[i]?.type;
@@ -674,10 +698,19 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       dlg.querySelectorAll("select, input, button").forEach((x) => (x.disabled = false));
       return;
     }
+    running = job;
+    if (body.print_after) {
+      // Nothing left to watch here: the printer card shows the slice and the send.
+      progress.innerHTML = `<div class="notice success">Slicing in the background. It goes to ${esc(printerName)} when it's done.</div>`;
+      loadPrinters();
+      setTimeout(() => dlg.open && dlg.close(), 1200);
+      return;
+    }
     const started = Date.now();
     const poll = async () => {
       try { job = await api(`/api/slicer/jobs/${job.id}`); } catch (e) { job = { ...job, message: e.message }; }
       const secs = Math.round((Date.now() - started) / 1000);
+      if (job.state === "done" || job.state === "failed") running = null;
       if (job.state === "done") {
         const warn = job.warnings?.length ? `<div class="notice warn"><ul>${job.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
         const used = (job.usage || []).map((g, i) => (g > 0 ? `<span class="used">${swatch(slotColour(i))} ${esc(slotTag(i))} ${g < 10 ? g.toFixed(1) : Math.round(g)} g</span>` : "")).join("");
@@ -694,7 +727,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         dlg.querySelectorAll("select, input").forEach((x) => (x.disabled = false));
         return;
       }
-      progress.innerHTML = `<div class="notice">${esc(job.state === "queued" ? "Waiting for another slice to finish..." : job.message || "Slicing...")} ${secs} s</div>`;
+      progress.innerHTML = `<div class="notice">${esc(job.state === "queued" ? "Waiting for another slice to finish..." : job.message || "Slicing...")} ${secs} s
+        <small class="muted">· You can close this window; it keeps slicing.</small></div>`;
       timer = setTimeout(poll, 1500);
     };
     poll();

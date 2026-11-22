@@ -409,7 +409,7 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
 // ---------------------------------------------------------------- sliced toolpath preview
 // Draws the extrusion lines of a sliced file (from /api/files/{id}/toolpath) on
 // the build plate, each filament in the colour of the toolhead it prints with.
-export function createToolpathViewer(container, buffer) {
+function parseToolpath(buffer) {
   const dv = new DataView(buffer);
   if (String.fromCharCode(...new Uint8Array(buffer, 0, 4)) !== "PPTP") throw new Error("Not a toolpath");
   const [bx0, by0, bx1, by1] = [4, 8, 12, 16].map((o) => dv.getFloat32(o, true));
@@ -430,6 +430,69 @@ export function createToolpathViewer(container, buffer) {
     }
     parts.push({ tool, pos });
   }
+  return { parts, bw, bd, maxZ };
+}
+
+// Lower layers a little darker, so the shape reads without lighting.
+function shadeLines(lines, colours, maxZ, fallback = "#999") {
+  const c = new THREE.Color();
+  lines.forEach((l) => {
+    c.set(colours[l.userData.tool] || fallback);
+    const pos = l.geometry.attributes.position.array, col = l.geometry.attributes.color.array;
+    for (let k = 0; k < pos.length; k += 3) {
+      const s = 0.55 + 0.45 * (pos[k + 1] / maxZ);
+      col[k] = c.r * s; col[k + 1] = c.g * s; col[k + 2] = c.b * s;
+    }
+    l.geometry.attributes.color.needsUpdate = true;
+  });
+}
+
+function toolpathLines(parts, scene) {
+  return parts.map(({ tool, pos }) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.length), 3));
+    const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true }));
+    l.userData.tool = tool;
+    scene.add(l);
+    return l;
+  });
+}
+
+/** Picture of what a sliced file prints (its toolpath), for print-file cards.
+ *  colours: {filament index (0-based T number): css colour}. */
+export function renderToolpathThumbnail(buffer, colours = {}, px = 384) {
+  const job = queue.then(async () => {
+    if (!thumbRenderer) {
+      thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    }
+    thumbRenderer.setPixelRatio(1);
+    thumbRenderer.setSize(px, px, false);
+    const { parts, maxZ } = parseToolpath(buffer);
+    const scene = new THREE.Scene();
+    const lines = toolpathLines(parts, scene);
+    shadeLines(lines, colours, maxZ, "#e9a23b");
+    const box = new THREE.Box3();
+    lines.forEach((l) => { l.geometry.computeBoundingBox(); box.union(l.geometry.boundingBox); });
+    if (box.isEmpty()) throw new Error("Nothing printed on this plate");
+    const size = new THREE.Vector3(), mid = new THREE.Vector3();
+    box.getSize(size); box.getCenter(mid);
+    scene.position.set(-mid.x, 0, -mid.z);
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 10000);
+    // A little tighter than the STL pictures: toolpaths have no empty corners to frame.
+    frameCamera(camera, new THREE.Vector3(Math.max(size.x, 1), Math.max(size.y, 0.4), Math.max(size.z, 1)).multiplyScalar(0.85));
+    thumbRenderer.setClearColor(0x000000, 0);
+    thumbRenderer.render(scene, camera);
+    const blob = await new Promise((res) => thumbRenderer.domElement.toBlob(res, "image/png"));
+    lines.forEach((l) => { l.geometry.dispose(); l.material.dispose(); });
+    return blob;
+  });
+  queue = job.catch(() => {});
+  return job;
+}
+
+export function createToolpathViewer(container, buffer) {
+  const { parts, bw, bd, maxZ } = parseToolpath(buffer);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -444,16 +507,7 @@ export function createToolpathViewer(container, buffer) {
   grid.material.opacity = 0.5;
   scene.add(grid);
 
-  // Lower layers a little darker, so the shape reads without lighting.
-  const lines = parts.map(({ tool, pos }) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.length), 3));
-    const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true }));
-    l.userData.tool = tool;
-    scene.add(l);
-    return l;
-  });
+  const lines = toolpathLines(parts, scene);
 
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -487,21 +541,10 @@ export function createToolpathViewer(container, buffer) {
     renderer.render(scene, camera);
   })();
 
-  const c = new THREE.Color();
   return {
     tools: parts.map((p) => p.tool),
     // colours: {filament index: css colour}
-    setColours(colours) {
-      lines.forEach((l) => {
-        c.set(colours[l.userData.tool] || "#999");
-        const pos = l.geometry.attributes.position.array, col = l.geometry.attributes.color.array;
-        for (let k = 0; k < pos.length; k += 3) {
-          const s = 0.55 + 0.45 * (pos[k + 1] / maxZ);
-          col[k] = c.r * s; col[k + 1] = c.g * s; col[k + 2] = c.b * s;
-        }
-        l.geometry.attributes.color.needsUpdate = true;
-      });
-    },
+    setColours(colours) { shadeLines(lines, colours, maxZ); },
     dispose() {
       disposed = true;
       cancelAnimationFrame(frame);

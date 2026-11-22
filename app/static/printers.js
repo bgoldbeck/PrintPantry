@@ -97,6 +97,9 @@ export function printerState(p) {
     return { key: "calibrating", kind: "busy", label: "Calibrating", free: false, detail: p.calibrating.name };
   }
   const temps = st.temps || [];
+  const send = p.sending;
+  if (send?.state === "slicing") return { key: "sending", kind: "busy", label: "Slicing…", free: false, detail: `${send.file}: prints when sliced` };
+  if (send?.state === "sending") return { key: "sending", kind: "busy", label: "Sending…", free: false, detail: send.file };
   if (p.cancel?.state === "stopping") return { key: "cancelling", kind: "busy", label: "Cancelling…", free: false, detail: st.file };
   if (p.cancel?.state === "stuck") return { key: "cancelling", kind: "warn", label: "Cancel not confirmed", free: false, detail: "Still printing after Cancel. Check the printer screen." };
   switch (st.state) {
@@ -514,6 +517,27 @@ function cancelHtml(p, local) {
   return "";
 }
 
+// A print sent in the background (or waiting for its slice): what it's doing,
+// or why it didn't start.
+function sendHtml(p) {
+  const s = p.sending;
+  if (!s) return "";
+  const secs = (n) => (n >= 60 ? `${Math.floor(n / 60)} min ${n % 60} s` : `${n} s`);
+  if (s.state === "slicing") {
+    return `<div class="notice busy small-notice" role="status"><span class="spinner"></span><b>Slicing ${esc(s.file)}</b>
+      (${secs(s.age)}). It will be sent to ${esc(p.name)} when it's done.</div>`;
+  }
+  if (s.state === "sending") {
+    return `<div class="notice busy small-notice" role="status"><span class="spinner"></span><b>Sending ${esc(s.file)}</b>
+      to ${esc(p.name)} (${secs(s.age)})…</div>`;
+  }
+  if (s.state === "sent") return `<div class="notice ok small-notice" role="status">✓ ${esc(s.file)} sent. ${esc(p.name)} is starting it.</div>`;
+  if (s.state === "failed") {
+    return `<div class="notice error small-notice" role="alert"><b>${esc(s.file)} didn't start.</b> ${esc(s.message)}</div>`;
+  }
+  return "";
+}
+
 function cardBody(p, local, last) {
   const st = p.status;
   if (!p.configured) return `<p class="empty">${esc(p.setup_hint)}</p>`;
@@ -559,6 +583,7 @@ function cardBody(p, local, last) {
   const problems = [st.problem, ...(st.blockers || [])].filter(Boolean);
   const plainMsg = st.message && !problems.length && ["error", "failed", "offline", "starting", "paused"].includes(st.state);
   return `
+    ${sendHtml(p)}
     ${cancelHtml(p, local)}
     ${plainMsg ? `<div class="notice error small-notice">${esc(st.message)}</div>` : ""}
     ${problems.map((x) => problemHtml(x, st)).join("")}
@@ -913,7 +938,7 @@ export async function openPrintDialog(fileId, printerId, startMap = null) {
     try {
       await api(`/api/printers/${printerId}/print`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_id: fileId, bed_clear: bed.checked, accept_warnings: !!ack()?.checked, tool_map: map }),
+        body: JSON.stringify({ file_id: fileId, bed_clear: bed.checked, accept_warnings: !!ack()?.checked, tool_map: map, background: true }),
       });
       dlg.close();
       location.hash = "#/printers";

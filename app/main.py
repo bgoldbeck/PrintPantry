@@ -51,6 +51,9 @@ from .tags import Tags, clean_tag
 log = logging.getLogger("printpantry")
 STATIC = Path(__file__).parent / "static"
 MAX_RENDER_BYTES = 2 * 1024 * 1024
+# Files whose picture the browser renders and stores: STLs, and sliced files
+# without their own thumbnail (drawn from the toolpath).
+RENDERED = ("stl", "gcode", "sliced3mf")
 
 
 SLICERS = ("snapmaker", "bambu")
@@ -97,12 +100,13 @@ class CategoryPatch(BaseModel):
     color: str | None = None
 
 
-def prune_thumbs(folder: Path, stls) -> int:
-    """Delete stored STL previews whose STL was removed or changed."""
-    keep = {f"{f.id}-{int(f.mtime)}-{f.size}.png" for f in stls}
+def prune_thumbs(folder: Path, files) -> int:
+    """Delete stored previews (STL renders, and sliced-file toolpath pictures,
+    which end in -p<plate>) whose file was removed or changed."""
+    keep = {f"{f.id}-{int(f.mtime)}-{f.size}" for f in files}
     removed = 0
     for png in folder.glob("*.png"):
-        if png.name not in keep:
+        if re.sub(r"-p\d+$", "", png.stem) not in keep:
             png.unlink(missing_ok=True)
             removed += 1
     if removed:
@@ -136,7 +140,7 @@ def create_app(
     def scan_and_tidy():
         lib = scanner.scan()
         if not lib.error:
-            prune_thumbs(settings.data / "thumbs", [f for f in lib.files.values() if f.kind == "stl"])
+            prune_thumbs(settings.data / "thumbs", [f for f in lib.files.values() if f.kind in RENDERED])
 
     def loop():
         scan_and_tidy()
@@ -764,27 +768,32 @@ def create_app(
                 return Response(hit[0], media_type=hit[1], headers=headers)
         elif f.kind == "image":
             return FileResponse(path, headers=headers)
-        elif f.kind == "stl":
-            cached = render_path(f)
+        if f.kind in RENDERED:
+            cached = render_path(f, plate)
             if cached.is_file():
                 return FileResponse(cached, media_type="image/png", headers=headers)
         raise HTTPException(404, "No thumbnail")
 
-    def render_path(f) -> Path:
-        return settings.data / "thumbs" / f"{f.id}-{int(f.mtime)}-{f.size}.png"
+    def render_path(f, plate: int = 1) -> Path:
+        if f.kind == "stl":
+            return settings.data / "thumbs" / f"{f.id}-{int(f.mtime)}-{f.size}.png"
+        return settings.data / "thumbs" / f"{f.id}-{int(f.mtime)}-{f.size}-p{int(plate)}.png"
 
     @app.put("/api/files/{file_id}/thumb")
-    async def put_render(file_id: str, request: Request):
-        """The browser renders STL previews once and stores them here."""
+    async def put_render(file_id: str, request: Request, plate: int = 1):
+        """The browser renders STL previews (and pictures of sliced toolpaths) once and stores them here."""
         f, _ = resolve(file_id)
-        if f.kind != "stl":
-            raise HTTPException(400, "Only STL previews can be stored")
+        if f.kind not in RENDERED:
+            raise HTTPException(400, "Only STL and sliced-file previews can be stored")
         body = await request.body()
         if len(body) > MAX_RENDER_BYTES or not body.startswith(b"\x89PNG\r\n\x1a\n"):
             raise HTTPException(400, "Expected a PNG under 2 MB")
-        for old in (settings.data / "thumbs").glob(f"{f.id}-*.png"):
+        target = render_path(f, plate)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pattern = f"{f.id}-*.png" if f.kind == "stl" else f"{f.id}-*-p{int(plate)}.png"
+        for old in (settings.data / "thumbs").glob(pattern):
             old.unlink(missing_ok=True)
-        render_path(f).write_bytes(body)
+        target.write_bytes(body)
         return {"ok": True}
 
     # ------------------------------------------------------------ printers
@@ -808,7 +817,8 @@ def create_app(
     from .process_settings import ProcessPresets
 
     app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios,
-                                     ProcessPresets(settings.data / "process-presets.json")))
+                                     ProcessPresets(settings.data / "process-presets.json"),
+                                     hub=hub, on_start=history.record_start))
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
     # OpenSCAD / FreeCAD models are rendered by the slicer container too.
     app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))

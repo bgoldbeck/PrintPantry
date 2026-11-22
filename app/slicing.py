@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
@@ -38,6 +39,8 @@ class SliceRequest(BaseModel):
     copies: int = 1  # the plate this many times (the slicer arranges them)
     overrides: dict = {}  # process setting -> value (see process_settings.py)
     author_profile: bool = False  # presets mode: carry the 3MF's own process settings over first
+    # Send the result to the printer when it's sliced (the user ticked "bed is clear").
+    print_after: bool = False
 
 
 class ProcessPresetBody(BaseModel):
@@ -87,10 +90,11 @@ class SlicerClient:
 
 
 def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
-                presets: PS.ProcessPresets | None = None) -> APIRouter:
+                presets: PS.ProcessPresets | None = None, hub=None, on_start=None) -> APIRouter:
     """``resolve(file_id)`` -> (LibFile, Path) or 404; ``rescan()`` scans the library (blocking);
     ``flow_ratios(printer)`` -> {filament preset: calibrated flow ratio};
-    ``presets``: saved process settings per printer."""
+    ``presets``: saved process settings per printer;
+    ``hub`` / ``on_start``: for "print when sliced" (see printers.api.send_print)."""
     flow_ratios = flow_ratios or (lambda printer: {})
     router = APIRouter(prefix="/api/slicer")
     rescanned: set[str] = set()
@@ -155,9 +159,58 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
         if req.mode == "presets":
             saved = flow_ratios(req.printer)
             body["flow_ratios"] = {n: saved[n] for n in req.filaments if n in saved}
+        body.pop("print_after", None)
+        printer = hub.get(req.printer) if (req.print_after and hub) else None
+        if req.print_after and not (printer and printer.configured and printer.can_print):
+            raise HTTPException(400, "That printer can't be sent prints from here")
         job = client.call("POST", "/jobs", json=body)
         log.info("slice job %s: %s for %s", job.get("id"), f.relpath, req.printer)
+        if printer:
+            printer.sending = {"state": "slicing", "file": f.name, "file_id": f.id, "job": job.get("id"),
+                               "started": time.time(), "message": ""}
+            threading.Thread(target=print_when_sliced, args=(printer, job.get("id")),
+                             name=f"slice-print-{job.get('id')}", daemon=True).start()
         return job
+
+    def print_when_sliced(printer, job_id: str, every: float = 2.0, give_up: float = 3 * 3600) -> None:
+        """Wait for a slice job in the background, then send what it made to the printer."""
+        from .printers.api import SendRefused, send_print
+        from .scanner import make_id
+
+        def failed(message: str) -> None:
+            log.warning("print after slice %s: %s", job_id, message)
+            printer.sending = {**(printer.sending or {}), "state": "failed", "finished": time.time(), "message": message}
+
+        end = time.time() + give_up
+        data: dict = {}
+        while time.time() < end:
+            try:
+                data = client.call("GET", f"/jobs/{job_id}")
+            except HTTPException as exc:
+                data = {"state": "?", "message": exc.detail}
+            if data.get("state") in ("done", "failed"):
+                break
+            time.sleep(every)
+        if (printer.sending or {}).get("job") != job_id:
+            return  # another send replaced this one
+        if data.get("state") != "done":
+            return failed(f"Slicing failed: {data.get('message') or 'it took too long'}")
+        outputs = data.get("outputs") or []
+        if len(outputs) != 1:
+            return failed(f"Sliced {len(outputs)} plates; pick the one to print from the model page")
+        with lock:
+            rescanned.add(job_id)
+        rescan()
+        try:
+            f, path = resolve(make_id(outputs[0]))
+        except HTTPException:
+            return failed(f"Couldn't find {outputs[0]} in the library after slicing")
+        try:
+            send_print(hub, printer, f, path, on_start=on_start)
+        except SendRefused as exc:
+            failed(f"Sliced, but not printed: {exc}")
+        except Exception as exc:  # noqa: BLE001 - shown on the printer card
+            failed(f"Sliced, but not printed: {exc}")
 
     @router.get("/process")
     def process_values(printer: str = "u1", process: str = "", file_id: str = "", mode: str = "presets"):
