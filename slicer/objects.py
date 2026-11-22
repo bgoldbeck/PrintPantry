@@ -204,23 +204,76 @@ def stl_bodies(path: Path) -> list[array]:
     return bodies
 
 
+DETAIL_SIZE = 0.25  # a body smaller than this share of the biggest body's size is a detail
+DETAIL_VOLUME = 0.02  # ... and its box holds less than this share of the biggest box
+
+
+def group_details(bodies: list[array]) -> list[tuple[str | None, array]]:
+    """Bodies with the small loose bits (embossed letters, tick marks, a logo)
+    gathered into one "Details" piece per height band, so text exported with
+    its model shows as one piece rather than one per letter.
+
+    A body is a detail when it is much smaller than the biggest body. Details
+    with the same bottom and top heights (one pad / extrusion) go together.
+    Returns (name or None, triangles); details come last."""
+    if len(bodies) < 3:
+        return [(None, b) for b in bodies]
+    boxes = [bbox(b) for b in bodies]
+    sizes = [[hi[k] - lo[k] for k in range(3)] for lo, hi in boxes]
+    vols = [max(s[0], 1e-6) * max(s[1], 1e-6) * max(s[2], 1e-6) for s in sizes]
+    big = max(range(len(bodies)), key=lambda i: vols[i])
+    reach = max(sizes[big])
+    small = [i for i in range(len(bodies)) if i != big
+             and max(sizes[i]) < DETAIL_SIZE * reach and vols[i] < DETAIL_VOLUME * vols[big]]
+    if len(small) < 2:
+        return [(None, b) for b in bodies]
+    bands: dict[tuple, list[int]] = {}
+    for i in small:
+        lo, hi = boxes[i]
+        bands.setdefault((round(lo[2], 1), round(hi[2], 1)), []).append(i)
+    # A band of one lone bit stays its own body.
+    grouped = {i for members in bands.values() if len(members) > 1 for i in members}
+    if not grouped:
+        return [(None, b) for b in bodies]
+    out: list[tuple[str | None, array]] = [(None, b) for i, b in enumerate(bodies) if i not in grouped]
+    multi = [(band, m) for band, m in bands.items() if len(m) > 1]
+    for band, members in sorted(multi, key=lambda bm: (-len(bm[1]), bm[0])):
+        tris = array("f")
+        for i in members:
+            tris.extend(bodies[i])
+        name = "Details" if len(multi) == 1 else f"Details {band[0]:g}–{band[1]:g} mm"
+        out.append((f"{name} ({len(members)} bits)", tris))
+    return out
+
+
 def stl_items(paths: list[Path], start: int = 0) -> list[Item]:
     """Items of STLs; keys count files from ``start`` (after a 3MF it's 1)."""
     items = []
     for i, path in enumerate(paths, start=start):
-        bodies = stl_bodies(path)
+        pieces = group_details(stl_bodies(path))
         stem = path.stem
-        if len(bodies) == 1:
-            items.append(Item(f"f{i}", stem, triangles=len(bodies[0]) // 9, size=_size(bodies[0]), tris=bodies[0]))
+        if len(pieces) == 1:
+            tris = pieces[0][1]
+            items.append(Item(f"f{i}", stem, triangles=len(tris) // 9, size=_size(tris), tris=tris))
             continue
-        for j, body in enumerate(bodies):
-            name = f"{stem} · body {j + 1}" if len(paths) + start > 1 else f"Body {j + 1}"
+        n = 0
+        for j, (label, body) in enumerate(pieces):
+            if label is None:
+                n += 1
+                label = f"Body {n}"
+            name = f"{stem} · {label[0].lower() + label[1:]}" if len(paths) + start > 1 else label
             items.append(Item(f"f{i}b{j}", name, triangles=len(body) // 9, size=_size(body), tris=body))
     # Separate pieces start on separate toolheads: one per STL when there are
-    # several (bodies of one STL share it), else one per body. Change what you like.
-    for n, item in enumerate(items):
+    # several (bodies of one STL share it), else one per body. More pieces
+    # than toolheads all start on T1 (cycling colours over them looks random).
+    single = len(paths) + start == 1
+    if single and len(items) > 4:
+        for item in items:
+            item.extruder = 1
+        return items
+    for item in items:
         m = re.fullmatch(r"f(\d+)(?:b(\d+))?", item.key)
-        item.extruder = int(m.group(1)) + 1 if len(paths) + start > 1 else int(m.group(2) or 0) + 1
+        item.extruder = int(m.group(1)) + 1 if not single else int(m.group(2) or 0) + 1
     return items
 
 
