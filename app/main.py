@@ -620,7 +620,8 @@ def create_app(
         finally:
             tmp.unlink(missing_ok=True)
         scanner.scan()
-        return {"ok": True, "id": file_id, "size": size}
+        st = path.stat()
+        return {"ok": True, "id": file_id, "size": st.st_size, "mtime": st.st_mtime}
 
     @app.delete("/api/models/{model_id}")
     def delete_model(model_id: str):
