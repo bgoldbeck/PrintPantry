@@ -416,7 +416,8 @@ def submit(body: dict) -> Job:
         if len(filaments) > printer.max_filaments:
             raise BadRequest(f"{printer.name} takes at most {printer.max_filaments} filaments; this needs {len(filaments)}")
     plate = int(body.get("plate") or 0)
-    extra = [str(x) for x in body.get("extra_paths") or [] if str(x) != path]
+    # The same STL more than once (also the main one) = that many pieces on the plate.
+    extra = [str(x) for x in body.get("extra_paths") or []]
     for x in extra:  # STLs added to the plate (to an STL or a project 3MF)
         library_path(x, (".stl",))
     assign = body.get("assign") or {}

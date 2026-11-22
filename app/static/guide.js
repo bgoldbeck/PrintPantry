@@ -18,18 +18,20 @@ async function call(url, opts = {}) {
 const BY = { ai: "Written by AI", basic: "Basic (no AI)", edited: "Edited by you" };
 const running = new Map(); // model id -> job id, survives re-rendering the page
 
-export async function guidePanel(el, model) {
+// opts: {buildsEl, slicers: [{id, name}], slice(build, printerId), hydrate(root)}
+export async function guidePanel(el, model, opts = {}) {
   if (!el) return;
-  let guide = { markdown: "" };
+  let guide = { markdown: "", builds: [] };
   let ai = { has_key: false, model: "" };
   let editing = false;
-  let open = true;
+  let open = false;  // collapsed until asked for; the build sets above say what to print
 
   const load = async () => {
     [guide, ai] = await Promise.all([
-      call(`/api/models/${model.id}/guide`).catch(() => ({ markdown: "" })),
+      call(`/api/models/${model.id}/guide`).catch(() => ({ markdown: "", builds: [] })),
       call("/api/ai/settings").catch(() => ai),
     ]);
+    buildsPanel(opts.buildsEl, guide, opts);
   };
 
   const render = (status = "", error = "") => {
@@ -51,13 +53,15 @@ export async function guidePanel(el, model) {
         ${editing ? `
           <textarea class="guide-editor" spellcheck="true" aria-label="Guide (Markdown)">${esc(guide.markdown)}</textarea>
           <p class="muted guide-hint">Markdown: <code>## Section</code>, <code>**bold**</code>, <code>- list</code>, <code>| table |</code>,
-            callouts <code>&gt; [!TIP]</code> <code>&gt; [!WARNING]</code>. Saved as <code>pantry-guide.md</code> in the model folder.</p>
+            callouts <code>&gt; [!TIP]</code> <code>&gt; [!WARNING]</code>. Build sets go in a <code>\`\`\`builds</code> block:
+            <code>[{"group": "...", "name": "...", "note": "...", "parts": [["file.stl", 2]]}]</code>. Saved as <code>pantry-guide.md</code> in the model folder.</p>
           <div class="guide-buttons">
             <button type="button" data-save>Save</button>
             <button type="button" class="ghost" data-cancel>Cancel</button>
             ${has ? `<button type="button" class="ghost danger-text" data-clear>Delete guide</button>` : ""}
           </div>` : `
-          ${has ? `<div class="guide-body">${renderMarkdown(guide.markdown)}</div>` : `<p class="empty">No guide yet. Ask AI to write one from the source page, the makers' comments and the files${ai.has_key ? "" : " (add an Anthropic API key under AI settings first, or get a basic guide without one)"}.</p>`}
+          ${guide.builds_error ? `<div class="notice warn">${esc(guide.builds_error)}</div>` : ""}
+          ${has ? `<div class="guide-body">${renderMarkdown(guide.markdown)}</div>` : `<p class="empty">No guide yet. Ask AI to write one from the source page, the makers' comments and the files${model.files.filter((f) => f.kind === "stl").length > 2 ? ". It also sorts the STLs into build sets (which files to print together, and how many)" : ""}${ai.has_key ? "" : " (add an Anthropic API key under AI settings first, or get a basic guide without one)"}.</p>`}
           <form class="guide-ask">
             <label for="guide-request">${has ? "Ask AI to improve or answer something in the guide" : "Ask AI for a guide"}</label>
             <textarea id="guide-request" rows="2" placeholder="${has
@@ -170,4 +174,42 @@ function openAiSettings(current) {
     dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
     dlg.showModal();
   });
+}
+
+// "What to print": one card per build set, with part pictures and Slice buttons.
+function buildsPanel(el, guide, opts) {
+  if (!el) return;
+  const builds = guide.builds || [];
+  el.hidden = !builds.length;
+  if (!builds.length) { el.innerHTML = ""; return; }
+  const groups = [...new Set(builds.map((b) => b.group || ""))];
+  let group = groups.includes(el.dataset.group) ? el.dataset.group : groups[0];
+  const slicers = opts.slicers || [];
+  const render = () => {
+    el.dataset.group = group;
+    const shown = builds.filter((b) => (b.group || "") === group);
+    el.innerHTML = `
+      <h2>What to print <span class="n">${builds.length} build set${builds.length === 1 ? "" : "s"}</span></h2>
+      <p class="muted builds-lead">Pick one build. Each card lists exactly which files to print and how many.</p>
+      ${groups.length > 1 ? `<div class="build-groups" role="tablist">${groups.map((g) =>
+        `<button type="button" class="small${g === group ? "" : " ghost"}" role="tab" aria-selected="${g === group}" data-group="${esc(g)}">${esc(g || "Other")}</button>`).join("")}</div>` : ""}
+      <div class="build-cards">${shown.map((b) => {
+        const i = builds.indexOf(b);
+        const sliceable = b.parts.some((p) => p.id && p.kind === "stl");
+        return `<article class="build-card">
+          <header><h3>${esc(b.name)}</h3><span class="pieces">${b.pieces} piece${b.pieces === 1 ? "" : "s"} · ${b.parts.length} file${b.parts.length === 1 ? "" : "s"}</span></header>
+          ${b.note ? `<p class="build-note">${esc(b.note)}</p>` : ""}
+          <ul class="build-parts">${b.parts.map((p) => `<li class="${p.id ? "" : "missing"}">
+            <span class="thumb">${p.id ? `<img loading="lazy" alt="" data-stl="${esc(p.id)}" src="/api/files/${esc(p.id)}/thumb">` : "?"}</span>
+            <span class="qty">×${p.qty}</span><span class="pname">${esc(p.name)}${p.id ? "" : " <small>(not in this folder)</small>"}</span></li>`).join("")}</ul>
+          <div class="build-actions">${sliceable ? slicers.map((pr, k) =>
+            `<button type="button" class="small${k ? " ghost" : ""}" data-build="${i}" data-printer="${esc(pr.id)}">Slice this set for ${esc(pr.name)}</button>`).join("")
+            : ""}${!slicers.length && sliceable ? `<span class="muted">Slicer not available right now.</span>` : ""}</div>
+        </article>`;
+      }).join("")}</div>`;
+    el.querySelectorAll("[data-group]").forEach((b) => (b.onclick = () => { group = b.dataset.group; render(); }));
+    el.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => opts.slice?.(builds[Number(b.dataset.build)], b.dataset.printer)));
+    opts.hydrate?.(el);
+  };
+  render();
 }

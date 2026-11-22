@@ -146,3 +146,30 @@ def test_basic_guide_without_source():
     f = guides_mod.Facts(name="Clip", category="Tools", files=[{"name": "clip.stl", "kind": "stl"}])
     md = basic_guide(f)
     assert md.startswith("# Clip") and "| clip.stl | | |" in md
+
+
+def test_build_sets(client):
+    md = """# Guide
+
+## Parts to print
+Pick a set above.
+
+```builds
+[
+ {"group": "One roll", "name": "1 in roll", "note": "Common", "parts": [["Spindle 1in.stl", 1], ["pin.STL", 2], ["Nope.stl", 1]]},
+ {"name": "Pins only", "parts": [{"file": "Pin", "qty": "3"}]},
+ {"name": "", "parts": [["Pin.stl", 1]]}
+]
+```
+"""
+    g = client.put(f"/api/models/{client.model_id}/guide", json={"markdown": md}).json()
+    assert g["builds_error"] == ""
+    a, b = g["builds"]
+    assert a["name"] == "1 in roll" and a["group"] == "One roll" and a["pieces"] == 4
+    assert [(p["name"], p["qty"], bool(p["id"])) for p in a["parts"]] == [
+        ("Spindle 1in.stl", 1, True), ("Pin.stl", 2, True), ("Nope.stl", 1, False)]
+    assert a["missing"] == ["Nope.stl"]
+    assert b["parts"][0]["name"] == "Pin.stl" and b["parts"][0]["qty"] == 3 and b["group"] == ""
+
+    bad = client.put(f"/api/models/{client.model_id}/guide", json={"markdown": "# G\n\n```builds\n[{oops\n```\n"}).json()
+    assert bad["builds"] == [] and "isn't valid JSON" in bad["builds_error"]

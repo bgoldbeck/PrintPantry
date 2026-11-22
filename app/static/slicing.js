@@ -142,7 +142,21 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const siblings = (ctx.siblings || []).filter((s) => s.id !== file.id);
   // Per-object state, filled by loadObjects().
   const objs = { items: [], assign: {}, together: new Set(), keep: null, active: false, brush: 1, overlapping: false,
-    compact: false, copies: 1, max: 1 };
+    compact: false, copies: 1, max: 1, counts: {}, mainCount: 1 };
+  // A build set (ctx.set = {name, parts: [{id, qty}]}): those STLs and counts on the plate.
+  const kit = ctx.set || null;
+  if (kit) {
+    for (const p of kit.parts) {
+      if (p.id === file.id) objs.mainCount = Math.max(1, p.qty || 1);
+      else if (siblings.some((x) => x.id === p.id)) { objs.together.add(p.id); objs.counts[p.id] = Math.max(1, p.qty || 1); }
+    }
+    objs.keep = false;  // separate parts: the slicer lays them out
+  }
+  // Every extra STL as the slicer gets it: repeated once per extra copy.
+  const extraList = () => [
+    ...Array(objs.mainCount - 1).fill(file.id),
+    ...[...objs.together].flatMap((id) => Array(objs.counts[id] || 1).fill(id)),
+  ];
   const plates = proj.plates > 1
     ? `<label class="field"><span>Plates</span><select data-plate>${option(0, `All ${proj.plates} plates`, true)}${
       Array.from({ length: proj.plates }, (_, i) => option(i + 1, `Plate ${i + 1} only`)).join("")}</select></label>`
@@ -330,7 +344,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     } catch { /* private mode */ }
   }
   const savedPlate = (() => { try { return JSON.parse(localStorage.getItem(PLATE_KEY) || "{}")[file.id] || null; } catch { return null; } })();
-  if (savedPlate) savedPlate.together.filter((id) => siblings.some((x) => x.id === id)).forEach((id) => objs.together.add(id));
+  if (savedPlate && !kit) savedPlate.together.filter((id) => siblings.some((x) => x.id === id)).forEach((id) => objs.together.add(id));
 
   // Filament rows: as many as the highest toolhead in use (a 3MF keeps all its own).
   function syncRows() {
@@ -372,7 +386,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   }
   // Which pieces stay together as one object on the plate (as the slicer gets them).
   function groupsOf() {
-    const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + objs.together.size > 1;
+    const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + extraList().length > 1;
     return objs.items.map((it) => (isOff(it) ? "off" : keepStls && it.group.startsWith("f") ? "stl" : it.group));
   }
   function footprints(groups) {
@@ -431,12 +445,22 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     return { colour, type: type || "Not set", detail };
   }
   const headTitle = (i) => { const k = headInfo(i); return [slotTag(i), k.type, k.detail].filter(Boolean).join(" · "); };
+  // Pieces on the plate first; with many files the rest fold away.
+  function sibRows(qty) {
+    const row = (s) => `<label class="check"><input type="checkbox" data-with="${esc(s.id)}"${objs.together.has(s.id) ? " checked" : ""}> ${esc(s.name)}${objs.together.has(s.id) ? ` ${qty(s.id, objs.counts[s.id] || 1)}` : ""}</label>`;
+    const on = siblings.filter((s) => objs.together.has(s.id));
+    const off = siblings.filter((s) => !objs.together.has(s.id));
+    const fold = off.length && on.length && (kit || siblings.length > 10);
+    return on.map(row).join("") + (fold
+      ? `<details class="others"><summary>Add other files (${off.length})</summary>${off.map(row).join("")}</details>`
+      : off.map(row).join(""));
+  }
   function renderObjects(withPreview) {
     const n = choices();
-    const stlCount = (isStl ? 1 : 0) + objs.together.size;
-    const together = siblings.length ? `<details class="together"${objs.together.size ? " open" : ""}><summary>Also put on the plate${
-      objs.together.size ? ` (${objs.together.size})` : ""}</summary>${siblings.map((s) =>
-      `<label class="check"><input type="checkbox" data-with="${esc(s.id)}"${objs.together.has(s.id) ? " checked" : ""}> ${esc(s.name)}</label>`).join("")}
+    const stlCount = (isStl ? 1 : 0) + extraList().length;
+    const qty = (id, n) => `<input type="number" class="qty" min="1" max="20" value="${n}" data-qty="${esc(id)}" aria-label="How many" title="How many">`;
+    const together = siblings.length ? `<details class="together"${objs.together.size || kit ? " open" : ""}><summary>${kit ? `Build set: <b>${esc(kit.name)}</b> · ${stlCount} pieces` : `Also put on the plate${
+      objs.together.size ? ` (${objs.together.size})` : ""}`}</summary>${isStl ? `<label class="check main">${esc(file.name)} ${qty(file.id, objs.mainCount)}</label>` : ""}${sibRows(qty)}
       ${stlCount > 1 ? `<label class="check"><input type="checkbox" data-keep${(objs.keep ?? objs.overlapping) ? " checked" : ""}> Keep their positions (they fit together as one model)</label>` : ""}</details>` : "";
     const many = objs.items.length > 1;
     const painted = objs.items.some((it) => it.painted);
@@ -476,6 +500,15 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         savePlate();
         loadObjects();
       }));
+      objBox.querySelectorAll("[data-qty]").forEach((q) => {
+        q.onclick = (e) => e.stopPropagation();
+        q.onchange = () => {
+          const n = Math.max(1, Math.min(20, Math.round(Number(q.value)) || 1));
+          if (q.dataset.qty === file.id) objs.mainCount = n; else objs.counts[q.dataset.qty] = n;
+          forcePresets();
+          loadObjects();
+        };
+      });
       const keep = objBox.querySelector("[data-keep]");
       if (keep) keep.onchange = () => { objs.keep = keep.checked; paintObjects(); };
     }
@@ -500,7 +533,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   let loadSeq = 0;
   async function loadObjects() {
     const seq = ++loadSeq;
-    const extra = [...objs.together].join(",");
+    const extra = extraList().join(",");
     const q = `file_id=${encodeURIComponent(file.id)}&extra=${encodeURIComponent(extra)}`;
     let data;
     try {
@@ -517,7 +550,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     // Added STLs too.
     const loaded = loadedCount();
     for (const it of objs.items) {
-      if (it.key.startsWith("f") && !(it.key in objs.assign)) objs.assign[it.key] = ((it.extruder - 1) % loaded) + 1;
+      if (it.key.startsWith("f") && !(it.key in objs.assign)) objs.assign[it.key] = kit ? 1 : ((it.extruder - 1) % loaded) + 1;
     }
     if (savedPlate && !objs.restored) {
       objs.restored = true;
@@ -525,7 +558,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     compactFilaments();
     forcePresets();
-    objs.active = objs.items.length > 0 || objs.together.size > 0 || objs.copies > 1;
+    objs.active = objs.items.length > 0 || extraList().length > 0 || objs.copies > 1;
     objs.q = q;
     objs.mesh = null;
     showObjects();
@@ -607,7 +640,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       overrides, author_profile: author(),
     };
     // A lone piece left on its own toolhead slices the file as it is.
-    const lone = objs.items.length === 1 && !objs.together.size && !siblings.length && !objs.compact && objs.copies === 1
+    const lone = objs.items.length === 1 && !extraList().length && !siblings.length && !objs.compact && objs.copies === 1
       && slotOf(objs.items[0]) === objs.items[0].extruder;
     if (objs.active && !lone) {
       const assign = {};
@@ -618,7 +651,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         if (isStl || objs.compact || it.key.startsWith("f") || slot !== it.extruder) assign[it.key] = slot;
       });
       body.assign = assign;
-      body.extra_files = [...objs.together];
+      body.extra_files = extraList();
       body.keep_positions = objs.keep ?? objs.overlapping;
       body.colours = slots.map((s, i) => (headColour(i) || (objs.compact ? s.colour || "" : "")).slice(0, 7));
     }
