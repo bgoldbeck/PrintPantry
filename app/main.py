@@ -32,6 +32,8 @@ from .auth import COOKIE, MAX_AGE, Auth, LoginLimiter, client_ip, is_https
 from .calibration import CalibrationStore
 from .calibration import make_router as calibration_router
 from .config import Settings
+from .guides import Guides
+from .guides import make_router as guides_router
 from .history import History
 from .history import make_router as history_router
 from .importer import SOURCE_FILE, Importer, ImportError_, safe_name, suggest_category
@@ -382,7 +384,7 @@ def create_app(
             raw = json.loads(meta.read_text("utf-8"))
         except (OSError, ValueError):
             return None
-        keep = ("site", "url", "title", "author", "license", "summary", "imported_at")
+        keep = ("site", "url", "title", "author", "license", "summary", "description", "imported_at")
         return {k: raw[k] for k in keep if raw.get(k)}
 
     @app.put("/api/models/{model_id}/tags")
@@ -810,6 +812,9 @@ def create_app(
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
     # OpenSCAD / FreeCAD models are rendered by the slicer container too.
     app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))
+    guides = Guides(settings.library, settings.data, store)
+    app.state.guides = guides
+    app.include_router(guides_router(guides, lambda mid: lib().models.get(mid)))
 
     # ------------------------------------------------------------ UI
     app.mount("/static", StaticFiles(directory=STATIC), name="static")

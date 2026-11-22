@@ -30,6 +30,8 @@ def printables_handler(request: httpx.Request):
             name = {"49068": "3dbenchy.stl", "8": "benchy.3mf"}[v["id"]]
             return httpx.Response(200, json={"data": {"getDownloadLink": {"ok": True, "errors": None,
                                   "output": {"link": f"https://files.printables.com/x/{name}"}}}})
+        if "PrintDescription" in q:
+            return httpx.Response(200, json={"data": {"print": {"description": "<p>Print it.</p><ul><li>0.2mm layers</li></ul>"}}})
         if "PrintExtra" in q:
             return httpx.Response(200, json={"data": {"print": {"user": {"publicUsername": "CreativeTools"}, "license": {"name": "CC BY-ND"}}}})
         return httpx.Response(200, json={"data": {"print": PRINT}})
@@ -154,6 +156,7 @@ def test_printables_preview_and_import(client, library):  # noqa: F811
     assert (folder / "images" / "printables-01.jpg").exists()
     meta = json.loads((folder / "pantry-source.json").read_text())
     assert meta["url"] == "https://www.printables.com/model/3161-3d-benchy" and meta["tags"] == ["boat", "test"]
+    assert meta["description"] == "Print it.\n\u2022 0.2mm layers"
 
     # the real app wiring: rescan + tags
     res = client.get("/api/models", params={"q": "tag:boat"}).json()["models"]

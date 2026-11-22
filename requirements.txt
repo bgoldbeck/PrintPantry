@@ -3,3 +3,4 @@ uvicorn==0.54.0
 httpx==0.28.1
 websockets==15.0.1
 paho-mqtt==2.1.0
+anthropic==2.12.0
