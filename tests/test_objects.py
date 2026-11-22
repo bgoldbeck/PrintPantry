@@ -360,3 +360,33 @@ def test_same_stl_twice_is_two_pieces(lib, monkeypatch, tmp_path):
     out = tmp_path / "set.3mf"
     O.plate_3mf([pin, pin, frame], {}, out, keep_positions=False)
     assert len({i.key.split(":")[0] for i in O.threemf_items(out)}) == 3
+
+
+def test_text_bits_group_into_details(tmp_path):
+    # A stand with embossed letters and tick marks (one pad, same heights):
+    # one "Details" piece, not a body per letter, and nothing cycles colours.
+    stand = [[(x * 16, y * 60, z * 5.9) for x, y, z in t] for t in [[(p[0] / 10, p[1] / 10, p[2] / 10) for p in t] for t in cube()]]
+    bits = []
+    for n in range(12):
+        bits += [[(x, y, z) for x, y, z in t] for t in
+                 [[(p[0] / 10 + 2, p[1] / 5 + 4 * n + 1, p[2] * 0.04 + 5.9) for p in t] for t in cube()]]
+    p = write_stl(tmp_path / "label.stl", stand + bits)
+    items = O.stl_items([p])
+    assert [i.name for i in items] == ["Body 1", "Details (12 bits)"]
+    assert [i.extruder for i in items] == [1, 2]
+    assert items[1].triangles == 12 * 12
+    # The sliced plate gets every bit.
+    out = tmp_path / "out.3mf"
+    O.stls_to_3mf([p], {"f0b0": 1, "f0b1": 2}, out, keep_positions=True)
+    assert sum(i.triangles for i in O.threemf_items(out)) == 13 * 12
+
+
+def test_separate_parts_stay_bodies(tmp_path):
+    # Three similar-size parts are not details.
+    p = write_stl(tmp_path / "set.stl", cube() + cube(x=20) + cube(x=40, s=8))
+    assert [i.name for i in O.stl_items([p])] == ["Body 1", "Body 2", "Body 3"]
+
+
+def test_many_bodies_start_on_one_toolhead(tmp_path):
+    p = write_stl(tmp_path / "six.stl", sum((cube(x=20 * n) for n in range(6)), []))
+    assert {i.extruder for i in O.stl_items([p])} == {1}
