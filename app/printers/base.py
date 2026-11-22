@@ -16,6 +16,7 @@ IDLE_STATES = {"idle", "complete", "cancelled", "failed"}
 BUSY_STATES = {"printing", "paused", "starting"}
 CANCEL_TIMEOUT = 120.0  # seconds after "Cancel print" before we say the printer didn't stop
 CANCEL_DONE_SHOWN = 30.0  # how long "Print cancelled" stays up
+SENT_SHOWN = 45.0  # how long "Sent to the printer" stays up after a background send
 BUSY_STATES = {"printing", "paused", "starting"}
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 log = logging.getLogger("printpantry.printers")
@@ -185,6 +186,9 @@ class Printer:
         # "Cancelling..." until the printer actually reports it has stopped.
         self.cancel_sent: float | None = None
         self.cancel_stopped = False
+        # The print being sent (or last sent) in the background:
+        # {state: sending|sent|failed, file, file_id, started, finished, message}.
+        self.sending: dict | None = None
         self.cancel_done_at = 0.0
 
     # -- lifecycle
@@ -454,10 +458,24 @@ class Printer:
             return None
         return {"state": "done", "age": round(age)}
 
+    def sending_info(self) -> dict | None:
+        """The background send, while it runs and for a little while after
+        (a failure stays until the next send or 30 min)."""
+        s = self.sending
+        if not s:
+            return None
+        now = time.time()
+        if s["state"] == "sent" and now - s.get("finished", now) > SENT_SHOWN:
+            return None
+        if s["state"] == "failed" and now - s.get("finished", now) > 1800:
+            return None
+        return {**s, "age": round(now - s["started"])}
+
     def to_json(self) -> dict:
         p = self.profile
         return {
             "cancel": self.cancel_info(),
+            "sending": self.sending_info(),
             "id": p.id,
             "name": p.name,
             "color": p.color,

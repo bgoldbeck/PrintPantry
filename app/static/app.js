@@ -6,7 +6,7 @@
 //   #/printers         live printer status and cameras
 //   #/history          every print, on every printer
 //   #/spools           spool inventory and cost settings
-import { createViewer, renderThumbnail } from "./viewer.js";
+import { createViewer, renderThumbnail, renderToolpathThumbnail } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterDock, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { openCustomizeDialog } from "./parametric.js";
@@ -100,8 +100,39 @@ function modelCard(m, showCategory = false) {
     </div></a>`;
 }
 
+// Sliced files without their own thumbnail: draw what the slicer made (the
+// toolpath) once in the browser and store it, so the card shows that plate and
+// not the model's general picture.
+function hydrateToolpathThumbs(root) {
+  root.querySelectorAll("img[data-toolpath]").forEach((img) => {
+    img.addEventListener("error", async () => {
+      const id = img.dataset.toolpath, plate = img.dataset.plate || 1;
+      const colours = JSON.parse(img.dataset.cols || "{}");
+      img.removeAttribute("data-toolpath");
+      const ph = document.createElement("span");
+      ph.className = "ph";
+      ph.innerHTML = icon("cuboid");
+      img.replaceWith(ph);
+      try {
+        const res = await fetch(`/api/files/${id}/toolpath?plate=${plate}`);
+        if (!res.ok) throw new Error(`toolpath ${res.status}`);
+        const blob = await renderToolpathThumbnail(await res.arrayBuffer(), colours);
+        if (!blob) return;
+        const pic = document.createElement("img");
+        pic.alt = "";
+        pic.src = URL.createObjectURL(blob);
+        ph.replaceWith(pic);
+        fetch(`/api/files/${id}/thumb?plate=${plate}`, { method: "PUT", body: blob, headers: { "Content-Type": "image/png" } });
+      } catch (e) {
+        console.warn("toolpath picture failed", id, e);
+      }
+    }, { once: true });
+  });
+}
+
 // STLs without a stored preview: render once in the browser, store on the server.
 function hydrateStlCovers(root) {
+  hydrateToolpathThumbs(root);
   root.querySelectorAll("img[data-stl]").forEach((img) => {
     img.addEventListener("error", async () => {
       const id = img.dataset.stl;
@@ -308,10 +339,14 @@ async function searchPage(q) {
 const sourceName = (name) => name.replace(/(\.gcode)?(\.3mf)?$/i, "").replace(/_(U1|P1S)(_plate_\d+)?$/i, "");
 
 function plateHtml(f, p, count, fallback) {
-  // Headless slicing writes no thumbnail, so use the model's own picture.
+  // Headless slicing writes no thumbnail: draw the plate from its toolpath.
+  const cols = Object.fromEntries((p.filaments || []).map((fl) => [fl.slot - 1, fl.color || "#e9a23b"]));
+  const ver = `${Math.round(f.mtime || 0)}-${f.size || 0}`;
   const thumb = p.has_thumbnail
     ? `<img loading="lazy" alt="" src="/api/files/${f.id}/thumb?plate=${p.index}">`
-    : fallback;
+    : ["gcode", "sliced3mf"].includes(f.kind)
+      ? `<img loading="lazy" alt="" data-toolpath="${f.id}" data-plate="${p.index}" data-cols="${esc(JSON.stringify(cols))}" src="/api/files/${f.id}/thumb?plate=${p.index}&v=${ver}">`
+      : fallback;
   const facts = [fmtTime(p.seconds), fmtGrams(p.grams), costHtml(f.printer, p)].filter(Boolean).map((t) => `<span>${t}</span>`).join("");
   const sw = p.filaments.map((fl) => swatchHtml(fl.type, fl.color, fl.grams ? fmtGrams(fl.grams) : "", `Toolhead ${fl.slot}`)).join("");
   const title = [sourceName(f.name), printer(f.printer)?.name, count > 1 ? `Plate ${p.index} of ${count}` : ""].filter(Boolean).join(" · ");

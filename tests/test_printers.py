@@ -491,3 +491,82 @@ def test_u1_cancel_timeout_counts_as_sent(pclient, fake, u1):
     r = pclient.post("/api/printers/u1/cancel")
     assert r.status_code == 200
     assert r.json()["cancel"]["state"] == "stopping"
+
+
+# ---------------------------------------------------------------- background sending
+
+
+def _wait_sending(client, states=("sent", "failed"), timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        s = client.get("/api/printers/u1").json()["sending"]
+        if s and s["state"] in states:
+            return s
+        time.sleep(0.05)
+    raise AssertionError(f"still {s}")
+
+
+def test_background_send_returns_at_once_and_reports(pclient, fake):
+    fake.types = ["PLA", "PLA", "PLA", "PLA"]
+    fake.exist = [True, True, True, True]
+    f = u1_file(pclient, "Wrench Holder")
+    r = pclient.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True,
+                                                     "accept_warnings": True, "background": True})
+    assert r.status_code == 200 and r.json()["queued"]
+    s = _wait_sending(pclient)
+    assert s["state"] == "sent" and s["file"] == f["name"]
+    assert fake.started == ["bin_2x1_U1_4color.gcode"]
+
+
+def test_background_send_failure_shows_on_printer(pclient, fake, u1):
+    fake.types = ["PLA", "PLA", "PLA", "PLA"]
+    fake.exist = [True, True, True, True]
+    from app.printers import PrinterError
+
+    def no_upload(*a, **kw):
+        raise PrinterError("Upload failed: disk full")
+
+    u1.start_print = no_upload
+    f = u1_file(pclient, "Wrench Holder")
+    r = pclient.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True,
+                                                     "accept_warnings": True, "background": True})
+    assert r.status_code == 200
+    s = _wait_sending(pclient)
+    assert s["state"] == "failed" and "disk full" in s["message"]
+
+
+def test_background_send_still_checks_first(pclient, fake):
+    f = u1_file(pclient)
+    r = pclient.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True, "background": True})
+    assert r.status_code == 409 and "toolhead" in r.json()["detail"]
+    assert pclient.get("/api/printers/u1").json()["sending"] is None
+    # the lock was released: a confirmed send goes through
+    fake.types = ["PLA", "PLA", "PLA", "PLA"]
+    fake.exist = [True, True, True, True]
+    r = pclient.post("/api/printers/u1/print", json={"file_id": f["id"], "bed_clear": True,
+                                                     "accept_warnings": True, "background": True})
+    assert r.status_code == 200
+    assert _wait_sending(pclient)["state"] == "sent"
+
+
+def test_print_when_sliced(tmp_path, library, u1, fake):  # noqa: F811
+    from test_slicer import FakeSlicer
+
+    fake.types = ["PLA", "PLA", "PLA", "PLA"]
+    fake.exist = [True, True, True, True]
+    slicer = FakeSlicer()
+    settings = Settings(library=library, data=tmp_path / "data", password="", scan_interval=0)
+    hub = PrinterHub(settings.printers, env={}, drivers={"u1": u1})
+    with TestClient(create_app(settings, background_scan=False, printers=hub, slicer=slicer)) as c:
+        gcode = u1_file(c, "Wrench Holder")
+        proj = next(f for m in c.get("/api/models").json()["models"]
+                    for f in c.get(f"/api/models/{m['id']}").json()["files"] if f["kind"] in ("project3mf", "stl"))
+        done = {"id": "abc123", "state": "done", "outputs": [gcode["path"]]}
+        orig = slicer.call
+        slicer.call = lambda method, path, **kw: done if path.startswith("/jobs/") else orig(method, path, **kw)
+        r = c.post("/api/slicer/jobs", json={"file_id": proj["id"], "printer": "u1", "print_after": True})
+        assert r.status_code == 200, r.text
+        assert "print_after" not in slicer.calls[-1][2]["json"]
+        s = _wait_sending(c)
+        assert s["state"] == "sent", s
+        assert fake.uploaded and fake.started and s["file"] == gcode["name"]
