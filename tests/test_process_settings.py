@@ -136,3 +136,9 @@ def test_by_object_keeps_pieces_separate(svc, monkeypatch):
     job = service.submit({"path": "Tools/hook.3mf", "printer": "u1", "machine": "m", "process": "p", "filaments": ["f"],
                           "keep_positions": True, "overrides": {"print_sequence": "by object"}})
     assert job.by_object and job.keep_positions is False
+
+
+def test_prime_tower_can_be_switched_off():
+    # The Slice dialog sends this when a slice prints from one toolhead only.
+    from app import process_settings as PS
+    assert PS.normalise({"enable_prime_tower": "0"}) == {"enable_prime_tower": "0"}

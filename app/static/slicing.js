@@ -211,6 +211,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
           </div>
           <div data-process-panel></div>
           <div data-copies></div>
+          <div data-prime></div>
           ${plates}
         </section>
       </div>
@@ -332,6 +333,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   // Keep "one object at a time" (by Copies) in step with the panel's Print sequence.
   let lastSeq = null;
   panel.onChange = () => {
+    renderPrime();
     const v = panel.value("print_sequence");
     if (v === lastSeq) return;
     lastSeq = v;
@@ -387,6 +389,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     $("[data-toomany]").innerHTML = over
       ? `<div class="notice error">This project uses ${slots.length} filaments, but the ${esc(o.printer.name)} has ${o.printer.max_filaments} toolheads.</div>`
       : objs.compact ? `<div class="notice">The file lists ${listed} filaments, but its objects only use ${slots.length}, so only ${slots.length > 1 ? "those are" : "that one is"} sliced.</div>` : "";
+    renderPrime();
   }
 
   function paintObjects() {
@@ -404,6 +407,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     const arranged = isStl || reshaped() || !proj.printer_model;
     const groups = groupsOf();
     viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? packCopies(footprints(groups), objs.copies, BEDS[printerId]) : null);
+    renderPrime();
   }
   // Which pieces stay together as one object on the plate (as the slicer gets them).
   function groupsOf() {
@@ -448,6 +452,41 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     };
     input.onchange = () => set(input.value);
     box.querySelector("[data-copy-max]").onclick = () => set(objs.max);
+  }
+  // "Skip prime tower when one filament": OrcaSlicer builds the tower whenever
+  // more than one filament is loaded, even if every piece prints from the same
+  // toolhead. With one toolhead there are no tool changes, so no tower and no
+  // flushing are needed. On by default, remembered in this browser.
+  const TOWER_KEY = "pp.slice.skipTower";
+  let skipTower = true;
+  try { skipTower = localStorage.getItem(TOWER_KEY) !== "0"; } catch { /* private mode */ }
+  // Toolheads this slice prints from, or 0 when that can't be told (painted colours).
+  function headsUsed() {
+    const plate = Number($("[data-plate]")?.value || 0);
+    const items = objs.items.filter((it) => !isOff(it) && (!plate || !it.plate || it.plate === plate));
+    if (!items.length) return slots.length;
+    if (!isStl && items.some((it) => it.painted)) return 0;
+    return new Set(items.map(slotOf)).size;
+  }
+  // The tower is left to the panel when Prime tower > Enable was set there by hand.
+  const towerByHand = () => { try { return "enable_prime_tower" in (panel?.overrides() || {}); } catch { return false; } };
+  const towerOff = () => skipTower && headsUsed() === 1 && !towerByHand();
+  function renderPrime() {
+    const box = $("[data-prime]");
+    if (!box) return;
+    const n = headsUsed();
+    const note = !skipTower ? ""
+      : towerByHand() ? "Prime tower is set in the settings below, so that wins."
+      : n === 1 ? "Only one toolhead is used, so this slice has no prime tower."
+      : n > 1 ? `Uses ${n} toolheads, so the prime tower stays.` : "Painted colours: the prime tower stays.";
+    box.innerHTML = `<label class="check" title="With one filament there are no colour changes, so the prime tower (and the flushing it holds) only wastes filament and time.">
+      <input type="checkbox" data-skip-tower${skipTower ? " checked" : ""}> Skip prime tower when one filament</label>
+      ${note ? `<small class="hint prime-note">${esc(note)}</small>` : ""}`;
+    box.querySelector("[data-skip-tower]").onchange = (e) => {
+      skipTower = e.target.checked;
+      try { localStorage.setItem(TOWER_KEY, skipTower ? "1" : "0"); } catch { /* private mode */ }
+      renderPrime();
+    };
   }
   function objectsChanged() {
     if (!objs.active) return;
@@ -644,6 +683,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   }
   loadObjects();
   $("[data-close]").onclick = () => dlg.close();
+  $("[data-plate]")?.addEventListener("change", renderPrime);
   const printAfter = $("[data-print-after]");
   if (printAfter) printAfter.onchange = () => { go.textContent = printAfter.checked ? "Slice & print" : "Slice"; };
 
@@ -662,6 +702,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       filaments: filSels().map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
       overrides, author_profile: author(),
     };
+    if (towerOff()) body.overrides = { ...overrides, enable_prime_tower: "0" };
     // A lone piece left on its own toolhead slices the file as it is.
     const lone = objs.items.length === 1 && !extraList().length && !siblings.length && !objs.compact && objs.copies === 1
       && slotOf(objs.items[0]) === objs.items[0].extruder;
