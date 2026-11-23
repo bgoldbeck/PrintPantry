@@ -1306,3 +1306,5 @@ button .spinner { width: 10px; height: 10px; margin-right: 6px; }
 .together .check.main { font-weight: 600; }
 .together input.qty { width: 3.6em; padding: 2px 4px; margin-left: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
 .together details.others { margin: 4px 0 0 4px; } .together details.others summary { font-size: .85rem; color: var(--ink-2); cursor: pointer; }
+.slice-dialog [data-prime] .check { margin: 8px 0 0; font-weight: 500; }
+.slice-dialog .prime-note { margin: 2px 0 8px 30px; }
