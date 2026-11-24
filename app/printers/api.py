@@ -140,7 +140,7 @@ def preflight(printer, f, filaments=None, tool_map: dict[int, int] | None = None
             "index": idx,
             "label": label(idx),
             "file_index": file_idx,
-            "file": {"type": fl.type, "color": fl.color, "grams": fl.grams},
+            "file": {"type": fl.type, "color": fl.color, "grams": fl.grams, "meters": getattr(fl, "meters", None)},
             "loaded": None,
             "ok": True,
         }

@@ -327,6 +327,8 @@ button.danger { background: #c0392b; color: #fff; }
 .toolmap { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .9rem; }
 .toolmap th, .toolmap td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
 .toolmap tr.warn td { color: #b5542c; }
+.toolmap td.uses { white-space: nowrap; }
+.print-totals { margin: 4px 0 8px; font-size: .9rem; }
 .check { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; font-weight: 600; }
 .check input { width: 20px; height: 20px; margin-top: 2px; flex: none; }
 

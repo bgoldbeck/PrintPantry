@@ -1,5 +1,6 @@
 // Printer pages: live status cards (#/printers) and the "Print on ..." dialog.
 import { swatchHtml } from "./filament.js";
+import { estimateCost, loadPricing, money } from "./spools.js";
 import { calibrationDialog, calibrationHtml, flowSection, flowWizard } from "./calibration.js";
 import { settingsDialog } from "./settings.js";
 const esc = (s) =>
@@ -12,6 +13,7 @@ async function api(path, opts) {
   return res.json();
 }
 
+const fmtGrams = (g) => (g == null ? "" : `${g >= 100 ? Math.round(g) : g.toFixed(1)} g`);
 function fmtDur(sec) {
   if (sec == null) return "";
   sec = Math.max(0, Math.round(sec));
@@ -816,6 +818,7 @@ export async function openPrintDialog(fileId, printerId, startMap = null) {
     dlg.querySelector("[data-close]").onclick = () => dlg.close();
     return;
   }
+  await loadPricing().catch(() => null);
   const p = chk.printer, f = chk.file;
   const plate = (f.plates || [])[0] || {};
   const heads = () => chk.printer.status.toolheads || [];
@@ -832,16 +835,39 @@ export async function openPrintDialog(fileId, printerId, startMap = null) {
         <i style="--c:${esc(empty ? "transparent" : h.color || "#999")}"></i>
         <span><b>${esc(headName(h))}</b> ${esc(cname)}<small>${esc(what)}</small></span></button>`;
   };
+  // Filament this file uses: per slot (grams, and metres when the slicer wrote
+  // them), then a total line with time and cost like the print-file cards.
+  const slotGrams = (t) => t.file.grams ?? (chk.tools.length === 1 ? plate.grams : null);
+  function usesHtml(t) {
+    const g = slotGrams(t), m = t.file.meters;
+    if (g == null && m == null) return `<small class="muted">?</small>`;
+    return `${g != null ? `<b>${fmtGrams(g)}</b>` : ""}${m != null ? `<small class="muted"> ${m.toFixed(2)} m</small>` : ""}`;
+  }
+  function totalsHtml() {
+    const grams = plate.grams ?? (chk.tools.reduce((a, t) => a + (slotGrams(t) || 0), 0) || null);
+    const meters = chk.tools.reduce((a, t) => a + (t.file.meters || 0), 0) || null;
+    // Price each slot at the material of the spool it will print with.
+    const fils = chk.tools.map((t) => ({ grams: slotGrams(t), type: t.loaded?.type || t.file.type }));
+    const c = estimateCost(p.id, { ...plate, grams, filaments: fils });
+    const parts = [
+      grams != null ? `<b>${fmtGrams(grams)}</b>${meters ? ` (${meters.toFixed(2)} m)` : ""}` : "",
+      plate.seconds ? fmtDur(plate.seconds) : "",
+      c ? `<span title="Filament ${money(c.filament)}${c.power ? ` + electricity ${money(c.power)}` : ""}">≈ ${money(c.total)}</span>` : "",
+    ].filter(Boolean);
+    return parts.length ? `<p class="print-totals">Total ${parts.join(" · ")}</p>` : "";
+  }
   function checksHtml() {
     const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
         <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
         <td>${heads().length > 1 ? `<div class="headpicks" role="group" aria-label="Toolhead for filament ${t.file_index + 1}">${heads().map((h) => headChip(t, h)).join("")}</div>`
           : `${esc(t.label || `T${t.index + 1}`)} ${t.loaded ? swatch(t.loaded.type, t.loaded.color) : "<em>unknown</em>"}`}</td>
-        <td>${t.spool ? `<small title="Spool on this toolhead">${esc(t.spool.label)}<br>${Math.round(t.spool.remaining_g)} g left${t.file.grams ? `, needs ${Math.round(t.file.grams)} g` : ""}</small>` : ""}</td>
+        <td class="uses">${usesHtml(t)}</td>
+        <td>${t.spool ? `<small title="Spool on this toolhead">${esc(t.spool.label)}<br>${Math.round(t.spool.remaining_g)} g left</small>` : ""}</td>
         <td>${t.ok ? "✓" : "⚠"}</td></tr>`).join("");
     return `
       ${chk.blockers.length ? `<div class="notice error"><strong>Can't start:</strong><ul>${chk.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : ""}
-      ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th>Spool</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th>Uses</th><th>Spool</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+        ${totalsHtml()}
         <p class="hint">The file's colour is whatever the slicer had set; only the material is checked.</p>` : ""}
       ${chk.warnings.length ? `<div class="notice warn"><ul>${chk.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
         <label class="check"><input type="checkbox" data-ack> I've checked the toolheads and want to print anyway</label>` : ""}`;
