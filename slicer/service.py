@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, urlparse
 
 import calibration as C
 import objects as O
+import orient as OR
 import presets as P
 import project
 import render as R
@@ -53,6 +54,7 @@ VERSION = os.environ.get("SLICER_VERSION", "")
 LIBRARY = Path(os.environ.get("PP_LIBRARY", "/library"))
 CONFIG = Path(os.environ.get("PP_CONFIG", "/config"))
 WORK = Path(os.environ.get("SLICER_WORK", tempfile.gettempdir())) / "pp-slicer"
+ORIENTED = WORK / "oriented"  # rotated STL copies (see orient.py)
 TIMEOUT = int(os.environ.get("SLICER_TIMEOUT", "1200"))
 PORT = int(os.environ.get("PP_SLICER_PORT", "8485"))
 OUT_DIR = "sliced"
@@ -341,6 +343,8 @@ class Job:
     keep_positions: bool = True  # STLs together: as parts of one object (colours of one model)
     copies: int = 1  # the whole plate this many times, laid out by the slicer (--arrange)
     overrides: dict = field(default_factory=dict)  # process setting -> value, over the preset / project
+    orient: dict = field(default_factory=dict)  # STL relpath -> saved rotation (9 numbers, see orient.py)
+    auto_orient: bool = False  # turn STLs without a saved rotation to the least overhang
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
@@ -396,6 +400,33 @@ def clean_overrides(value) -> dict:
     return out
 
 
+def clean_orient(value) -> dict:
+    """{STL relpath: rotation} from a request, checked."""
+    if not value:
+        return {}
+    if not isinstance(value, dict) or len(value) > 32:
+        raise BadRequest("orient must map STLs to rotations")
+    out = {}
+    for rel, m in value.items():
+        library_path(str(rel), (".stl",))
+        try:
+            m = OR.clean_matrix(m)
+        except OR.OrientError as exc:
+            raise BadRequest(str(exc)) from exc
+        if m:
+            out[str(rel)] = list(m)
+    return out
+
+
+def oriented(paths: list[Path], orient: dict, auto: bool) -> list[Path]:
+    """STLs turned to their saved rotation, or auto-oriented (orient.py)."""
+    saved = {library_path(rel, (".stl",)): tuple(m) for rel, m in (orient or {}).items()}
+    try:
+        return OR.oriented_paths(paths, saved, auto, ORIENTED)
+    except O.ObjectsError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
 def submit(body: dict) -> Job:
     printer = PRINTERS.get(str(body.get("printer", "")))
     if not printer:
@@ -448,6 +479,7 @@ def submit(body: dict) -> Job:
         extra_paths=extra, assign=assign, colours=[str(c).upper() for c in colours],
         keep_positions=bool(body.get("keep_positions", True)), copies=copies,
         overrides=clean_overrides(body.get("overrides")),
+        orient=clean_orient(body.get("orient")), auto_orient=bool(body.get("auto_orient")),
     )
     if job.by_object:
         job.keep_positions = False  # each STL its own object, printed whole one after another
@@ -482,15 +514,23 @@ def object_paths(body: dict) -> list[Path]:
     return [library_path(p) for p in dict.fromkeys(paths)]
 
 
+def body_paths(body: dict, paths: list[Path] | None = None) -> list[Path]:
+    """object_paths, with STLs turned the way they'll be sliced."""
+    return oriented(paths or object_paths(body), clean_orient(body.get("orient")), bool(body.get("auto_orient")))
+
+
 def list_objects(body: dict) -> dict:
-    paths = object_paths(body)
+    original = object_paths(body)
+    paths = body_paths(body, original)
     try:
         items = O.items_for(paths)
     except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
         raise BadRequest(str(exc)) from exc
     # The dialog asks for the preview next: get it ready meanwhile.
     threading.Thread(target=O.mesh_blob, args=(items,), daemon=True).start()
-    stls = [p for p in paths if p.suffix.lower() == ".stl"]
+    # Whether STLs fit together is judged as they were made (turned one by
+    # one, separate pieces could end up overlapping).
+    stls = [p for p in original if p.suffix.lower() == ".stl"]
     return {"items": [i.to_json() for i in items],
             "overlapping": O.overlapping(stls) if len(stls) > 1 else False}
 
@@ -754,9 +794,14 @@ def run_job(job: Job) -> None:
         # settings. (Removing the project settings from the 3MF instead makes
         # the slicer crash.)
         inp = work / ("input" + src.suffix.lower())
+        # STLs turned to their saved print orientation, or auto-oriented
+        # (the same rotated copies the slice dialog's preview showed).
+        stl_paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
+        if info.kind == "stl" or job.extra_paths:
+            stl_paths = oriented(stl_paths, job.orient, job.auto_orient)
         if rebuild:
             try:
-                paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
+                paths = stl_paths
                 O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -787,13 +832,12 @@ def run_job(job: Job) -> None:
                                      job.overrides if job.mode == "project" else None)
         elif combine:
             inp = work / "input.3mf"
-            paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
             try:
-                O.plate_3mf(paths, job.assign, inp, job.keep_positions, copies=job.copies)
+                O.plate_3mf(stl_paths, job.assign, inp, job.keep_positions, copies=job.copies)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
         else:
-            shutil.copyfile(src, inp)
+            shutil.copyfile(stl_paths[0], inp)
         args.append(str(inp))
         log.info("job %s: %s", job.id, " ".join(args))
         for _ in range(INVALID_TRIES):
@@ -1068,7 +1112,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and url.path == "/objects":
                 return self._send(200, list_objects(self._body()))
             if method == "POST" and url.path == "/objects/mesh":
-                paths = object_paths(self._body())
+                paths = body_paths(self._body())
                 try:
                     blob = O.mesh_blob(O.items_for(paths))
                 except (O.ObjectsError, ET.ParseError, zipfile.BadZipFile) as exc:
@@ -1079,6 +1123,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(blob)
                 return None
+            if method == "POST" and url.path == "/orient":
+                src = library_path(str(self._body().get("path", "")), (".stl",))
+                try:
+                    return self._send(200, {"matrix": list(OR.auto_for([src]))})
+                except O.ObjectsError as exc:
+                    raise BadRequest(str(exc)) from exc
             if method == "GET" and url.path == "/render/tools":
                 return self._send(200, R.tools())
             if method == "POST" and url.path == "/render":

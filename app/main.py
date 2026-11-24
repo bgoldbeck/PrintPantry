@@ -47,6 +47,8 @@ from .slicing import SlicerClient, client_from_env
 from .slicing import make_router as slicer_router
 from .store import Store
 from .tags import Tags, clean_tag
+from .orientation import Orientations
+from .orientation import clean as clean_orientation
 
 log = logging.getLogger("printpantry")
 STATIC = Path(__file__).parent / "static"
@@ -76,6 +78,10 @@ class Prefs(BaseModel):
 
 class TagsBody(BaseModel):
     tags: list[str]
+
+
+class OrientationBody(BaseModel):
+    matrix: list[float] | None = None
 
 
 class RenameBody(BaseModel):
@@ -138,6 +144,7 @@ def create_app(
     scanner = Scanner(settings, store)
     auth = Auth(settings.password, settings.data)
     tags = Tags(store)
+    orientations = Orientations(store)
     hub = printers or PrinterHub(settings.printers, data=settings.data)
     history = History(settings.data / "printpantry.db", settings.data / "history", hub,
                       lambda: scanner.library, store)
@@ -385,6 +392,8 @@ def create_app(
         if not m:
             raise HTTPException(404, "No such model")
         data = {**m.detail(), "tags": tags.get(m.id)}
+        saved = orientations.all()
+        data["orientation"] = {f.id: saved[f.id] for f in m.files if f.id in saved}
         source = read_source(m)
         if source:
             data["source"] = source
@@ -485,6 +494,7 @@ def create_app(
             tags.migrate_id(model_id, new_id)
         ids = {make_id(old): make_id(new) for old, new in file_map.items()}
         history.migrate_ids({model_id: new_id}, ids)
+        orientations.migrate(ids)
         thumbs = settings.data / "thumbs"
         for old, new in ids.items():
             for t in thumbs.glob(f"{old}-*.png"):
@@ -574,6 +584,7 @@ def create_app(
             root = settings.library.resolve()
             new_rel = new_path.relative_to(root).as_posix()
             new_f_id = make_id(new_rel)
+            orientations.migrate({file_id: new_f_id})
             return {"ok": True, "id": new_f_id, "name": new_name}
         return {"ok": True, "id": file_id, "name": f.name}
 
@@ -590,8 +601,26 @@ def create_app(
         f, path = resolve(file_id)
         check_writable(path.parent)
         path.unlink()
+        orientations.set(file_id, None)
         scanner.scan()
         return {"ok": True}
+
+    @app.get("/api/files/{file_id}/orientation")
+    def get_orientation(file_id: str):
+        resolve(file_id)
+        return {"matrix": orientations.get(file_id)}
+
+    @app.put("/api/files/{file_id}/orientation")
+    def put_orientation(file_id: str, body: OrientationBody):
+        """Save how an STL lies on the bed for printing (the file stays as it
+        is; slicing turns a copy). null = print it as the file is."""
+        f, _ = resolve(file_id)
+        if f.kind != "stl":
+            raise HTTPException(400, "Only STLs can be turned for printing")
+        try:
+            return {"matrix": orientations.set(file_id, body.matrix)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.put("/api/files/{file_id}/content")
     async def replace_file(file_id: str, request: Request):
@@ -906,7 +935,7 @@ def create_app(
 
     app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios,
                                      ProcessPresets(settings.data / "process-presets.json"),
-                                     hub=hub, on_start=history.record_start))
+                                     hub=hub, on_start=history.record_start, orientation=orientations.get))
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
     # OpenSCAD / FreeCAD models are rendered by the slicer container too.
     app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))

@@ -212,6 +212,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
           <div data-process-panel></div>
           <div data-copies></div>
           <div data-prime></div>
+          <div data-orient></div>
           ${plates}
         </section>
       </div>
@@ -488,6 +489,26 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       renderPrime();
     };
   }
+  // "Auto-orient STLs": each STL goes on the bed on the side with the least
+  // overhang, unless it has a print orientation saved on the model page
+  // (that one wins). On by default, remembered in this browser.
+  const ORIENT_KEY = "pp.slice.autoOrient";
+  try { objs.auto = localStorage.getItem(ORIENT_KEY) !== "0"; } catch { objs.auto = true; }
+  function renderOrient() {
+    const box = $("[data-orient]");
+    if (!box) return;
+    if (!isStl && !extraList().length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<label class="check" title="Turns each STL so it prints with the least overhang (the way it lies in the file isn't always the way to print it). A print orientation saved on the model page always wins.">
+      <input type="checkbox" data-auto-orient${objs.auto ? " checked" : ""}> Auto-orient STLs</label>
+      <small class="hint prime-note">${objs.auto ? "Least overhang, unless the STL has a saved print orientation (model page)."
+        : "STLs print the way they lie in the file, or their saved print orientation."}</small>`;
+    box.querySelector("[data-auto-orient]").onchange = (e) => {
+      objs.auto = e.target.checked;
+      try { localStorage.setItem(ORIENT_KEY, objs.auto ? "1" : "0"); } catch { /* private mode */ }
+      renderOrient();
+      loadObjects(); // the pieces (and the preview) turn
+    };
+  }
   function objectsChanged() {
     if (!objs.active) return;
     renderObjects(false);
@@ -594,7 +615,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   async function loadObjects() {
     const seq = ++loadSeq;
     const extra = extraList().join(",");
-    const q = `file_id=${encodeURIComponent(file.id)}&extra=${encodeURIComponent(extra)}`;
+    const q = `file_id=${encodeURIComponent(file.id)}&extra=${encodeURIComponent(extra)}&auto=${objs.auto ? 1 : 0}`;
+    renderOrient();
     let data;
     try {
       data = await api(`/api/slicer/objects?${q}`);
@@ -700,7 +722,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       file_id: file.id, printer: printerId, mode: mode(),
       machine: machineSel.value, process: processSel.value, bed_type: bedSel.value,
       filaments: filSels().map((s) => s.value), plate: Number($("[data-plate]")?.value || 0),
-      overrides, author_profile: author(),
+      overrides, author_profile: author(), auto_orient: !!objs.auto,
     };
     if (towerOff()) body.overrides = { ...overrides, enable_prime_tower: "0" };
     // A lone piece left on its own toolhead slices the file as it is.

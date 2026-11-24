@@ -41,6 +41,8 @@ class SliceRequest(BaseModel):
     author_profile: bool = False  # presets mode: carry the 3MF's own process settings over first
     # Send the result to the printer when it's sliced (the user ticked "bed is clear").
     print_after: bool = False
+    # STLs without a saved print orientation are turned to the least overhang.
+    auto_orient: bool = True
 
 
 class ProcessPresetBody(BaseModel):
@@ -90,12 +92,15 @@ class SlicerClient:
 
 
 def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
-                presets: PS.ProcessPresets | None = None, hub=None, on_start=None) -> APIRouter:
+                presets: PS.ProcessPresets | None = None, hub=None, on_start=None,
+                orientation=None) -> APIRouter:
     """``resolve(file_id)`` -> (LibFile, Path) or 404; ``rescan()`` scans the library (blocking);
     ``flow_ratios(printer)`` -> {filament preset: calibrated flow ratio};
     ``presets``: saved process settings per printer;
-    ``hub`` / ``on_start``: for "print when sliced" (see printers.api.send_print)."""
+    ``hub`` / ``on_start``: for "print when sliced" (see printers.api.send_print);
+    ``orientation(file_id)`` -> the STL's saved print rotation or None."""
     flow_ratios = flow_ratios or (lambda printer: {})
+    orientation = orientation or (lambda file_id: None)
     router = APIRouter(prefix="/api/slicer")
     rescanned: set[str] = set()
     lock = threading.Lock()
@@ -122,24 +127,36 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
         opts["calibrated"] = flow_ratios(printer)
         return opts
 
-    def object_paths(file_id: str, extra: str) -> list[str]:
-        f = sliceable(file_id)
-        paths = [f.relpath]
+    def object_files(file_id: str, extra: str) -> list:
+        files = [sliceable(file_id)]
         for x in [x for x in extra.split(",") if x]:
             e, _ = resolve(x)
             if e.kind != "stl":
                 raise HTTPException(400, "Only STLs can be added to the plate")
-            paths.append(e.relpath)
-        return paths
+            files.append(e)
+        return files
+
+    def saved_orient(files) -> dict:
+        """{relpath: rotation} of the STLs that have a saved print orientation."""
+        out = {}
+        for f in files:
+            m = orientation(f.id) if f.kind == "stl" else None
+            if m:
+                out[f.relpath] = m
+        return out
+
+    def objects_body(file_id: str, extra: str, auto: int) -> dict:
+        files = object_files(file_id, extra)
+        return {"paths": [f.relpath for f in files], "orient": saved_orient(files), "auto_orient": bool(auto)}
 
     @router.get("/objects")
-    def objects(file_id: str, extra: str = ""):
+    def objects(file_id: str, extra: str = "", auto: int = 0):
         """The objects / parts / STL bodies that can each get their own filament."""
-        return client.call("POST", "/objects", timeout=120, json={"paths": object_paths(file_id, extra)})
+        return client.call("POST", "/objects", timeout=120, json=objects_body(file_id, extra, auto))
 
     @router.get("/objects/mesh")
-    def objects_mesh(file_id: str, extra: str = ""):
-        data = client.raw("POST", "/objects/mesh", timeout=120, json={"paths": object_paths(file_id, extra)})
+    def objects_mesh(file_id: str, extra: str = "", auto: int = 0):
+        data = client.raw("POST", "/objects/mesh", timeout=120, json=objects_body(file_id, extra, auto))
         return Response(data, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
 
     @router.post("/jobs")
@@ -154,8 +171,10 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
             own = client.call("GET", "/process", params={"printer": req.printer, "mode": "project", "path": f.relpath})
             overrides = {**PS.carry_over(own.get("values", {})), **overrides}
         body["overrides"] = overrides
+        files = object_files(req.file_id, ",".join(req.extra_files))
         if req.extra_files:
-            body["extra_paths"] = object_paths(req.file_id, ",".join(req.extra_files))[1:]
+            body["extra_paths"] = [x.relpath for x in files[1:]]
+        body["orient"] = saved_orient(files)
         if req.mode == "presets":
             saved = flow_ratios(req.printer)
             body["flow_ratios"] = {n: saved[n] for n in req.filaments if n in saved}
@@ -211,6 +230,14 @@ def make_router(client: SlicerClient, resolve, rescan, flow_ratios=None,
             failed(f"Sliced, but not printed: {exc}")
         except Exception as exc:  # noqa: BLE001 - shown on the printer card
             failed(f"Sliced, but not printed: {exc}")
+
+    @router.get("/orient")
+    def auto_orient(file_id: str):
+        """What auto-orient would do with this STL (a rotation, see /api/files/{id}/orientation)."""
+        f, _ = resolve(file_id)
+        if f.kind != "stl":
+            raise HTTPException(400, "Only STLs can be turned for printing")
+        return client.call("POST", "/orient", timeout=120, json={"path": f.relpath})
 
     @router.get("/process")
     def process_values(printer: str = "u1", process: str = "", file_id: str = "", mode: str = "presets"):
