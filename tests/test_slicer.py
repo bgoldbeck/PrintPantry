@@ -555,3 +555,36 @@ def test_add_stl_to_loose_model_makes_folder(app_client):
     assert not (cat / "Lonely Widget.stl").exists()
     names = {f["name"] for f in c.get(f"/api/models/{r.json()['model_id']}").json()["files"]}
     assert names == {"Lonely Widget.stl", "Lid.stl"}
+
+
+def test_saved_orientation_goes_with_the_stl(app_client):
+    import struct
+
+    c, fake = app_client
+    stl = _file(c, "stl")
+    turn = [1, 0, 0, 0, 0, -1, 0, 1, 0]  # a quarter turn about X
+    assert c.get(f"/api/files/{stl['id']}/orientation").json() == {"matrix": None}
+    assert c.put(f"/api/files/{stl['id']}/orientation", json={"matrix": [1, 2, 3]}).status_code == 400
+    assert c.put(f"/api/files/{stl['id']}/orientation", json={"matrix": [-1, 0, 0, 0, 1, 0, 0, 0, 1]}).status_code == 400
+    assert c.put(f"/api/files/{stl['id']}/orientation", json={"matrix": turn}).json()["matrix"] == turn
+    sliced = _file(c, "sliced3mf")
+    assert c.put(f"/api/files/{sliced['id']}/orientation", json={"matrix": turn}).status_code == 400
+    # The slice dialog's pieces and the slice itself both get it.
+    c.get(f"/api/slicer/objects?file_id={stl['id']}&auto=1")
+    sent = fake.calls[-1][2]["json"]
+    assert sent["orient"] == {stl["path"]: turn} and sent["auto_orient"] is True
+    c.post("/api/slicer/jobs", json={"file_id": stl["id"], "printer": "u1", "filaments": ["A"], "auto_orient": False})
+    sent = fake.calls[-1][2]["json"]
+    assert sent["orient"] == {stl["path"]: turn} and sent["auto_orient"] is False
+    # Replace STL (same name) keeps it; rename carries it over; the model page lists it.
+    tri = struct.pack("<12fH", *([0.0] * 3), 0, 0, 0, 10, 0, 0, 0, 10, 0, 0)
+    assert c.put(f"/api/files/{stl['id']}/content", content=b"\0" * 80 + struct.pack("<I", 1) + tri).status_code == 200
+    assert c.get(f"/api/files/{stl['id']}/orientation").json()["matrix"] == turn
+    new_id = c.put(f"/api/files/{stl['id']}/rename", json={"name": "turned.stl"}).json()["id"]
+    assert c.get(f"/api/files/{new_id}/orientation").json()["matrix"] == turn
+    model = next(m for m in c.get("/api/models").json()["models"]
+                 if new_id in c.get(f"/api/models/{m['id']}").json().get("orientation", {}))
+    assert model
+    # Back to as the file is.
+    assert c.put(f"/api/files/{new_id}/orientation", json={"matrix": None}).json()["matrix"] is None
+    assert c.get(f"/api/slicer/orient?file_id={new_id}").status_code == 200

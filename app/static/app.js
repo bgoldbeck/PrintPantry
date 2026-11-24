@@ -6,7 +6,7 @@
 //   #/printers         live printer status and cameras
 //   #/history          every print, on every printer
 //   #/spools           spool inventory and cost settings
-import { createViewer, renderThumbnail, renderToolpathThumbnail } from "./viewer.js";
+import { createViewer, renderThumbnail, renderToolpathThumbnail, mulM, turnM, downM, isIdentity, IDENTITY3 } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterDock, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
 import { openCustomizeDialog } from "./parametric.js";
@@ -735,8 +735,20 @@ async function modelPage(id) {
   holder.innerHTML = `<div class="loading" id="viewer-loading">Loading 3D view...</div>
     <div class="overlay"><span class="dims" id="dims"></span>
       <span class="tools"><button class="small ghost" id="spin" title="Start or stop spinning">${icon("rotate-3d")}Spin</button>
-      <button class="small ghost" id="reset" title="Reset the camera">Reset</button></span></div>`;
+      <button class="small ghost" id="reset" title="Reset the camera">Reset</button></span></div>
+    <div class="orient-bar" id="orient-bar"></div>`;
+  // Print orientation: how the STL goes on the bed when sliced. Saved per STL
+  // (the file isn't changed); without one the slicer auto-orients.
+  const orients = m.orientation || {};
+  let current = null; // the STL shown
+  let laying = false;
   const viewer = createViewer(holder, {
+    onFace: (n) => {
+      if (!current) return;
+      laying = false;
+      viewer.setPicking(false);
+      saveOrientation(mulM(downM(n), orients[current.id] || IDENTITY3));
+    },
     color: cat?.color || "#e9a23b",
     onInfo: (i) => {
       document.getElementById("dims").textContent =
@@ -746,6 +758,56 @@ async function modelPage(id) {
   cleanup = () => viewer.dispose();
   document.getElementById("spin").onclick = () => viewer.toggleSpin();
   document.getElementById("reset").onclick = () => viewer.resetView();
+  const orientBar = document.getElementById("orient-bar");
+  function renderOrientBar(note = "") {
+    if (!current) { orientBar.innerHTML = ""; return; }
+    const saved = !isIdentity(orients[current.id]);
+    orientBar.innerHTML = `<span class="orient-label">Print orientation</span>
+      <button class="small${laying ? "" : " ghost"}" data-orient="lay" aria-pressed="${laying}" title="Click a face of the model to put it down on the bed">Lay face flat</button>
+      <button class="small ghost" data-orient="x" title="Tip it over a quarter turn (front to back)">Tip ↕</button>
+      <button class="small ghost" data-orient="y" title="Tip it over a quarter turn (side to side)">Tip ↔</button>
+      <button class="small ghost" data-orient="auto" title="Pick the side with the least overhang, the way auto-orient does when slicing">Auto</button>
+      ${saved ? `<button class="small ghost" data-orient="clear" title="Forget the saved orientation: the slicer auto-orients (or keeps the file's own if auto-orient is off)">As file</button>` : ""}
+      <small class="orient-note">${esc(note || (laying ? "Click the face that should go on the bed" : saved ? "Saved: slicing prints it this way" : "As in the file: slicing auto-orients it"))}</small>`;
+  }
+  async function saveOrientation(matrix, note = "") {
+    const f = current;
+    const m9 = isIdentity(matrix) ? null : matrix;
+    viewer.setOrientation(m9);
+    if (m9) orients[f.id] = m9; else delete orients[f.id];
+    renderOrientBar("Saving...");
+    try {
+      await api(`/api/files/${f.id}/orientation`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ matrix: m9 }),
+      });
+      if (current === f) renderOrientBar(note);
+    } catch (err) {
+      if (current === f) renderOrientBar(`Not saved: ${err.message}`);
+    }
+  }
+  orientBar.onclick = async (e) => {
+    const b = e.target.closest("[data-orient]");
+    if (!b || !current) return;
+    const act = b.dataset.orient;
+    const now = orients[current.id] || IDENTITY3;
+    if (act === "lay") { laying = !laying; viewer.setPicking(laying); renderOrientBar(); return; }
+    laying = false;
+    viewer.setPicking(false);
+    if (act === "x") return saveOrientation(mulM(turnM("x", 90), now));
+    if (act === "y") return saveOrientation(mulM(turnM("y", 90), now));
+    if (act === "clear") return saveOrientation(null);
+    if (act === "auto") {
+      const f = current;
+      renderOrientBar("Finding the side with the least overhang...");
+      try {
+        // auto-orient works on the STL as the file is
+        const r = await api(`/api/slicer/orient?file_id=${f.id}`);
+        if (current === f) saveOrientation(r.matrix, isIdentity(r.matrix) ? "Auto: the file's own way up is best" : "Auto: saved");
+      } catch (err) {
+        if (current === f) renderOrientBar(`Auto-orient failed: ${err.message}`);
+      }
+    }
+  };
 
   const actions = document.getElementById("stl-actions");
   const sources = document.getElementById("sources");
@@ -776,8 +838,12 @@ async function modelPage(id) {
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>
       <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this STL (print history stays)">Delete STL</button>`;
     showSources(f);
+    current = f;
+    laying = false;
+    viewer.setPicking(false);
+    renderOrientBar();
     try {
-      await viewer.load(viewUrl(f));
+      await viewer.load(viewUrl(f), orients[f.id] || null);
       loading.style.display = "none";
     } catch (e) {
       loading.textContent = `Couldn't open ${f.name}: ${e.message || e}`;

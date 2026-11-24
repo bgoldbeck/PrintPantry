@@ -26,6 +26,47 @@ function prepareGeometry(geometry) {
   return size;
 }
 
+// ---------------------------------------------------------------- print orientation
+// A rotation is 9 numbers, a 3x3 matrix row by row (p' = R p), in the STL's
+// own Z-up coordinates: the same as the server saves (app/orientation.py).
+export const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+export function mulM(a, b) {
+  const out = [];
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  }
+  return out.map((v) => Math.round(v * 1e9) / 1e9 + 0);
+}
+
+/** A quarter (or any) turn about the bed's X or Y axis (or Z, turning it on the bed). */
+export function turnM(axis, deg) {
+  const t = (deg * Math.PI) / 180, c = Math.round(Math.cos(t) * 1e12) / 1e12, s = Math.round(Math.sin(t) * 1e12) / 1e12;
+  if (axis === "x") return [1, 0, 0, 0, c, -s, 0, s, c];
+  if (axis === "y") return [c, 0, s, 0, 1, 0, -s, 0, c];
+  return [c, -s, 0, s, c, 0, 0, 0, 1];
+}
+
+/** The smallest turn that points unit vector d straight down at the bed. */
+export function downM(d) {
+  const [x, y, z] = d;
+  const c = -z;
+  if (c > 1 - 1e-9) return IDENTITY3.slice();
+  if (c < -1 + 1e-9) return [1, 0, 0, 0, -1, 0, 0, 0, -1];
+  const s = Math.hypot(x, y), ax = -y / s, ay = x / s, k = 1 - c;
+  return [c + ax * ax * k, ax * ay * k, ay * s,
+    ay * ax * k, c + ay * ay * k, -ax * s,
+    -ay * s, ax * s, c];
+}
+
+export const isIdentity = (m) => !m || m.every((v, i) => Math.abs(v - IDENTITY3[i]) < 1e-9);
+
+function orientGeometry(geometry, m) {
+  if (isIdentity(m)) return;
+  const m4 = new THREE.Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1);
+  geometry.applyMatrix4(m4);
+}
+
 function buildScene(color) {
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7a66, 2.2));
@@ -55,7 +96,7 @@ function frameCamera(camera, size, controls) {
   return { radius, dist };
 }
 
-export function createViewer(container, { color = "#e9a23b", onInfo } = {}) {
+export function createViewer(container, { color = "#e9a23b", onInfo, onFace } = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   container.appendChild(renderer.domElement);
@@ -97,10 +138,20 @@ export function createViewer(container, { color = "#e9a23b", onInfo } = {}) {
   }
 
   let lastSize = null;
-  async function load(url) {
+  let base = null; // the STL as loaded (its own coordinates), to turn for printing
+  async function load(url, orientation = null) {
     clear();
     const geometry = await loader.loadAsync(url);
     if (disposed) { geometry.dispose(); return; }
+    base?.dispose();
+    base = geometry.clone();
+    return show(geometry, orientation, true);
+  }
+
+  function show(geometry, orientation, reframe) {
+    if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh = null; }
+    if (grid) { scene.remove(grid); grid.geometry.dispose(); grid = null; }
+    orientGeometry(geometry, orientation);
     const size = prepareGeometry(geometry);
     lastSize = size;
     mesh = new THREE.Mesh(geometry, material);
@@ -112,15 +163,44 @@ export function createViewer(container, { color = "#e9a23b", onInfo } = {}) {
     grid.material.transparent = true;
     grid.material.opacity = 0.6;
     scene.add(grid);
-    frameCamera(camera, size, controls);
-    controls.autoRotate = true;
+    if (reframe) {
+      frameCamera(camera, size, controls);
+      controls.autoRotate = true;
+    } else {
+      // keep the camera where it is, just aim at the model's new middle
+      controls.target.set(0, size.y / 2, 0);
+      controls.update();
+    }
     const tris = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
     onInfo?.({ x: size.x, y: size.z, z: size.y, triangles: tris });
     return size;
   }
 
+  // "Lay face flat": click a face; onFace gets its outward normal in the
+  // turned STL's coordinates (Z up). A drag still turns the camera.
+  let picking = false;
+  let downAt = null;
+  const ray = new THREE.Raycaster();
+  renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener("pointerup", (e) => {
+    if (!picking || !mesh || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+    const hit = ray.intersectObject(mesh)[0];
+    if (!hit?.face) return;
+    const n = hit.face.normal; // three.js is Y-up: (x, y, z) here is (x, -z, y) in the STL
+    onFace?.([n.x, -n.z, n.y].map((v) => v / Math.hypot(n.x, n.y, n.z)));
+  });
+
   return {
     load,
+    /** Show the STL turned by a rotation (9 numbers) or as the file is (null). */
+    setOrientation(m) { if (base) show(base.clone(), m, false); },
+    setPicking(on) {
+      picking = !!on;
+      renderer.domElement.style.cursor = picking ? "crosshair" : "";
+      if (picking) controls.autoRotate = false;
+    },
     resetView() { if (lastSize) frameCamera(camera, lastSize, controls); },
     toggleSpin() { controls.autoRotate = !controls.autoRotate; return controls.autoRotate; },
     setColor(c) { material.color.set(c); },
@@ -129,6 +209,7 @@ export function createViewer(container, { color = "#e9a23b", onInfo } = {}) {
       cancelAnimationFrame(frame);
       ro.disconnect();
       clear();
+      base?.dispose();
       controls.dispose();
       material.dispose();
       renderer.dispose();
