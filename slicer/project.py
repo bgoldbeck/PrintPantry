@@ -74,6 +74,11 @@ def inspect(path: Path) -> ProjectInfo:
         colours = _list(settings.get("filament_colour"))
         types = _list(settings.get("filament_type"))
         presets = _list(settings.get("filament_settings_id"))
+        bed_key = BED_TEMP_KEYS.get(info.bed_type, "")
+        temp_lists = {"nozzle": _list(settings.get("nozzle_temperature")),
+                      "nozzle_first": _list(settings.get("nozzle_temperature_initial_layer")),
+                      "bed": _list(settings.get(bed_key)) if bed_key else [],
+                      "bed_first": _list(settings.get(bed_key + "_initial_layer")) if bed_key else []}
         # The slicer sizes everything from filament_colour, so that is the count.
         count = len(colours) or len(presets) or len(types)
         for i in range(count):
@@ -81,6 +86,7 @@ def inspect(path: Path) -> ProjectInfo:
                 "type": types[i] if i < len(types) else "",
                 "colour": _norm_colour(colours[i]) if i < len(colours) else "",
                 "preset": presets[i] if i < len(presets) else "",
+                "temps": _temps_at(temp_lists, i),
             })
         if MODEL_SETTINGS in names:
             try:
@@ -96,6 +102,28 @@ def inspect(path: Path) -> ProjectInfo:
             except ET.ParseError:
                 pass
     return info
+
+
+# Plate type -> the filament setting with its bed temperature (as slicer/service.py BED_TYPES).
+BED_TEMP_KEYS = {"Textured PEI Plate": "textured_plate_temp", "High Temp Plate": "hot_plate_temp",
+                 "Cool Plate": "cool_plate_temp", "Engineering Plate": "eng_plate_temp",
+                 "Textured Cool Plate": "textured_cool_plate_temp", "Supertack Plate": "supertack_plate_temp"}
+
+
+def _int(value) -> int | None:
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _temps_at(lists: dict, i: int) -> dict:
+    """Filament i's temperatures; a missing first layer one is the same as the rest."""
+    out = {k: _int(v[i]) for k, v in lists.items() if i < len(v) and _int(v[i]) is not None}
+    for first, main in (("nozzle_first", "nozzle"), ("bed_first", "bed")):
+        if first not in out and main in out:
+            out[first] = out[main]
+    return out
 
 
 def _norm_colour(value: str) -> str:
@@ -162,6 +190,34 @@ def apply_overrides(config: dict, overrides: dict) -> None:
         diff[0] = ""
 
 
+def set_filament_values(config: dict, values: list[dict]) -> bool:
+    """Set per-filament settings (e.g. nozzle_temperature) in project
+    settings: ``values[i]`` holds filament i+1's. Lists keep their length
+    (the filament count); a missing one is made from the filament count."""
+    count = len(_list(config.get("filament_colour"))) or len(_list(config.get("filament_settings_id"))) or 1
+    changed = False
+    for i, row in enumerate(values):
+        for key, v in (row or {}).items():
+            old = config.get(key)
+            items = list(old) if isinstance(old, list) else ([str(old)] if old not in (None, "") else [])
+            if not items:
+                items = [str(v)] * count
+            while len(items) <= i:
+                items.append(items[-1])
+            items[i] = str(v)
+            config[key] = items
+            changed = True
+    if changed:
+        # Filaments whose values were set are no longer "as the system preset".
+        diff = config.get("different_settings_to_system")
+        if isinstance(diff, list):
+            for i, row in enumerate(values):
+                if row and i + 1 < len(diff):
+                    have = [k for k in str(diff[i + 1]).split(";") if k]
+                    diff[i + 1] = ";".join(have + [k for k in row if k not in have])
+    return changed
+
+
 def read_settings(path: Path) -> dict:
     """A project 3MF's own settings ({} when it has none)."""
     try:
@@ -215,10 +271,12 @@ def pad_filaments(config: dict, count: int, filament_keys, nozzles: int = 1) -> 
 
 def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
                      filaments: int = 0, filament_keys=(), nozzles: int = 1,
-                     colours: list[str] | None = None, overrides: dict | None = None) -> None:
+                     colours: list[str] | None = None, overrides: dict | None = None,
+                     temps: list[dict] | None = None) -> None:
     """Copy a 3MF, padding its per-extruder settings (see pad_per_extruder)
     and per-filament lists (see pad_filaments), and, when given, writing a
-    process preset and single setting overrides into its settings."""
+    process preset, single setting overrides and per-filament temperatures
+    ({setting: °C} per filament, see set_filament_values) into its settings."""
     with zipfile.ZipFile(src) as zin:
         try:
             settings = json.loads(zin.read(SETTINGS)) if SETTINGS in zin.namelist() else None
@@ -237,6 +295,8 @@ def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
                 changed = True
             if overrides:
                 apply_overrides(settings, overrides)
+                changed = True
+            if temps and set_filament_values(settings, temps):
                 changed = True
             if changed:
                 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
