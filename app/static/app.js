@@ -480,6 +480,8 @@ async function historyCtx(models) {
   };
 }
 
+let modelPageClick = null;
+
 async function modelPage(id) {
   if (!LIB) await refreshLibrary();
   const [m] = await Promise.all([api(`/api/models/${id}`), loadPrinters(), loadPrefs(), loadSlicer(), loadPricing()]);
@@ -672,7 +674,10 @@ async function modelPage(id) {
     };
   }
 
-  view.addEventListener("click", async (e) => {
+  // One handler per model page: visiting several models used to stack them
+  // (each one acting with its own model).
+  if (modelPageClick) view.removeEventListener("click", modelPageClick);
+  modelPageClick = async (e) => {
     const del = e.target.closest("[data-delete-file]");
     if (del) {
       const ok = await confirmDialog({ title: "Delete file?",
@@ -685,6 +690,11 @@ async function modelPage(id) {
       } catch (err) {
         alert(err.message);
       }
+      return;
+    }
+    const add = e.target.closest("[data-add-stl]");
+    if (add) {
+      addStl(m.id, add);
       return;
     }
     const rep = e.target.closest("[data-replace-file]");
@@ -710,7 +720,8 @@ async function modelPage(id) {
     } catch (err) {
       alert(err.message);
     }
-  });
+  };
+  view.addEventListener("click", modelPageClick);
 
   const holder = document.getElementById("viewer");
   if (!stls.length) {
@@ -760,6 +771,7 @@ async function modelPage(id) {
         <span class="muted">in <span class="slicer-name">${esc(slicerName())}</span></span></button>
       <button type="button" class="small ghost" data-rename-file="${f.id}" data-file-name="${esc(f.name)}" title="Rename this STL file">Rename STL</button>
       <button type="button" class="small ghost" data-replace-file="${f.id}" data-file-name="${esc(f.name)}" title="Swap in a new STL from your computer. Name, matched 3MFs, tags and history stay">Replace STL</button>
+      <button type="button" class="small ghost" data-add-stl title="Upload another STL from your computer into this model">Add STL</button>
       ${links[f.id]?.projects?.length ? "" : sliceButtons(f).replaceAll('class="small"', 'class="small ghost"')}
       <a class="button small ghost" href="${fileUrl(f.id, true)}">Download ${esc(f.name)}</a>
       <button type="button" class="small ghost danger-text" data-delete-file="${f.id}" data-file-name="${esc(f.name)}" title="Delete this STL (print history stays)">Delete STL</button>`;
@@ -788,10 +800,10 @@ async function modelPage(id) {
 // Pick an STL on this computer and upload it over the library file (same name).
 let showStlNext = null;
 
-function uploadWithProgress(url, file, onProgress) {
+function uploadWithProgress(url, file, onProgress, method = "PUT") {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", url);
+    xhr.open(method, url);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     xhr.onload = () => {
@@ -835,6 +847,53 @@ function replaceStl(fileId, name, btn) {
       flash(`<strong>Replace failed.</strong> ${esc(err.message || err)}. ${esc(name)} was not changed.`);
       btn.disabled = false;
       btn.textContent = label;
+    }
+  };
+  input.click();
+}
+
+// Pick one or more STLs on this computer and upload them into this model.
+function addStl(modelId, btn) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".stl,model/stl";
+  input.multiple = true;
+  input.onchange = async () => {
+    const files = [...input.files];
+    if (!files.length) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    const added = [];
+    let lastId = null;
+    try {
+      for (const [i, file] of files.entries()) {
+        const n = files.length > 1 ? ` (${i + 1}/${files.length})` : "";
+        btn.textContent = `Uploading${n} 0%`;
+        flash(`Uploading <strong>${esc(file.name)}</strong> (${fmtSize(file.size)})...`);
+        const r = await uploadWithProgress(`/api/models/${encodeURIComponent(modelId)}/stl?name=${encodeURIComponent(file.name)}`, file, (p) => {
+          btn.textContent = p < 1 ? `Uploading${n} ${Math.round(p * 100)}%` : "Saving on the NAS...";
+        }, "POST");
+        if (r.size !== file.size) throw new Error(`The NAS saved ${fmtSize(r.size)} of ${esc(file.name)}, expected ${fmtSize(file.size)}`);
+        modelId = r.model_id;
+        lastId = r.id;
+        added.push(r.name);
+      }
+      showStlNext = lastId;
+      await refreshLibrary();
+      if (location.hash !== `#/m/${modelId}`) location.hash = `#/m/${modelId}`;
+      else route();
+      flash(`<strong>Added ${added.map(esc).join(", ")}</strong> to this model on the NAS.`);
+    } catch (err) {
+      if (added.length) {
+        showStlNext = lastId;
+        await refreshLibrary();
+        if (location.hash !== `#/m/${modelId}`) location.hash = `#/m/${modelId}`;
+        else route();
+      } else {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+      flash(`<strong>Add STL failed.</strong> ${esc(err.message || err)}.${added.length ? ` Added before that: ${added.map(esc).join(", ")}.` : ""}`);
     }
   };
   input.click();

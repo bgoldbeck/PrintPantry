@@ -511,3 +511,47 @@ def test_replace_stl_keeps_id_and_name(app_client):
     assert c.get(f"/api/files/{stl['id']}/raw").content == body
     sliced = _file(c, "sliced3mf")
     assert c.put(f"/api/files/{sliced['id']}/content", content=body).status_code == 400
+
+
+def test_add_stl_to_model(app_client):
+    import struct
+
+    c, _ = app_client
+    tri = struct.pack("<12fH", *([0.0] * 3), 0, 0, 0, 10, 0, 0, 0, 10, 0, 0)
+    body = b"\0" * 80 + struct.pack("<I", 1) + tri
+    models = c.get("/api/models").json()["models"]
+    folder = next(m for m in models if "#" not in m["id"] and
+                  any(f["kind"] == "stl" for f in c.get(f"/api/models/{m['id']}").json()["files"]))
+    r = c.post(f"/api/models/{folder['id']}/stl?name=Extra part", content=body)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["name"] == "Extra part.stl" and j["model_id"] == folder["id"]
+    files = c.get(f"/api/models/{folder['id']}").json()["files"]
+    assert any(f["id"] == j["id"] and f["kind"] == "stl" for f in files)
+    assert c.get(f"/api/files/{j['id']}/raw").content == body
+    # Same name again: refused. Not an STL: refused, nothing left behind.
+    assert c.post(f"/api/models/{folder['id']}/stl?name=Extra part.stl", content=body).status_code == 409
+    assert c.post(f"/api/models/{folder['id']}/stl?name=junk.stl", content=b"hello").status_code == 400
+    names = [f["name"] for f in c.get(f"/api/models/{folder['id']}").json()["files"]]
+    assert "junk.stl" not in names
+    assert c.post("/api/models/nope/stl?name=a.stl", content=body).status_code == 404
+
+
+def test_add_stl_to_loose_model_makes_folder(app_client):
+    import struct
+
+    c, _ = app_client
+    tri = struct.pack("<12fH", *([0.0] * 3), 0, 0, 0, 10, 0, 0, 0, 10, 0, 0)
+    body = b"\0" * 80 + struct.pack("<I", 1) + tri
+    root = c.app.state.settings.library
+    cat = next(d for d in root.iterdir() if d.is_dir() and not d.name.startswith("."))
+    (cat / "Lonely Widget.stl").write_bytes(body)
+    c.app.state.scanner.scan()
+    m = next(m for m in c.get("/api/models").json()["models"] if "lonely widget" in m["name"].lower())
+    r = c.post(f"/api/models/{m['id']}/stl?name=Lid.stl", content=body)
+    assert r.status_code == 200, r.text
+    assert (cat / "Lonely Widget" / "Lid.stl").is_file()
+    assert (cat / "Lonely Widget" / "Lonely Widget.stl").is_file()
+    assert not (cat / "Lonely Widget.stl").exists()
+    names = {f["name"] for f in c.get(f"/api/models/{r.json()['model_id']}").json()["files"]}
+    assert names == {"Lonely Widget.stl", "Lid.stl"}
