@@ -55,32 +55,76 @@ const BEDS = { u1: [270, 270], p1s: [256, 256] };
 const mm = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
 const MAX_COPIES = 200;
 
-// Shelf-pack ``copies`` sets of footprints ({g, w, d} mm) on the bed, the way
-// the slicer's arrange would at least manage; null if they don't fit. Returns
+// Copies spread evenly over the whole bed: rows of pieces with the spare room
+// shared out between them and the edges. Same algorithm as slicer/layout.py
+// (which places them for the slice): keep them in step. ``rects``: {g, w, d}
+// footprints (mm); ``gap``: least room between pieces (the toolhead's
+// clearance radius when printing by object). null if they don't fit. Returns
 // {c, g, x, y} per piece: centres in mm from the middle of the bed (y = back).
-export function packCopies(rects, copies, bed, gap = 8, edge = 3) {
-  const W = bed[0] - 2 * edge, D = bed[1] - 2 * edge;
-  const all = [];
-  for (let c = 0; c < copies; c++) rects.forEach((r) => all.push({ c, g: r.g, w: r.w, d: r.d }));
-  all.sort((a, b) => b.d - a.d || b.w - a.w || a.c - b.c);
-  let x = 0, y = 0, row = 0;
-  for (const r of all) {
-    if (r.w > W || r.d > D) return null;
-    if (x > 0 && x + r.w > W) { y += row + gap; x = 0; row = 0; }
-    if (y + r.d > D) return null;
-    r.x = x + r.w / 2; r.y = y + r.d / 2;
-    x += r.w + gap;
-    row = Math.max(row, r.d);
+const GAP = 8, EDGE = 3;
+function rowsGreedy(items, width, gap) {
+  const rows = [];
+  let row = [], x = 0;
+  for (const it of items) {
+    if (row.length && x + gap + it.w > width) { rows.push(row); row = []; x = 0; }
+    x += (row.length ? gap : 0) + it.w;
+    row.push(it);
   }
-  // Centre the whole layout on the bed.
-  const x1 = Math.max(...all.map((r) => r.x + r.w / 2)), y1 = Math.max(...all.map((r) => r.y + r.d / 2));
-  all.forEach((r) => { r.x -= x1 / 2; r.y = y1 / 2 - r.y; });
-  return all;
+  if (row.length) rows.push(row);
+  return rows;
 }
-export function maxCopies(rects, bed) {
-  if (!rects.length || !bed || !packCopies(rects, 1, bed)) return 1;
+function rowsEven(items, n) {
+  const rows = [];
+  let start = 0;
+  for (let r = 0; r < n; r++) {
+    const k = Math.floor(items.length / n) + (r < items.length % n ? 1 : 0);
+    rows.push(items.slice(start, start + k));
+    start += k;
+  }
+  return rows.filter((r) => r.length);
+}
+const sum = (a) => a.reduce((t, v) => t + v, 0);
+const rowDepth = (row) => Math.max(...row.map((i) => i.d));
+function spaced(sizes, total, gap, edge) {
+  const k = sizes.length, free = total - sum(sizes), even = free / (k + 1);
+  const end = k === 1 ? even : Math.max(edge, Math.min(even, (free - (k - 1) * gap) / 2));
+  const between = k > 1 ? (free - 2 * end) / (k - 1) : 0;
+  let pos = end;
+  return sizes.map((s) => { const c = pos + s / 2; pos += s + between; return c; });
+}
+export function spreadCopies(rects, copies, bed, gap = GAP, edge = EDGE) {
+  if (!bed) return null;
+  const [W, D] = bed;
+  const items = [];
+  for (let c = 0; c < Math.max(1, copies); c++) rects.forEach((r) => items.push({ c, g: r.g, w: r.w, d: r.d }));
+  if (!items.length) return null;
+  items.sort((a, b) => b.d - a.d || b.w - a.w || a.c - b.c);
+  const fits = (rows) => rows.every((row) => sum(row.map((i) => i.w)) + gap * (row.length - 1) + 2 * edge <= W + 1e-6)
+    && sum(rows.map(rowDepth)) + gap * (rows.length - 1) + 2 * edge <= D + 1e-6;
+  const score = (rows) => Math.min(
+    Math.min(...rows.map((row) => (W - sum(row.map((i) => i.w))) / (row.length + 1))),
+    (D - sum(rows.map(rowDepth))) / (rows.length + 1));
+  let best = null, bestScore = -Infinity;
+  const tryRows = (rows) => {
+    if (!fits(rows)) return;
+    const s = score(rows);
+    if (s > bestScore + 1e-9 || (Math.abs(s - bestScore) <= 1e-9 && rows.length < best.length)) { best = rows; bestScore = s; }
+  };
+  tryRows(rowsGreedy(items, W - 2 * edge, gap));
+  for (let n = 1; n <= items.length; n++) tryRows(rowsEven(items, n));
+  if (!best) return null;
+  const ys = spaced(best.map(rowDepth), D, gap, edge);
+  const out = [];
+  best.forEach((row, r) => {
+    const xs = spaced(row.map((i) => i.w), W, gap, edge);
+    row.forEach((it, j) => out.push({ ...it, x: xs[j] - W / 2, y: D / 2 - ys[r] }));
+  });
+  return out;
+}
+export function maxCopies(rects, bed, gap = GAP) {
+  if (!rects.length || !bed || !spreadCopies(rects, 1, bed, gap)) return 1;
   let n = 1;
-  while (n < MAX_COPIES && packCopies(rects, n + 1, bed)) n++;
+  while (n < MAX_COPIES && spreadCopies(rects, n + 1, bed, gap)) n++;
   return n;
 }
 
@@ -331,15 +375,14 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     printerId, fileId: file.id,
     base: () => ({ mode: start() === "author" ? "project" : "presets", process: processSel.value, machine: machineSel.value }),
   });
-  // Keep "one object at a time" (by Copies) in step with the panel's Print sequence.
+  // Copies (Max, layout, "Print by object") follow the panel's Print sequence and brim.
   let lastSeq = null;
   panel.onChange = () => {
     renderPrime();
-    const v = panel.value("print_sequence");
+    const v = [panel.value("print_sequence"), brimMargin()].join("|");
     if (v === lastSeq) return;
     lastSeq = v;
-    const c = dlg.querySelector("[data-byobj]");
-    if (c) c.checked = v === "by object"; else if (v === "by object" && typeof renderCopies === "function") renderCopies();
+    if (typeof renderCopies === "function" && objs.items.length) { renderCopies(); paintObjects(); }
   };
   machineSel.onchange = () => { fillFor(machineSel.value, true); check(); };
   processSel.onchange = check;
@@ -407,13 +450,19 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     // (STLs, a plain 3MF, or a project with pieces added or left off).
     const arranged = isStl || reshaped() || !proj.printer_model;
     const groups = groupsOf();
-    viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? packCopies(footprints(groups), objs.copies, BEDS[printerId]) : null);
+    viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? spreadCopies(footprints(groups), objs.copies, bedSize(), copyGap()) : null);
     renderPrime();
   }
   // Which pieces stay together as one object on the plate (as the slicer gets them).
   function groupsOf() {
     const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + extraList().length > 1;
     return objs.items.map((it) => (isOff(it) ? "off" : keepStls && it.group.startsWith("f") ? "stl" : it.group));
+  }
+  // mm a brim adds around each piece (same as layout.brim in the slicer).
+  function brimMargin() {
+    const kind = panel?.value("brim_type") || "auto_brim";
+    if (["no_brim", "inner_only", "brim_ears"].includes(kind)) return 0;
+    return Math.max(0, Number(panel?.value("brim_width")) || 0) + Math.max(0, Number(panel?.value("brim_object_gap")) || 0);
   }
   function footprints(groups) {
     const boxes = {};
@@ -424,25 +473,44 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       b[0] = Math.min(b[0], it.box[0]); b[1] = Math.min(b[1], it.box[1]);
       b[2] = Math.max(b[2], it.box[2]); b[3] = Math.max(b[3], it.box[3]);
     });
-    return Object.entries(boxes).map(([g, b]) => ({ g, w: b[2] - b[0], d: b[3] - b[1] }));
+    const m = 2 * brimMargin();
+    return Object.entries(boxes).map(([g, b]) => ({ g, w: b[2] - b[0] + m, d: b[3] - b[1] + m }));
   }
-  // "Copies": 1 up to as many as fit on this bed.
+  // "Copies": 1 up to as many as fit on this bed, spread over the whole plate.
+  // "Print by object": each copy (object) printed whole, one after another;
+  // then they need the toolhead's clearance around them, so fewer fit.
+  const bedSize = () => o.bed?.size || BEDS[printerId];
+  const clearance = () => o.bed?.clearance || { radius: 45, rod: 40 };
+  const byObject = () => panel?.value("print_sequence") === "by object";
+  const copyGap = () => (byObject() ? Math.max(8, clearance().radius + 1) : 8);
+  // Tallest object (mm): by object, only one may be taller than the gantry.
+  function tallest() {
+    const tops = {};
+    const groups = groupsOf();
+    objs.items.forEach((it, i) => { if (groups[i] !== "off") tops[groups[i]] = Math.max(tops[groups[i]] || 0, it.size?.[2] || 0); });
+    return Object.values(tops);
+  }
   function renderCopies() {
     const box = $("[data-copies]");
-    const bed = BEDS[printerId];
+    const bed = bedSize();
     const painted = !isStl && objs.items.some((it) => it.painted);
     if (!objs.items.length || !bed || painted) { box.innerHTML = ""; return; }
-    const pieces = objs.items.filter((it) => !isOff(it)).length + (objs.copies > 1 ? 1 : 0);
-    const byObj = panel?.value("print_sequence") === "by object";
-    objs.max = maxCopies(footprints(groupsOf()), bed);
+    const byObj = byObject();
+    const cl = clearance();
+    const heights = tallest();
+    const tall = byObj ? heights.filter((h) => h > cl.rod).length : 0;
+    objs.max = tall ? 1 : maxCopies(footprints(groupsOf()), bed, copyGap());
     if (objs.copies > objs.max) objs.copies = objs.max;
+    const note = !byObj ? ""
+      : tall ? `Taller than the ${mm(cl.rod)} mm the gantry clears (${mm(Math.max(...heights))} mm), so only one copy can print by object.${tall > 1 ? " Several pieces are that tall: slice by layer instead." : ""}`
+      : `Each copy prints whole, one after another, with ${mm(copyGap())} mm around it for the toolhead.`;
     box.innerHTML = `<div class="field"><span>Copies</span><div class="copies">
       <input type="number" data-copy min="1" max="${objs.max}" value="${objs.copies}" aria-label="Copies">
       <button type="button" class="ghost" data-copy-max${objs.max < 2 ? " disabled" : ""}>Max (${objs.max})</button>
-      ${pieces > 1 || byObj ? `<label class="check" title="Each object is printed whole before the next starts, so one can be solid black and another solid white with no colour changes between layers. The slicer re-arranges the plate with room for the toolhead; if they don't fit, slicing says so. Pieces stay separate objects."><input type="checkbox" data-byobj${byObj ? " checked" : ""}> One object at a time</label>` : ""}
-      </div></div>`;
+      <label class="check" title="Each object (or copy) is printed whole before the next starts: no travel between pieces on every layer, less stringing, and one failed copy doesn't spoil the rest. They need room around them for the toolhead, so fewer fit. Also lets one piece be solid black and another solid white with no colour changes between layers."><input type="checkbox" data-byobj${byObj ? " checked" : ""}> Print by object</label>
+      </div>${note ? `<small class="hint prime-note">${esc(note)}</small>` : ""}</div>`;
     const byBox = box.querySelector("[data-byobj]");
-    if (byBox) byBox.onchange = () => panel?.set("print_sequence", byBox.checked ? "by object" : "by layer");
+    byBox.onchange = () => { panel?.set("print_sequence", byBox.checked ? "by object" : "by layer"); renderCopies(); paintObjects(); };
     const input = box.querySelector("[data-copy]");
     const set = (n) => {
       objs.copies = Math.max(1, Math.min(objs.max, Math.round(Number(n)) || 1));

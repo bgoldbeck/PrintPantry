@@ -40,6 +40,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import calibration as C
+import layout as L
 import objects as O
 import orient as OR
 import presets as P
@@ -268,6 +269,8 @@ def options(printer_id: str, relpath: str) -> dict:
         "project": info.to_json(),
         "project_matches": matches,
         "bed_types": [{"name": b, "label": label} for b, _, label in BED_TYPES],
+        # bed size and toolhead clearance, for the dialog's copies layout and Max
+        "bed": bed_info(machine_flat),
         **opts,
         "defaults": {
             "mode": "project" if matches else "presets",
@@ -279,6 +282,11 @@ def options(printer_id: str, relpath: str) -> dict:
         },
         "problems": lib.problems,
     }
+
+
+def bed_info(machine: dict) -> dict:
+    x0, y0, x1, y1 = L.bed_of(machine)
+    return {"size": [round(x1 - x0, 1), round(y1 - y0, 1)], "clearance": L.clearance(machine)}
 
 
 # ---------------------------------------------------------------- paths
@@ -749,6 +757,22 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
     return ["--load-settings", ";".join(names), "--load-filaments", ";".join(fil_names)]
 
 
+def copies_bed(job: Job, work: Path) -> dict | None:
+    """Where copies go (see objects.plate_3mf): the machine preset's bed, the
+    brim around each copy and, by object, the toolhead's clearance radius as
+    the gap between them."""
+    machine_file = work / "machine.json"
+    if not machine_file.exists():
+        return None
+    machine = json.loads(machine_file.read_text())
+    proc_file = work / "process.json"
+    process = json.loads(proc_file.read_text()) if proc_file.exists() else {}
+    gap = L.GAP
+    if job.by_object:
+        gap = max(gap, L.clearance(machine, process)["radius"] + 1)
+    return {"area": L.bed_of(machine), "gap": gap, "margin": L.brim(process)}
+
+
 def run_job(job: Job) -> None:
     if job.render:
         return R.run(job, LIBRARY, WORK)
@@ -784,10 +808,6 @@ def run_job(job: Job) -> None:
         combine = info.kind == "stl" and (bool(job.extra_paths or job.assign) or job.copies > 1)
         if rebuild:
             args[args.index("--slice") + 1] = "0"  # only the chosen plate is in the rebuilt file
-        # One object at a time needs room around each for the toolhead, so the
-        # slicer lays the plate out again with that clearance.
-        if info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model) or job.by_object:
-            args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         if printer.output == "gcode.3mf":
             args += ["--export-3mf", "result.gcode.3mf"]  # relative to --outputdir
         # Presets passed on the command line override the project's own
@@ -799,10 +819,14 @@ def run_job(job: Job) -> None:
         stl_paths = [src] + [library_path(x, (".stl",)) for x in job.extra_paths]
         if info.kind == "stl" or job.extra_paths:
             stl_paths = oriented(stl_paths, job.orient, job.auto_orient)
+        # Copies are spread over the whole bed here (the slicer's arrange packs
+        # them in the middle); by object, with the toolhead's clearance between.
+        bed = copies_bed(job, work) if job.copies > 1 else None
+        placed = False
         if rebuild:
             try:
                 paths = stl_paths
-                O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies)
+                placed = O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies, bed)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
             if info.printer_model:
@@ -833,11 +857,22 @@ def run_job(job: Job) -> None:
         elif combine:
             inp = work / "input.3mf"
             try:
-                O.plate_3mf(stl_paths, job.assign, inp, job.keep_positions, copies=job.copies)
+                placed = O.plate_3mf(stl_paths, job.assign, inp, job.keep_positions, copies=job.copies, bed=bed)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
         else:
             shutil.copyfile(stl_paths[0], inp)
+        if bed and not placed:
+            if job.by_object:
+                raise RuntimeError(f"{job.copies} copies don't fit on the bed one at a time: printing each copy whole "
+                                   f"needs {bed['gap']:g} mm around it for the toolhead. Try fewer copies, or print by layer.")
+            job.warnings.append("The copies didn't fit spread out, so the slicer packed them")
+        # One object at a time needs room around each for the toolhead, so the
+        # slicer lays the plate out again with that clearance.
+        if placed:
+            args += ["--arrange", "0", "--orient", "0"]
+        elif info.kind == "stl" or rebuild or (info.kind == "3mf" and not info.printer_model) or job.by_object:
+            args += ["--arrange", "1", "--orient", "0"]  # plain meshes: place them on this bed
         args.append(str(inp))
         log.info("job %s: %s", job.id, " ".join(args))
         for _ in range(INVALID_TRIES):

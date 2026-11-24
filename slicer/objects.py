@@ -27,6 +27,8 @@ from itertools import chain
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import layout as L
+
 MODEL = "3D/3dmodel.model"
 MODEL_SETTINGS = "Metadata/model_settings.config"
 NS = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
@@ -321,7 +323,7 @@ def esc(s) -> str:
 
 
 def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool = True, plate: int = 0,
-              copies: int = 1) -> None:
+              copies: int = 1, bed: dict | None = None) -> bool:
     """A plain 3MF of what goes on the plate: a project 3MF's printed meshes
     and/or STLs (split into bodies), a filament per piece from ``assign``
     (0 = leave it off the plate).
@@ -335,7 +337,12 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
     it has filaments (OrcaSlicer can't grow a project's filament settings:
     "invalid size found"), pieces are left off, STLs are added, unused
     filaments are dropped, or ``copies`` > 1 (each object written that many
-    times). The project's per-object settings and modifiers are left behind."""
+    times). The project's per-object settings and modifiers are left behind.
+
+    With ``bed`` ({"area": (x0, y0, x1, y1), "gap": mm}) the objects are
+    spread over the bed here (see layout.spread) and True is returned: slice
+    without --arrange to keep that. False: they didn't fit that way, let the
+    slicer arrange them."""
     items = items_for(paths)
     keep = [it for it in items if str(assign.get(it.key, "")) != "0"]
     if plate:
@@ -361,7 +368,7 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
         else:
             name = stems.get(g) or next((p.stem for p in paths if p.suffix.lower() == ".stl"), "STLs")
         named.append((name, members))
-    write_3mf(named, assign, dst, paths[0].stem, max(1, int(copies or 1)))
+    return write_3mf(named, assign, dst, paths[0].stem, max(1, int(copies or 1)), bed)
 
 
 def stls_to_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool) -> None:
@@ -372,19 +379,35 @@ def rebuild_3mf(src: Path, assign: dict, dst: Path, plate: int = 0) -> None:
     plate_3mf([src], assign, dst, True, plate)
 
 
-def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str, copies: int = 1) -> None:
+def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, title: str, copies: int = 1,
+              bed: dict | None = None) -> bool:
     """One object per group, one part per item, filament per part from
     ``assign`` (else the item's own). Objects are centred on their origin;
     slice with --arrange so the slicer places them. ``copies`` > 1 adds
     instances (build items of the same object), which the slicer slices
-    once and repeats, much faster than as many separate objects."""
+    once and repeats, much faster than as many separate objects.
+    ``bed``: place them spread over the bed instead (see plate_3mf)."""
     resources, build, config = [], [], []
     next_id = 1
-    for g, (name, group) in enumerate(groups):
+    boxes = []
+    for name, group in groups:
         both = array("f")
         for it in group:
             both.extend(it.tris)
-        lo, hi = bbox(both)
+        boxes.append(bbox(both))
+    places = None
+    if bed:
+        x0, y0, x1, y1 = bed["area"]
+        m = 2 * bed.get("margin", 0)  # a brim widens each footprint
+        rects = [{"g": g, "w": hi[0] - lo[0] + m, "d": hi[1] - lo[1] + m} for g, (lo, hi) in enumerate(boxes)]
+        spots = L.spread(rects, copies, (x1 - x0, y1 - y0), bed.get("gap", L.GAP))
+        if spots:
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            places = {}
+            for p in spots:
+                places.setdefault(p["g"], []).append((cx + p["x"], cy + p["y"]))
+    for g, (name, group) in enumerate(groups):
+        lo, hi = boxes[g]
         # Each object centred on its own origin, lowest point on the plate.
         shift = (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2])
         part_ids, parts_cfg = [], []
@@ -403,8 +426,9 @@ def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, tit
         resources.append(' <object id="%d" name="%s" type="model">\n  <components>\n%s  </components>\n </object>\n'
                          % (oid, esc(name), comps))
         for c in range(copies):
-            build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %d %d 0" printable="1"/>\n'
-                         % (oid, 128 + g * 10, 128 + c * 5))
+            x, y = places[g][c] if places else (128 + g * 10, 128 + c * 5)
+            build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %.3f %.3f 0" printable="1"/>\n'
+                         % (oid, x, y))
         first = _slot(assign.get(group[0].key), group[0].extruder)
         config.append(' <object id="%d">\n  <metadata key="name" value="%s"/>\n  <metadata key="extruder" value="%d"/>\n%s </object>\n'
                       % (oid, esc(name), first, "".join(parts_cfg)))
@@ -427,6 +451,7 @@ def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, tit
         z.writestr("_rels/.rels", rels)
         z.writestr(MODEL, model)
         z.writestr(MODEL_SETTINGS, cfg)
+    return places is not None
 
 
 def _slot(value, default: int) -> int:
