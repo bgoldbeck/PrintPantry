@@ -180,13 +180,14 @@ def test_inspect_project(tmp_path):
         "print_settings_id": "0.20mm Standard @BBL X1C", "curr_bed_type": "Textured PEI Plate",
         "filament_colour": ["#FF0000FF", "#00ff00"], "filament_type": ["PLA", "PETG"],
         "filament_settings_id": ["Bambu PLA Basic @BBL X1C", "Generic PETG"],
+        "nozzle_temperature": ["220", "250"], "textured_plate_temp": ["65", "70"],
     }, plates=3)
     info = project.inspect(p)
     assert info.printer_model == "Bambu Lab P1S"
     assert info.plates == 3
     assert info.filaments == [
-        {"type": "PLA", "colour": "#FF0000", "preset": "Bambu PLA Basic @BBL X1C"},
-        {"type": "PETG", "colour": "#00FF00", "preset": "Generic PETG"},
+        {"type": "PLA", "colour": "#FF0000", "preset": "Bambu PLA Basic @BBL X1C", "temps": {"nozzle": 220, "bed": 65, "nozzle_first": 220, "bed_first": 65}},
+        {"type": "PETG", "colour": "#00FF00", "preset": "Generic PETG", "temps": {"nozzle": 250, "bed": 70, "nozzle_first": 250, "bed_first": 70}},
     ]
     assert project.inspect(tmp_path / "x.stl").kind == "stl"
 
@@ -588,3 +589,37 @@ def test_saved_orientation_goes_with_the_stl(app_client):
     # Back to as the file is.
     assert c.put(f"/api/files/{new_id}/orientation", json={"matrix": None}).json()["matrix"] is None
     assert c.get(f"/api/slicer/orient?file_id={new_id}").status_code == 200
+
+
+def test_clean_temps():
+    assert service.clean_temps(None) == []
+    assert service.clean_temps([{"nozzle": "215", "bed": 60.4}, {}, None]) == [{"nozzle": 215, "bed": 60}, {}, {}]
+    for bad in ([{"nozzle": 500}], [{"bed": -5}], [{"fan": 1}], [{"nozzle": "hot"}], {"nozzle": 200}):
+        with pytest.raises(service.BadRequest):
+            service.clean_temps(bad)
+
+
+def test_build_settings_applies_temps(svc, tmp_path):
+    job = service.Job(id="j", path="x", printer="u1", mode="presets", machine="Snapmaker U1 (0.4 nozzle)",
+                      process="0.20 Standard @Snapmaker U1 (0.4 nozzle)", filaments=["Snapmaker PETG @U1"] * 2,
+                      bed_type="Textured PEI Plate", temps=[{"nozzle": 245, "nozzle_first": 250, "bed": 75, "bed_first": 80}])
+    work = tmp_path / "work"
+    work.mkdir()
+    service.build_settings(job, service.PRINTERS["u1"], work, project.ProjectInfo(kind="stl"))
+    f1 = json.loads((work / "filament_1.json").read_text())
+    f2 = json.loads((work / "filament_2.json").read_text())
+    assert f1["nozzle_temperature"] == ["245"] and f1["nozzle_temperature_initial_layer"] == ["250"]
+    assert f1["textured_plate_temp"] == ["75"] and f1["textured_plate_temp_initial_layer"] == ["80"]
+    assert f2.get("nozzle_temperature") != ["245"]  # only the first filament was changed
+    assert "nozzle_temperature=245" in job.log
+
+
+def test_copy_for_slicing_sets_filament_temps(tmp_path):
+    src = make_3mf(tmp_path / "a.3mf", {"filament_colour": ["#FF0000", "#00FF00"], "nozzle_temperature": ["220", "220"],
+                                       "different_settings_to_system": ["", "", ""]})
+    dst = tmp_path / "b.3mf"
+    project.copy_for_slicing(src, dst, temps=[{}, {"nozzle_temperature": 240, "hot_plate_temp": 70}])
+    with zipfile.ZipFile(dst) as zf:
+        s = json.loads(zf.read(project.SETTINGS))
+    assert s["nozzle_temperature"] == ["220", "240"] and s["hot_plate_temp"] == ["70", "70"]
+    assert s["different_settings_to_system"][2] == "nozzle_temperature;hot_plate_temp"

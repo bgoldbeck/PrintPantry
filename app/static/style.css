@@ -1174,6 +1174,13 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 .slice-dialog .fil-row b { min-width: 1.8em; }
 .slice-dialog .fil-rows { gap: 6px; }
 .slice-dialog .fil-row .dot { width: 18px; height: 18px; }
+.temp-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 8px; align-items: center; margin-bottom: 4px; }
+.temp-grid.many { grid-template-columns: minmax(0, 4em) repeat(4, minmax(0, 1fr)); }
+.temp-grid .head { color: var(--ink-2); font-size: .78rem; line-height: 1.15; }
+.temp-grid .slot { display: inline-flex; align-items: center; gap: 6px; }
+.temp-grid .slot .dot { width: 18px; height: 18px; }
+.temp-grid input { width: 100%; min-width: 0; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.temp-grid input.changed { border-color: var(--accent); font-weight: 700; }
 .slice-dialog .copies { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .slice-dialog .copies input[type="number"] { width: 4.5em; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .slice-dialog .copies button { padding: 6px 12px; }

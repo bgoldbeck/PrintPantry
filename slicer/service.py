@@ -205,6 +205,9 @@ def printer_options(printer: Printer) -> dict:
                 "flow": _float(flat.get("filament_flow_ratio"), 1.0),
                 "user": f.source == "user",
                 "beds": {b: _temp(flat, k) for b, k, _ in BED_TYPES},
+                "beds_first": {b: _temp(flat, k + "_initial_layer") or _temp(flat, k) for b, k, _ in BED_TYPES},
+                "nozzle": _temp(flat, "nozzle_temperature"),
+                "nozzle_first": _temp(flat, "nozzle_temperature_initial_layer") or _temp(flat, "nozzle_temperature"),
             })
         fils.sort(key=lambda f: (not f["user"], f["name"].lower()))
         out["filaments"][m.name] = fils
@@ -353,6 +356,7 @@ class Job:
     overrides: dict = field(default_factory=dict)  # process setting -> value, over the preset / project
     orient: dict = field(default_factory=dict)  # STL relpath -> saved rotation (9 numbers, see orient.py)
     auto_orient: bool = False  # turn STLs without a saved rotation to the least overhang
+    temps: list = field(default_factory=list)  # per filament slot: {nozzle, nozzle_first, bed, bed_first} (°C)
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
     state: str = "queued"  # queued | running | done | failed
@@ -406,6 +410,60 @@ def clean_overrides(value) -> dict:
             raise BadRequest(f"Bad value for {key}")
         out[key] = items if isinstance(v, list) else items[0]
     return out
+
+
+# The Slice dialog's Temperatures: field -> (filament key, lowest, highest).
+# The bed keys are the picked plate's (see BED_KEYS), "_initial_layer" for first.
+TEMP_FIELDS = {"nozzle": ("nozzle_temperature", 150, 350),
+               "nozzle_first": ("nozzle_temperature_initial_layer", 150, 350),
+               "bed": ("", 0, 130), "bed_first": ("_initial_layer", 0, 130)}
+
+
+def clean_temps(value) -> list[dict]:
+    """[{field: °C}] per filament slot from a request, checked."""
+    if not value:
+        return []
+    if not isinstance(value, list) or len(value) > 16:
+        raise BadRequest("temps must be a list per filament")
+    out = []
+    for i, t in enumerate(value):
+        t = t or {}
+        if not isinstance(t, dict):
+            raise BadRequest("temps must be a list per filament")
+        row = {}
+        for k, v in t.items():
+            if k not in TEMP_FIELDS:
+                raise BadRequest(f"Unknown temperature {k!r}")
+            if v in (None, ""):
+                continue
+            try:
+                n = int(round(float(v)))
+            except (TypeError, ValueError):
+                raise BadRequest(f"Bad temperature for filament {i + 1}") from None
+            _, lo, hi = TEMP_FIELDS[k]
+            if not lo <= n <= hi:
+                what = "nozzle" if k.startswith("nozzle") else "bed"
+                raise BadRequest(f"Filament {i + 1}: {what} temperature must be {lo} to {hi} °C")
+            row[k] = n
+        out.append(row)
+    return out
+
+
+def temp_keys(bed_type: str) -> dict:
+    """Temperatures field -> filament setting, for this plate."""
+    bed = BED_KEYS.get(bed_type, "")
+    return {"nozzle": "nozzle_temperature", "nozzle_first": "nozzle_temperature_initial_layer",
+            **({"bed": bed, "bed_first": bed + "_initial_layer"} if bed else {})}
+
+
+def apply_temps(fil: dict, temps: dict, bed_type: str) -> list[str]:
+    """Put one filament's chosen temperatures into its flat preset. Returns "key=value" changed."""
+    changed = []
+    for k, key in temp_keys(bed_type).items():
+        if k in (temps or {}):
+            fil[key] = [str(temps[k])]
+            changed.append(f"{key}={temps[k]}")
+    return changed
 
 
 def clean_orient(value) -> dict:
@@ -488,6 +546,7 @@ def submit(body: dict) -> Job:
         keep_positions=bool(body.get("keep_positions", True)), copies=copies,
         overrides=clean_overrides(body.get("overrides")),
         orient=clean_orient(body.get("orient")), auto_orient=bool(body.get("auto_orient")),
+        temps=clean_temps(body.get("temps")),
     )
     if job.by_object:
         job.keep_positions = False  # each STL its own object, printed whole one after another
@@ -739,6 +798,13 @@ def build_settings(job: Job, printer: Printer, work: Path, info: project.Project
     bed = job.bed_type if job.bed_type in BED_KEYS else default_bed(machine, fils)
     process["curr_bed_type"] = bed
     job.bed_type = bed
+    temps = []
+    for i, f in enumerate(fils):
+        changed = apply_temps(f, job.temps[i] if i < len(job.temps) else {}, bed)
+        if changed:
+            temps.append(f"{i + 1}: " + ", ".join(changed))
+    if temps:
+        job.log += "temperatures changed: " + "; ".join(temps) + "\n"
     for i, f in enumerate(fils):
         if i < len(job.colours) and job.colours[i]:
             f["filament_colour"] = [job.colours[i]]
@@ -851,9 +917,17 @@ def run_job(job: Job) -> None:
             machine_file = work / "machine.json"
             nozzles = len(json.loads(machine_file.read_text()).get("nozzle_diameter") or [1]) if machine_file.exists() else 1
             # Presets mode: process.json already has the changed settings.
+            # The chosen temperatures go into the project's filament lists too
+            # (with its own settings that is where they are read from).
+            own_bed = job.bed_type if job.mode == "presets" else info.bed_type
+            temps = [{temp_keys(own_bed)[k]: v for k, v in t.items() if k in temp_keys(own_bed)} for t in job.temps]
             project.copy_for_slicing(source, inp, overrides, count, fil_keys - project.META_KEYS, nozzles,
                                      job.colours if job.mode == "presets" else None,
-                                     job.overrides if job.mode == "project" else None)
+                                     job.overrides if job.mode == "project" else None,
+                                     temps if any(temps) else None)
+            if job.mode == "project" and any(temps):
+                job.log += "temperatures changed: " + "; ".join(
+                    f"{i + 1}: " + ", ".join(f"{k}={v}" for k, v in t.items()) for i, t in enumerate(temps) if t) + "\n"
         elif combine:
             inp = work / "input.3mf"
             try:

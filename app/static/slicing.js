@@ -253,6 +253,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
             <div class="field"><span>Filaments</span><div class="fil-rows" data-fil-rows></div></div>
             ${Object.keys(o.calibrated || {}).length ? `<div class="field"><span></span><small class="hint">✓ = uses the flow ratio you calibrated on the Printers page.</small></div>` : ""}
           </div>
+          <div data-temps></div>
           <div data-process-panel></div>
           <div data-copies></div>
           <div data-prime></div>
@@ -350,12 +351,85 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     presetsBox.hidden = !usePresets;
     processSel.closest(".field").querySelector("span").textContent = author() ? "Base preset" : "Process";
     panel?.refresh();
+    renderTemps();
     if (!usePresets) { warnBox.innerHTML = ""; return; }
     const fils = o.filaments[machineSel.value] || [];
-    const cold = filSels().map((s) => fils.find((f) => f.name === s.value)).filter((f) => f && !(f.beds[bedSel.value] > 0));
+    const cold = filSels().map((s, i) => [i, fils.find((f) => f.name === s.value)])
+      .filter(([i, f]) => f && !(f.beds[bedSel.value] > 0) && !(tempEdits[i]?.bed > 0)).map(([, f]) => f);
     warnBox.innerHTML = cold.length
       ? `<div class="notice warn">${cold.map((f) => esc(f.name)).join(", ")} ${cold.length > 1 ? "have" : "has"} no bed temperature for this plate, so the bed won't heat. Pick another plate.</div>`
       : "";
+  }
+
+  // ------------------------------------------------ temperatures
+  // Nozzle, first layer nozzle, bed and first layer bed per filament, filled
+  // in from the filament preset (for the picked plate) or the project's own
+  // settings. What's typed here goes to this slice only.
+  const TEMP_FIELDS = [["nozzle", "Nozzle", 150, 350], ["nozzle_first", "Nozzle 1st layer", 150, 350],
+    ["bed", "Bed", 0, 130], ["bed_first", "Bed 1st layer", 0, 130]];
+  const tempEdits = [];  // per slot: {field: °C} that differ from the preset
+  const tempFor = [];  // the preset each slot's edits were typed for
+  let tempSig = "";
+  function tempDefaults(i) {
+    if (mode() === "project") return slots[i]?.temps || {};
+    const f = (o.filaments[machineSel.value] || []).find((x) => x.name === filSels()[i]?.value);
+    if (!f) return {};
+    return { nozzle: f.nozzle, nozzle_first: f.nozzle_first, bed: f.beds?.[bedSel.value], bed_first: f.beds_first?.[bedSel.value] };
+  }
+  function renderTemps() {
+    const box = $("[data-temps]");
+    if (!box) return;
+    slots.forEach((_, i) => {
+      const preset = mode() === "project" ? "project" : (filSels()[i]?.value || "");
+      if (tempFor[i] !== undefined && tempFor[i] !== preset) delete tempEdits[i];  // another filament: start from its preset
+      tempFor[i] = preset;
+    });
+    tempEdits.length = Math.min(tempEdits.length, slots.length);
+    const defs = slots.map((_, i) => tempDefaults(i));
+    const sig = JSON.stringify([mode(), defs, slots.map((_, i) => slotColour(i)), objs.active]);
+    if (sig === tempSig && box.firstChild) return;  // unchanged: keep what's being typed
+    tempSig = sig;
+    const many = slots.length > 1 || objs.active;
+    box.innerHTML = `<div class="field temps"><span>Temperatures</span><div>
+        <div class="temp-grid">
+          ${many ? "<span></span>" : ""}${TEMP_FIELDS.map(([, label]) => `<small class="head">${label}</small>`).join("")}
+          ${slots.map((_, i) => `${many ? `<span class="slot"><b>${esc(slotTag(i))}</b>${swatch(slotColour(i))}</span>` : ""}${
+            TEMP_FIELDS.map(([k, label, lo, hi]) => {
+              const ed = tempEdits[i] || {};
+              const v = ed[k] ?? defs[i][k];
+              return `<input type="number" inputmode="numeric" step="1" min="${lo}" max="${hi}" data-temp="${i}" data-k="${k}"
+                aria-label="${esc(`${many ? slotTag(i) + " " : ""}${label} °C`)}" value="${v ?? ""}" placeholder="–"${k in ed ? ' class="changed"' : ""}>`;
+            }).join("")}`).join("")}
+        </div>
+        <small class="hint">°C, from ${mode() === "project" ? "the project's own settings" : "the filament preset for this plate"}. Changes count for this slice only and show in bold.</small>
+      </div></div>`;
+    box.querySelector(".temp-grid").classList.toggle("many", many);
+    box.querySelectorAll("[data-temp]").forEach((inp) => {
+      inp.oninput = () => {
+        const i = Number(inp.dataset.temp), k = inp.dataset.k;
+        const def = tempDefaults(i)[k];
+        const v = inp.value.trim();
+        tempEdits[i] = tempEdits[i] || {};
+        if (v === "" || Number(v) === def) delete tempEdits[i][k];
+        else tempEdits[i][k] = Number(v);
+        inp.classList.toggle("changed", k in tempEdits[i]);
+      };
+      inp.onchange = () => check();
+    });
+  }
+  // Only the changed ones, per filament slot; throws on a value out of range.
+  function tempsBody() {
+    for (const inp of dlg.querySelectorAll("[data-temp]")) {
+      const [, label, lo, hi] = TEMP_FIELDS.find((f) => f[0] === inp.dataset.k);
+      const i = Number(inp.dataset.temp);
+      if (!(inp.dataset.k in (tempEdits[i] || {}))) continue;
+      const n = Number(inp.value);
+      if (!Number.isFinite(n) || n < lo || n > hi) {
+        throw new Error(`${slots.length > 1 ? slotTag(i) + ": " : ""}${label} must be ${lo} to ${hi} °C`);
+      }
+    }
+    const out = slots.map((_, i) => ({ ...(tempEdits[i] || {}) }));
+    return out.some((t) => Object.keys(t).length) ? out : null;
   }
 
   let panel = null;
@@ -790,8 +864,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   if (printAfter) printAfter.onchange = () => { go.textContent = printAfter.checked ? "Slice & print" : "Slice"; };
 
   go.onclick = async () => {
-    let overrides;
-    try { overrides = panel.overrides(); } catch (e) {
+    let overrides, temps;
+    try { overrides = panel.overrides(); temps = tempsBody(); } catch (e) {
       progress.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
       return;
     }
@@ -805,6 +879,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       overrides, author_profile: author(), auto_orient: !!objs.auto,
     };
     if (towerOff()) body.overrides = { ...overrides, enable_prime_tower: "0" };
+    if (temps) body.temps = temps;
     // A lone piece left on its own toolhead slices the file as it is.
     const lone = objs.items.length === 1 && !extraList().length && !siblings.length && !objs.compact && objs.copies === 1
       && slotOf(objs.items[0]) === objs.items[0].extruder;

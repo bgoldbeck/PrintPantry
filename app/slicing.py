@@ -38,6 +38,8 @@ class SliceRequest(BaseModel):
     keep_positions: bool = True  # STLs together keep their places (colours of one model)
     copies: int = 1  # the plate this many times (the slicer arranges them)
     overrides: dict = {}  # process setting -> value (see process_settings.py)
+    # Per filament slot: nozzle / nozzle_first / bed / bed_first in °C (only the changed ones).
+    temps: list[dict] = []
     author_profile: bool = False  # presets mode: carry the 3MF's own process settings over first
     # Send the result to the printer when it's sliced (the user ticked "bed is clear").
     print_after: bool = False
