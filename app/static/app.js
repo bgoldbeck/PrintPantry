@@ -6,6 +6,7 @@
 //   #/printers         live printer status and cameras
 //   #/history          every print, on every printer
 //   #/spools           spool inventory and cost settings
+//   #/settings         remembered temperatures per filament and plate
 import { createViewer, renderThumbnail, renderToolpathThumbnail, mulM, turnM, downM, isIdentity, IDENTITY3 } from "./viewer.js";
 import { canPrintOn, loadPrinters, openPrintDialog, printerById, printersPage, startPrinterDock, startPrinterStrip, stateBadge } from "./printers.js";
 import { loadSlicer, openSliceDialog, slicerPrinters } from "./slicing.js";
@@ -14,6 +15,7 @@ import { swatchHtml } from "./filament.js";
 import { historyPage, historyPanel } from "./history.js";
 import { guidePanel } from "./guide.js";
 import { costHtml, loadPricing, spoolsPage } from "./spools.js";
+import { settingsPage } from "./temps.js";
 
 const view = document.getElementById("view");
 const statusEl = document.getElementById("status");
@@ -1275,6 +1277,7 @@ async function route() {
   if (kind === "printers") document.getElementById("nav-printers")?.classList.add("active");
   else if (kind === "history") document.getElementById("nav-history")?.classList.add("active");
   else if (kind === "spools") document.getElementById("nav-spools")?.classList.add("active");
+  else if (kind === "settings") document.getElementById("nav-settings")?.classList.add("active");
   else if (!kind || kind === "c" || kind === "m") document.getElementById("nav-library")?.classList.add("active");
   try {
     if (kind === "c" && arg) await categoryPage(arg);
@@ -1288,6 +1291,7 @@ async function route() {
       cleanup = await historyPage(view, await historyCtx(models));
     }
     else if (kind === "spools") await spoolsPage(view, await loadPrinters());
+    else if (kind === "settings") await settingsPage(view, (await loadSlicer()).printers || []);
     else await homePage();
   } catch (e) {
     if (e.message === "login") return;

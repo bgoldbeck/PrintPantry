@@ -1181,6 +1181,15 @@ button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 .temp-grid .slot .dot { width: 18px; height: 18px; }
 .temp-grid input { width: 100%; min-width: 0; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .temp-grid input.changed { border-color: var(--accent); font-weight: 700; }
+.temp-grid.remember { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+.temp-grid.remember.many { grid-template-columns: minmax(0, 4em) repeat(4, minmax(0, 1fr)) auto; }
+.temp-grid input.yours, .yours-key { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.temp-grid input.yours { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.remember-tick { display: flex; justify-content: center; }
+.temp-table .temp-in { width: 5.5em; }
+.temp-table .temp-in::placeholder { color: var(--ink-2); opacity: .6; }
+.temp-table select { max-width: 16em; }
+.temp-settings { margin-bottom: 24px; }
 .slice-dialog .copies { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .slice-dialog .copies input[type="number"] { width: 4.5em; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .slice-dialog .copies button { padding: 6px 12px; }
