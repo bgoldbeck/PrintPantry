@@ -45,6 +45,8 @@ class SliceRequest(BaseModel):
     print_after: bool = False
     # STLs without a saved print orientation are turned to the least overhang.
     auto_orient: bool = True
+    # Size: x, y, z factors on the bed's axes (1 = as is), after orienting.
+    scale: list[float] = []
 
 
 class ProcessPresetBody(BaseModel):

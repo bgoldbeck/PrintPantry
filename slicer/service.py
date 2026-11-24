@@ -322,9 +322,18 @@ def output_dir(src: Path) -> Path:
 PRINTER_TAG = re.compile(r"([ _.\-]+(p1s|u1|snapmaker[ _]?u1|bambu[ _]?p1s))+$", re.I)
 
 
-def output_name(src: Path, printer: Printer, plate: int | None, copies: int = 1) -> str:
+def scale_tag(scale) -> str:
+    """" 150%" (uniform) or " 150x100x80%" for a scaled slice's file name."""
+    if O.is_unscaled(scale):
+        return ""
+    pct = ["%g" % round(v * 100, 1) for v in scale]
+    return f" {pct[0]}%" if len(set(pct)) == 1 else f" {'x'.join(pct)}%"
+
+
+def output_name(src: Path, printer: Printer, plate: int | None, copies: int = 1, scale=None) -> str:
     stem = src.name[: -len(".3mf")] if src.name.lower().endswith(".3mf") else src.stem
     stem = PRINTER_TAG.sub("", stem) or stem
+    stem += scale_tag(scale)
     if copies > 1:
         stem += f" x{copies}"
     if printer.output == "gcode.3mf":
@@ -356,6 +365,7 @@ class Job:
     overrides: dict = field(default_factory=dict)  # process setting -> value, over the preset / project
     orient: dict = field(default_factory=dict)  # STL relpath -> saved rotation (9 numbers, see orient.py)
     auto_orient: bool = False  # turn STLs without a saved rotation to the least overhang
+    scale: tuple | None = None  # (x, y, z) factors on the bed's axes, after orienting; None = as is
     temps: list = field(default_factory=list)  # per filament slot: {nozzle, nozzle_first, bed, bed_first} (°C)
     calib: dict = field(default_factory=dict)  # set for calibration prints (kind, test, toolhead, base, blocks)
     render: dict = field(default_factory=dict)  # set for parametric renders (see render.py)
@@ -537,6 +547,10 @@ def submit(body: dict) -> Job:
     if mode == "project" and src.suffix.lower() == ".3mf" and (extra or 0 in assign.values() or copies > 1):
         raise BadRequest("To add, copy or leave out pieces, pick presets instead of the project's own settings")
     colours = [c if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(c or "")) else "" for c in body.get("colours") or []]
+    try:
+        scale = O.clean_scale(body.get("scale"))
+    except O.ScaleError as exc:
+        raise BadRequest(str(exc)) from None
     job = Job(
         id=uuid.uuid4().hex[:12], path=path, printer=printer.id, mode=mode,
         machine=str(body.get("machine", "")), process=str(body.get("process", "")),
@@ -546,7 +560,7 @@ def submit(body: dict) -> Job:
         keep_positions=bool(body.get("keep_positions", True)), copies=copies,
         overrides=clean_overrides(body.get("overrides")),
         orient=clean_orient(body.get("orient")), auto_orient=bool(body.get("auto_orient")),
-        temps=clean_temps(body.get("temps")),
+        temps=clean_temps(body.get("temps")), scale=scale,
     )
     if job.by_object:
         job.keep_positions = False  # each STL its own object, printed whole one after another
@@ -892,7 +906,7 @@ def run_job(job: Job) -> None:
         if rebuild:
             try:
                 paths = stl_paths
-                placed = O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies, bed)
+                placed = O.plate_3mf(paths, job.assign, inp, job.keep_positions, job.plate, job.copies, bed, job.scale)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
             if info.printer_model:
@@ -925,15 +939,22 @@ def run_job(job: Job) -> None:
                                      job.colours if job.mode == "presets" else None,
                                      job.overrides if job.mode == "project" else None,
                                      temps if any(temps) else None)
+            if job.scale:
+                # Each object scaled where it stands (settings, modifiers and
+                # painted colours stay as the project has them).
+                O.scale_3mf(inp, job.scale)
             if job.mode == "project" and any(temps):
                 job.log += "temperatures changed: " + "; ".join(
                     f"{i + 1}: " + ", ".join(f"{k}={v}" for k, v in t.items()) for i, t in enumerate(temps) if t) + "\n"
         elif combine:
             inp = work / "input.3mf"
             try:
-                placed = O.plate_3mf(stl_paths, job.assign, inp, job.keep_positions, copies=job.copies, bed=bed)
+                placed = O.plate_3mf(stl_paths, job.assign, inp, job.keep_positions, copies=job.copies, bed=bed,
+                                     scale=job.scale)
             except O.ObjectsError as exc:
                 raise RuntimeError(str(exc)) from exc
+        elif job.scale:
+            OR.write_stl(O.scaled(O.read_stl(stl_paths[0]), job.scale), inp)
         else:
             shutil.copyfile(stl_paths[0], inp)
         if bed and not placed:
@@ -1139,18 +1160,18 @@ def publish(job: Job, printer: Printer, src: Path, out: Path) -> list[str]:
     if printer.output == "gcode.3mf":
         f = out / "result.gcode.3mf"
         if f.is_file():
-            produced.append((f, output_name(src, printer, None, job.copies)))
+            produced.append((f, output_name(src, printer, None, job.copies, job.scale)))
     else:
         plates = sorted(out.glob("plate_*.gcode"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
         for f in plates:
             n = int(re.sub(r"\D", "", f.stem) or 1)
-            produced.append((f, output_name(src, printer, n if len(plates) > 1 or job.plate else None, job.copies)))
+            produced.append((f, output_name(src, printer, n if len(plates) > 1 or job.plate else None, job.copies, job.scale)))
     written = []
     if produced and printer.output == "gcode" and not job.plate:
         # A full re-slice replaces every earlier output for this source, so a
         # model that went from 3 plates to 2 doesn't keep a stale plate 3 (and
         # a single-plate result doesn't sit next to old per-plate files).
-        single = output_name(src, printer, None, job.copies)
+        single = output_name(src, printer, None, job.copies, job.scale)
         stem = single[: -len(".gcode")]
         fresh = {name for _, name in produced}
         for old in dest_dir.iterdir():

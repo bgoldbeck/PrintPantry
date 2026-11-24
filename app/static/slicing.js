@@ -205,7 +205,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   const siblings = (ctx.siblings || []).filter((s) => s.id !== file.id);
   // Per-object state, filled by loadObjects().
   const objs = { items: [], assign: {}, together: new Set(), keep: null, active: false, brush: 1, overlapping: false,
-    compact: false, copies: 1, max: 1, counts: {}, mainCount: 1 };
+    compact: false, copies: 1, max: 1, counts: {}, mainCount: 1, scale: [1, 1, 1], lock: true };
   // A build set (ctx.set = {name, parts: [{id, qty}]}): those STLs and counts on the plate.
   const kit = ctx.set || null;
   if (kit) {
@@ -256,6 +256,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
           <div data-temps></div>
           <div data-process-panel></div>
           <div data-copies></div>
+          <div data-scale></div>
           <div data-prime></div>
           <div data-orient></div>
           ${plates}
@@ -524,9 +525,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     // (STLs, a plain 3MF, or a project with pieces added or left off).
     const arranged = isStl || reshaped() || !proj.printer_model;
     const groups = groupsOf();
+    viewer?.setScale(objs.scale, scaleGroups());
     viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? spreadCopies(footprints(groups), objs.copies, bedSize(), copyGap()) : null);
     viewer?.setBrim(brimSpec(), groups);
     renderPrime();
+    renderScale();
   }
   // Which pieces stay together as one object on the plate (as the slicer gets them).
   function groupsOf() {
@@ -556,11 +559,88 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const g = groups[i];
       if (g === "off" || !it.box) return;
       const b = boxes[g] || (boxes[g] = [Infinity, Infinity, -Infinity, -Infinity]);
-      b[0] = Math.min(b[0], it.box[0]); b[1] = Math.min(b[1], it.box[1]);
-      b[2] = Math.max(b[2], it.box[2]); b[3] = Math.max(b[3], it.box[3]);
+      const [sx, sy] = objs.scale;
+      b[0] = Math.min(b[0], it.box[0] * sx); b[1] = Math.min(b[1], it.box[1] * sy);
+      b[2] = Math.max(b[2], it.box[2] * sx); b[3] = Math.max(b[3], it.box[3] * sy);
     });
     const m = 2 * brimMargin();
     return Object.entries(boxes).map(([g, b]) => ({ g, w: b[2] - b[0] + m, d: b[3] - b[1] + m }));
+  }
+  // Which pieces scale together, about the middle of their footprint (as the
+  // slicer scales them: each object where it stands, STLs kept together as one).
+  function scaleGroups() {
+    const keepStls = (objs.keep ?? objs.overlapping) && (isStl ? 1 : 0) + extraList().length > 1;
+    return objs.items.map((it) => (keepStls && it.group.startsWith("f") ? "stl" : it.group));
+  }
+  // A piece's size (x, y, z mm) at the chosen scale.
+  const sizeOf = (it) => (it.size || [0, 0, 0]).map((v, k) => v * objs.scale[k]);
+  const scaled = () => objs.scale.some((v) => Math.abs(v - 1) > 1e-6);
+  // "Scale": x / y / z in %, locked together by default; shows the size it
+  // comes to and warns when that doesn't fit on the bed. Per slice only.
+  function renderScale() {
+    const box = $("[data-scale]");
+    if (!box) return;
+    if (!objs.items.length) { box.innerHTML = ""; return; }
+    if (!box.querySelector("[data-scale-ax]")) {
+      const ax = (k, n) => `<label class="scale-ax">${n} <input type="number" data-scale-ax="${k}" min="1" max="1000" step="1" aria-label="Scale ${n} %"> %</label>`;
+      box.innerHTML = `<div class="field"><span>Scale</span><div><div class="copies scale">
+        ${ax(0, "X")}${ax(1, "Y")}${ax(2, "Z")}
+        <button type="button" class="ghost" data-scale-lock title="Keep proportions: change one and the others follow"></button>
+        <button type="button" class="ghost" data-scale-reset title="Back to the file's own size">100%</button>
+        </div><small class="hint scale-note" data-scale-note></small><div data-scale-warn></div></div></div>`;
+      const inputs = [...box.querySelectorAll("[data-scale-ax]")];
+      inputs.forEach((inp) => {
+        inp.onchange = () => {
+          const k = Number(inp.dataset.scaleAx);
+          const v = Math.max(1, Math.min(1000, Number(inp.value) || 100)) / 100;
+          if (objs.lock) {
+            const r = v / (objs.scale[k] || 1);
+            objs.scale = objs.scale.map((x, j) => (j === k ? v : Math.max(0.01, Math.min(10, x * r))));
+          } else {
+            objs.scale[k] = v;
+          }
+          scaleChanged();
+        };
+      });
+      box.querySelector("[data-scale-lock]").onclick = () => { objs.lock = !objs.lock; renderScale(); };
+      box.querySelector("[data-scale-reset]").onclick = () => { objs.scale = [1, 1, 1]; scaleChanged(); };
+    }
+    box.querySelectorAll("[data-scale-ax]").forEach((inp) => {
+      if (document.activeElement !== inp) inp.value = Math.round(objs.scale[Number(inp.dataset.scaleAx)] * 1000) / 10;
+    });
+    const lock = box.querySelector("[data-scale-lock]");
+    lock.textContent = objs.lock ? "🔒 Locked" : "🔓 Free";
+    lock.setAttribute("aria-pressed", String(objs.lock));
+    box.querySelector("[data-scale-reset]").disabled = !scaled();
+    // Size of each object on the plate (pieces that print together count as one).
+    const groups = groupsOf();
+    const sizes = {};
+    objs.items.forEach((it, i) => {
+      const g = groups[i];
+      if (g === "off" || !it.box) return;
+      const b = sizes[g] || (sizes[g] = { lo: [Infinity, Infinity], hi: [-Infinity, -Infinity], z: 0, name: it.name.split(" · ")[0] });
+      b.lo = [Math.min(b.lo[0], it.box[0]), Math.min(b.lo[1], it.box[1])];
+      b.hi = [Math.max(b.hi[0], it.box[2]), Math.max(b.hi[1], it.box[3])];
+      b.z = Math.max(b.z, it.size?.[2] || 0);
+    });
+    const objsz = Object.values(sizes).map((b) => ({ name: b.name,
+      dims: [(b.hi[0] - b.lo[0]) * objs.scale[0], (b.hi[1] - b.lo[1]) * objs.scale[1], b.z * objs.scale[2]] }));
+    const fmt = (d) => d.map(mm).join(" × ") + " mm";
+    const biggest = objsz.slice().sort((a, b) => b.dims[0] * b.dims[1] - a.dims[0] * a.dims[1])[0];
+    box.querySelector("[data-scale-note]").textContent = !biggest ? ""
+      : objsz.length === 1 ? `Size: ${fmt(biggest.dims)}` : `${objsz.length} objects, biggest ${fmt(biggest.dims)}`;
+    // Too big for the bed (with the brim around it)?
+    const bed = bedSize();
+    const m = 2 * brimMargin();
+    const over = bed ? objsz.filter((o) => Math.max(o.dims[0] + m - bed[0], o.dims[1] + m - bed[1]) > 0.01) : [];
+    box.querySelector("[data-scale-warn]").innerHTML = over.length
+      ? `<div class="notice warn">${over.length === 1 && objsz.length === 1 ? "At this scale it doesn't" : `${esc(over.map((o) => o.name).join(", "))} ${over.length > 1 ? "don't" : "doesn't"}`} fit on the ${bed.map(mm).join(" × ")} mm bed${m ? " (with its brim)" : ""}. Make it smaller.</div>`
+      : "";
+  }
+  function scaleChanged() {
+    renderScale();
+    renderObjects(false);  // piece sizes, Copies (Max)
+    paintObjects();
   }
   // "Copies": 1 up to as many as fit on this bed, spread over the whole plate.
   // "Print by object": each copy (object) printed whole, one after another;
@@ -573,10 +653,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   function tallest() {
     const tops = {};
     const groups = groupsOf();
-    objs.items.forEach((it, i) => { if (groups[i] !== "off") tops[groups[i]] = Math.max(tops[groups[i]] || 0, it.size?.[2] || 0); });
+    objs.items.forEach((it, i) => { if (groups[i] !== "off") tops[groups[i]] = Math.max(tops[groups[i]] || 0, sizeOf(it)[2]); });
     return Object.values(tops);
   }
   function renderCopies() {
+    renderScale();
     const box = $("[data-copies]");
     const bed = bedSize();
     const painted = !isStl && objs.items.some((it) => it.painted);
@@ -717,7 +798,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         : `<div class="brush"><small>Toolhead</small></div>`}
       <div class="obj-rows">${objs.items.map((it, i) => `
         <div class="obj-row" data-row="${i}">
-          <span class="obj-name">${esc(it.name)}<small>${it.size.map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
+          <span class="obj-name">${esc(it.name)}<small>${sizeOf(it).map(mm).join(" × ")} mm${proj.plates > 1 && it.plate ? ` · plate ${it.plate}` : ""}${it.painted ? " · painted" : ""}</small></span>
           <span class="sws" role="group" aria-label="Toolhead for ${esc(it.name)}">${sws}</span></div>`).join("")}</div>
       ${painted ? `<small class="hint">Painted pieces keep their painted colours; the toolhead here is for the unpainted rest.</small>` : ""}`;
     if (!withPreview) renderCopies();
@@ -897,6 +978,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       body.colours = slots.map((s, i) => (headColour(i) || (objs.compact ? s.colour || "" : "")).slice(0, 7));
     }
     if (objs.copies > 1) body.copies = objs.copies;
+    if (scaled()) body.scale = objs.scale.map((v) => Math.round(v * 1e5) / 1e5);
     if (printAfter?.checked) body.print_after = true;
     const byType = {};
     body.filaments.forEach((n, i) => {
