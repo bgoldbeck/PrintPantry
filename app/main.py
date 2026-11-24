@@ -936,6 +936,8 @@ def create_app(
     app.include_router(slicer_router(slicer, resolve, scanner.scan, calib.flow_ratios,
                                      ProcessPresets(settings.data / "process-presets.json"),
                                      hub=hub, on_start=history.record_start, orientation=orientations.get))
+    from .temps import TempStore, make_router as temps_router
+    app.include_router(temps_router(TempStore(settings.data / "temps.json"), slicer))
     app.include_router(calibration_router(calib, slicer, hub, settings.library, hub.starting))
     # OpenSCAD / FreeCAD models are rendered by the slicer container too.
     app.include_router(parametric_router(slicer, resolve, scanner.scan, make_id))

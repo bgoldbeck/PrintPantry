@@ -169,6 +169,14 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     return;
   }
 
+  // Temperatures saved with "Remember" for a filament preset + plate on this printer.
+  const savedTemps = new Map();
+  try {
+    for (const t of (await api(`/api/slicer/temps?printer=${encodeURIComponent(printerId)}`)).temps) {
+      savedTemps.set(`${t.filament}\n${t.plate}`, t);
+    }
+  } catch { /* none */ }
+
   const proj = o.project;
   const last = loadLast(printerId);
   const has = (list, v) => v && list.includes(v);
@@ -356,7 +364,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     if (!usePresets) { warnBox.innerHTML = ""; return; }
     const fils = o.filaments[machineSel.value] || [];
     const cold = filSels().map((s, i) => [i, fils.find((f) => f.name === s.value)])
-      .filter(([i, f]) => f && !(f.beds[bedSel.value] > 0) && !(tempEdits[i]?.bed > 0)).map(([, f]) => f);
+      .filter(([i, f]) => f && !(tempDefaults(i).bed > 0) && !(tempEdits[i]?.bed > 0)).map(([, f]) => f);
     warnBox.innerHTML = cold.length
       ? `<div class="notice warn">${cold.map((f) => esc(f.name)).join(", ")} ${cold.length > 1 ? "have" : "has"} no bed temperature for this plate, so the bed won't heat. Pick another plate.</div>`
       : "";
@@ -365,17 +373,31 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   // ------------------------------------------------ temperatures
   // Nozzle, first layer nozzle, bed and first layer bed per filament, filled
   // in from the filament preset (for the picked plate) or the project's own
-  // settings. What's typed here goes to this slice only.
+  // settings. What's typed here goes to this slice only, unless "Remember" is
+  // ticked: then it's saved for that filament preset + plate on this printer
+  // and fills in next time (Settings page lists them all).
   const TEMP_FIELDS = [["nozzle", "Nozzle", 150, 350], ["nozzle_first", "Nozzle 1st layer", 150, 350],
     ["bed", "Bed", 0, 130], ["bed_first", "Bed 1st layer", 0, 130]];
   const tempEdits = [];  // per slot: {field: °C} that differ from the preset
   const tempFor = [];  // the preset each slot's edits were typed for
+  const remember = [];  // per slot: save these temperatures for the preset + plate
+  const rememberFor = [];  // the preset + plate each Remember tick was set for
   let tempSig = "";
-  function tempDefaults(i) {
+  const tempKey = (i) => (mode() === "project" ? "" : `${filSels()[i]?.value || ""}\n${bedSel.value}`);
+  const savedFor = (i) => (tempKey(i) && savedTemps.get(tempKey(i))) || null;
+  // The preset's own values (what the slicer uses if nothing is sent).
+  function baseTemps(i) {
     if (mode() === "project") return slots[i]?.temps || {};
     const f = (o.filaments[machineSel.value] || []).find((x) => x.name === filSels()[i]?.value);
     if (!f) return {};
     return { nozzle: f.nozzle, nozzle_first: f.nozzle_first, bed: f.beds?.[bedSel.value], bed_first: f.beds_first?.[bedSel.value] };
+  }
+  // What the boxes start at: remembered values win over the preset's.
+  function tempDefaults(i) {
+    const base = baseTemps(i), mine = savedFor(i) || {};
+    const out = { ...base };
+    for (const [k] of TEMP_FIELDS) if (mine[k] != null) out[k] = mine[k];
+    return out;
   }
   function renderTemps() {
     const box = $("[data-temps]");
@@ -384,25 +406,34 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const preset = mode() === "project" ? "project" : (filSels()[i]?.value || "");
       if (tempFor[i] !== undefined && tempFor[i] !== preset) delete tempEdits[i];  // another filament: start from its preset
       tempFor[i] = preset;
+      if (rememberFor[i] !== tempKey(i)) { remember[i] = !!savedFor(i); rememberFor[i] = tempKey(i); }
     });
     tempEdits.length = Math.min(tempEdits.length, slots.length);
     const defs = slots.map((_, i) => tempDefaults(i));
-    const sig = JSON.stringify([mode(), defs, slots.map((_, i) => slotColour(i)), objs.active]);
+    const mines = slots.map((_, i) => savedFor(i) || {});
+    const canRemember = mode() === "presets";
+    const sig = JSON.stringify([mode(), defs, mines, slots.map((_, i) => slotColour(i)), objs.active]);
     if (sig === tempSig && box.firstChild) return;  // unchanged: keep what's being typed
     tempSig = sig;
     const many = slots.length > 1 || objs.active;
     box.innerHTML = `<div class="field temps"><span>Temperatures</span><div>
-        <div class="temp-grid">
-          ${many ? "<span></span>" : ""}${TEMP_FIELDS.map(([, label]) => `<small class="head">${label}</small>`).join("")}
+        <div class="temp-grid${canRemember ? " remember" : ""}">
+          ${many ? "<span></span>" : ""}${TEMP_FIELDS.map(([, label]) => `<small class="head">${label}</small>`).join("")}${
+            canRemember ? `<small class="head">Remember</small>` : ""}
           ${slots.map((_, i) => `${many ? `<span class="slot"><b>${esc(slotTag(i))}</b>${swatch(slotColour(i))}</span>` : ""}${
             TEMP_FIELDS.map(([k, label, lo, hi]) => {
               const ed = tempEdits[i] || {};
               const v = ed[k] ?? defs[i][k];
+              const cls = k in ed ? "changed" : (mines[i][k] != null ? "yours" : "");
               return `<input type="number" inputmode="numeric" step="1" min="${lo}" max="${hi}" data-temp="${i}" data-k="${k}"
-                aria-label="${esc(`${many ? slotTag(i) + " " : ""}${label} °C`)}" value="${v ?? ""}" placeholder="–"${k in ed ? ' class="changed"' : ""}>`;
-            }).join("")}`).join("")}
+                aria-label="${esc(`${many ? slotTag(i) + " " : ""}${label} °C`)}" value="${v ?? ""}" placeholder="–"${cls ? ` class="${cls}"` : ""}${
+                cls === "yours" ? ` title="Yours (preset says ${baseTemps(i)[k] ?? "–"})"` : ""}>`;
+            }).join("")}${canRemember ? `<label class="remember-tick" title="Save these temperatures for ${esc(filSels()[i]?.value || "this filament")} on this plate. They fill in next time.">
+              <input type="checkbox" data-remember="${i}"${remember[i] ? " checked" : ""}></label>` : ""}`).join("")}
         </div>
-        <small class="hint">°C, from ${mode() === "project" ? "the project's own settings" : "the filament preset for this plate"}. Changes count for this slice only and show in bold.</small>
+        <small class="hint">°C, from ${mode() === "project" ? "the project's own settings" : "the filament preset for this plate"}.${
+          mines.some((m) => Object.keys(m).length) ? " <span class=\"yours-key\">Underlined</span> = yours, remembered for this filament and plate." : ""}
+          ${canRemember ? "Tick Remember to keep them for this filament and plate next time (edit them all under Settings); otherwise changes count for this slice only." : "Changes count for this slice only and show in bold."}</small>
       </div></div>`;
     box.querySelector(".temp-grid").classList.toggle("many", many);
     box.querySelectorAll("[data-temp]").forEach((inp) => {
@@ -417,6 +448,30 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       };
       inp.onchange = () => check();
     });
+    box.querySelectorAll("[data-remember]").forEach((cb) => {
+      cb.onchange = () => { remember[Number(cb.dataset.remember)] = cb.checked; };
+    });
+  }
+  // Save (or forget) the ticked rows' temperatures for their preset + plate.
+  async function saveRemembered() {
+    if (mode() !== "presets") return;
+    const jobs = slots.map(async (_, i) => {
+      const filament = filSels()[i]?.value;
+      if (!filament) return;
+      const key = tempKey(i), had = savedTemps.get(key);
+      const vals = { ...tempDefaults(i), ...(tempEdits[i] || {}) };
+      if (remember[i]) {
+        const same = had && TEMP_FIELDS.every(([k]) => (had[k] ?? null) === (vals[k] ?? null));
+        if (same) return;
+        const t = await api("/api/slicer/temps", { method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ printer: printerId, filament, plate: bedSel.value, ...vals }) });
+        savedTemps.set(key, t);
+      } else if (had) {
+        await api(`/api/slicer/temps?printer=${encodeURIComponent(printerId)}&filament=${encodeURIComponent(filament)}&plate=${encodeURIComponent(bedSel.value)}`, { method: "DELETE" });
+        savedTemps.delete(key);
+      }
+    });
+    await Promise.allSettled(jobs);
   }
   // Only the changed ones, per filament slot; throws on a value out of range.
   function tempsBody() {
@@ -429,7 +484,11 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
         throw new Error(`${slots.length > 1 ? slotTag(i) + ": " : ""}${label} must be ${lo} to ${hi} °C`);
       }
     }
-    const out = slots.map((_, i) => ({ ...(tempEdits[i] || {}) }));
+    const out = slots.map((_, i) => {
+      const base = baseTemps(i), want = { ...tempDefaults(i), ...(tempEdits[i] || {}) }, t = {};
+      for (const [k] of TEMP_FIELDS) if (want[k] != null && want[k] !== base[k]) t[k] = want[k];
+      return t;
+    });
     return out.some((t) => Object.keys(t).length) ? out : null;
   }
 
@@ -952,6 +1011,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     }
     go.disabled = true;
     go.textContent = "Slicing...";
+    await saveRemembered();
     dlg.querySelectorAll("select, input").forEach((x) => (x.disabled = true));
     const body = {
       file_id: file.id, printer: printerId, mode: mode(),
