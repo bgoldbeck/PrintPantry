@@ -446,6 +446,7 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
           if (p.c > 0) {
             t = new THREE.Mesh(m.geometry, m.material);  // same colour as the original
             t.raycast = () => {};
+            t.userData = { index: i, copy: p.c };
             t.visible = m.visible;
             scene.add(t);
             clones.push(t);
@@ -467,9 +468,51 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
       x += widths[k] + gap;
     });
   }
+  // Brim: a flat translucent ring on the bed around each object (and copy),
+  // drawn from its first-layer outline, in the colour it prints with.
+  // spec: {kind, width, gap, ears} or null; groups: which pieces form one object.
+  let brims = [];
+  function setBrim(spec, groups) {
+    brims.forEach((b) => { scene.remove(b); b.geometry.dispose(); b.material.dispose(); });
+    brims = [];
+    if (!spec || !(spec.width > 0) || !groups) return;
+    const sets = new Map();
+    [...meshes, ...clones].forEach((m) => {
+      const i = m.userData.index;
+      const g = groups[i];
+      if (!m.visible || g === undefined || g === "off" || last[i] === null) return;
+      const key = `${g}|${m.userData.copy || 0}`;
+      const pts = footprintOf(m);
+      if (!pts.length) return;
+      const s = sets.get(key) || sets.set(key, { pts: [], colour: last[i] || "#999" }).get(key);
+      for (const [x, z] of pts) s.pts.push([x + m.position.x, z + m.position.z]);
+    });
+    for (const { pts, colour } of sets.values()) {
+      const hull = convexHull(pts);
+      if (hull.length < 3) continue;
+      const mat = new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+      let geo;
+      if (spec.kind === "brim_ears") {
+        geo = earsGeometry(hull, spec);
+      } else {
+        const shape = new THREE.Shape(grow(hull, spec.gap + spec.width).map(([x, z]) => new THREE.Vector2(x, z)));
+        shape.holes.push(new THREE.Path(grow(hull, spec.gap).map(([x, z]) => new THREE.Vector2(x, z)).reverse()));
+        geo = new THREE.ShapeGeometry(shape);
+      }
+      if (!geo) { mat.dispose(); continue; }
+      geo.rotateX(Math.PI / 2);  // shape x/y -> bed x/z
+      const b = new THREE.Mesh(geo, mat);
+      b.position.y = 0.06;
+      b.renderOrder = -1;
+      b.raycast = () => {};
+      scene.add(b);
+      brims.push(b);
+    }
+  }
   let last = [];
   return {
     layout,
+    setBrim,
     setColours(colours) { last = colours; paint(colours); },
     highlight(i) { lit = i ?? null; paint(last); },
     show(visible) { meshes.forEach((m, i) => (m.visible = visible[i] !== false)); },
@@ -479,12 +522,83 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
       ro.disconnect();
       controls.dispose();
       meshes.forEach((m) => { m.geometry.dispose(); m.material.dispose(); });
+      brims.forEach((b) => { b.geometry.dispose(); b.material.dispose(); });
       grid.geometry.dispose();
       if (plate) { plate.geometry.dispose(); plate.material.dispose(); }
       renderer.dispose();
       el.remove();
     },
   };
+}
+
+// ---------------------------------------------------------------- brim outline helpers
+const FIRST_LAYER = 0.3;  // mm: what touches the bed (first layer) gets the brim
+// Where a piece meets the bed: points (x, z, local to the mesh) of its
+// cross-section at first-layer height, cached per geometry and height.
+function footprintOf(mesh) {
+  const g = mesh.geometry;
+  const h = FIRST_LAYER - mesh.position.y;
+  if (!g.boundingBox || g.boundingBox.min.y > h) return [];
+  const key = Math.round(h * 100);
+  const cache = g.userData.footprints || (g.userData.footprints = new Map());
+  if (cache.has(key)) return cache.get(key);
+  const p = g.attributes.position.array;
+  const raw = [];
+  for (let t = 0; t + 8 < p.length; t += 9) {
+    const ys = [p[t + 1], p[t + 4], p[t + 7]];
+    if (ys[0] > h && ys[1] > h && ys[2] > h) continue;
+    for (let a = 0; a < 3; a++) {
+      const b = (a + 1) % 3;
+      const ya = ys[a], yb = ys[b];
+      if (ya <= h) raw.push([p[t + a * 3], p[t + a * 3 + 2]]);
+      if ((ya - h) * (yb - h) < 0) {
+        const f = (h - ya) / (yb - ya);
+        raw.push([p[t + a * 3] + f * (p[t + b * 3] - p[t + a * 3]), p[t + a * 3 + 2] + f * (p[t + b * 3 + 2] - p[t + a * 3 + 2])]);
+      }
+    }
+  }
+  const pts = convexHull(raw);  // only the outline matters, keep it small
+  cache.set(key, pts);
+  return pts;
+}
+/** Convex hull (monotone chain) of [x, z] points, counter-clockwise in x/z. */
+export function convexHull(points) {
+  const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (pts.length < 3) return pts;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+/** A convex outline grown outward by r mm, with rounded corners. */
+function grow(hull, r) {
+  if (!(r > 0.01)) return hull;
+  const ring = [];
+  const n = 24;
+  for (const [x, z] of hull) for (let k = 0; k < n; k++) ring.push([x + r * Math.cos((k / n) * 2 * Math.PI), z + r * Math.sin((k / n) * 2 * Math.PI)]);
+  return convexHull(ring);
+}
+// Brim ears: a disc (radius = brim width) at each corner sharper than the max angle.
+function earsGeometry(hull, { width, ears = 125 }) {
+  const shapes = [];
+  hull.forEach((p, i) => {
+    const a = hull[(i + hull.length - 1) % hull.length], b = hull[(i + 1) % hull.length];
+    const u = [a[0] - p[0], a[1] - p[1]], v = [b[0] - p[0], b[1] - p[1]];
+    const cos = (u[0] * v[0] + u[1] * v[1]) / (Math.hypot(...u) * Math.hypot(...v) || 1);
+    if ((Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI > ears) return;
+    const s = new THREE.Shape();
+    s.absarc(p[0], p[1], width, 0, Math.PI * 2, false);
+    shapes.push(s);
+  });
+  return shapes.length ? new THREE.ShapeGeometry(shapes, 24) : null;
 }
 
 // ---------------------------------------------------------------- sliced toolpath preview

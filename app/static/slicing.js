@@ -379,7 +379,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
   let lastSeq = null;
   panel.onChange = () => {
     renderPrime();
-    const v = [panel.value("print_sequence"), brimMargin()].join("|");
+    const v = [panel.value("print_sequence"), brimMargin(), JSON.stringify(brimSpec())].join("|");
     if (v === lastSeq) return;
     lastSeq = v;
     if (typeof renderCopies === "function" && objs.items.length) { renderCopies(); paintObjects(); }
@@ -451,6 +451,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     const arranged = isStl || reshaped() || !proj.printer_model;
     const groups = groupsOf();
     viewer?.layout(arranged || objs.copies > 1 ? groups : null, objs.copies > 1 ? spreadCopies(footprints(groups), objs.copies, bedSize(), copyGap()) : null);
+    viewer?.setBrim(brimSpec(), groups);
     renderPrime();
   }
   // Which pieces stay together as one object on the plate (as the slicer gets them).
@@ -463,6 +464,17 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     const kind = panel?.value("brim_type") || "auto_brim";
     if (["no_brim", "inner_only", "brim_ears"].includes(kind)) return 0;
     return Math.max(0, Number(panel?.value("brim_width")) || 0) + Math.max(0, Number(panel?.value("brim_object_gap")) || 0);
+  }
+  // What the plate preview draws as the brim (null: none outside the pieces).
+  function brimSpec() {
+    const kind = panel?.value("brim_type") || "auto_brim";
+    const width = Math.max(0, Number(panel?.value("brim_width")) || 0);
+    if (["no_brim", "inner_only"].includes(kind) || !width) return null;
+    return {
+      kind, width,
+      gap: Math.max(0, Number(panel?.value("brim_object_gap")) || 0),
+      ears: Number(panel?.value("brim_ears_max_angle")) || 125,
+    };
   }
   function footprints(groups) {
     const boxes = {};
