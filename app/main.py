@@ -603,25 +603,69 @@ def create_app(
             raise HTTPException(400, "Only STL files can be replaced here")
         check_writable(path.parent)
         tmp = path.with_name(f".{path.name}.replace-{os.getpid()}.tmp")
-        size = 0
-        head = b""
         try:
-            with open(tmp, "wb") as out:
-                async for chunk in request.stream():
-                    size += len(chunk)
-                    if size > MAX_REPLACE_BYTES:
-                        raise HTTPException(413, "That file is too big (over 1 GB)")
-                    if len(head) < 84:
-                        head += chunk[: 84 - len(head)]
-                    out.write(chunk)
-            if not looks_like_stl(head, size):
-                raise HTTPException(400, "That doesn't look like an STL file")
+            await receive_stl(request, tmp)
             os.replace(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)
         scanner.scan()
         st = path.stat()
         return {"ok": True, "id": file_id, "size": st.st_size, "mtime": st.st_mtime}
+
+    async def receive_stl(request: Request, tmp: Path) -> None:
+        """Stream the request body into tmp and check it is an STL."""
+        size = 0
+        head = b""
+        with open(tmp, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_REPLACE_BYTES:
+                    raise HTTPException(413, "That file is too big (over 1 GB)")
+                if len(head) < 84:
+                    head += chunk[: 84 - len(head)]
+                out.write(chunk)
+        if not looks_like_stl(head, size):
+            raise HTTPException(400, "That doesn't look like an STL file")
+
+    @app.post("/api/models/{model_id}/stl")
+    async def add_stl(model_id: str, request: Request, name: str):
+        """Upload another STL into a model (raw body, file name in ?name=).
+        Loose files get a model folder first, like Rename does."""
+        m = lib().models.get(model_id)
+        if not m:
+            raise HTTPException(404, "No such model")
+        new_name = safe_name(name, "")
+        if not new_name:
+            raise HTTPException(400, "Invalid file name")
+        if Path(new_name).suffix.lower() != ".stl":
+            new_name += ".stl"
+        root = settings.library.resolve()
+        if "#" in m.relpath:
+            folder = category_dir(m.category) / folder_name(m.name)
+            staging = folder.parent
+        else:
+            folder = model_dir(m)
+            staging = folder
+        if (folder / new_name).exists():
+            raise HTTPException(409, f"A file named '{new_name}' is already in this model. "
+                                     "Use Replace STL to swap it, or rename the file first")
+        check_writable(staging)
+        # Hidden dot-file: the scanner never sees a half-uploaded STL.
+        tmp = staging / f".{new_name}.add-{os.getpid()}.tmp"
+        try:
+            await receive_stl(request, tmp)
+            if "#" in m.relpath:
+                model_id = move_model(model_id, folder)
+            dest = folder / new_name
+            if dest.exists():
+                raise HTTPException(409, f"A file named '{new_name}' is already in this model")
+            os.rename(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
+        scanner.scan()
+        st = dest.stat()
+        return {"ok": True, "model_id": model_id, "id": make_id(dest.relative_to(root).as_posix()),
+                "name": new_name, "size": st.st_size, "mtime": st.st_mtime}
 
     @app.delete("/api/models/{model_id}")
     def delete_model(model_id: str):
