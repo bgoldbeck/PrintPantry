@@ -509,10 +509,43 @@ export function createPartsViewer(container, buffer, { onPick, bed = null } = {}
       brims.push(b);
     }
   }
+  // Scale (x, y, z on the bed's axes): each group of pieces about the middle
+  // of its footprint, bottom on the bed, the way the slicer scales objects.
+  const orig = geos.map((g) => g.attributes.position.array.slice());
+  const origBoxes = geos.map((g) => g.boundingBox.clone());
+  let scaleKey = JSON.stringify([[1, 1, 1], null]);
+  function setScale(s, groups) {
+    const key = JSON.stringify([s, groups || null]);
+    if (key === scaleKey) return;
+    scaleKey = key;
+    const [sx, sy, sz] = s;
+    const boxes = new Map();
+    geos.forEach((g, i) => {
+      const k = groups ? groups[i] : 0;
+      (boxes.get(k) || boxes.set(k, new THREE.Box3()).get(k)).union(origBoxes[i]);
+    });
+    geos.forEach((g, i) => {
+      const b = boxes.get(groups ? groups[i] : 0);
+      const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2, y0 = b.min.y;
+      const src = orig[i], pos = g.attributes.position.array;
+      // three.js: x = bed x, y = up (z), z = -bed y
+      for (let k = 0; k < src.length; k += 3) {
+        pos[k] = cx + (src[k] - cx) * sx;
+        pos[k + 1] = y0 + (src[k + 1] - y0) * sz;
+        pos[k + 2] = cz + (src[k + 2] - cz) * sy;
+      }
+      g.attributes.position.needsUpdate = true;
+      g.computeVertexNormals();
+      g.computeBoundingBox();
+      g.computeBoundingSphere();
+      g.userData.footprints = null;  // brim outline cache
+    });
+  }
   let last = [];
   return {
     layout,
     setBrim,
+    setScale,
     setColours(colours) { last = colours; paint(colours); },
     highlight(i) { lit = i ?? null; paint(last); },
     show(visible) { meshes.forEach((m, i) => (m.visible = visible[i] !== false)); },

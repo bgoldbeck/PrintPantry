@@ -1328,3 +1328,9 @@ button .spinner { width: 10px; height: 10px; margin-right: 6px; }
 .viewer .orient-bar .orient-label { font-size: .8rem; font-weight: 700; color: var(--ink-2); background: var(--surface); padding: 3px 8px; border-radius: 8px; border: 1px solid var(--line); }
 .viewer .orient-bar .orient-note { flex-basis: 100%; color: var(--ink-2); font-size: .8rem; }
 .viewer .orient-bar .orient-note:empty { display: none; }
+.slice-dialog .copies.scale { gap: 6px 10px; }
+.slice-dialog .copies.scale .scale-ax { display: inline-flex; gap: 4px; align-items: center; font-weight: 500; white-space: nowrap; }
+.slice-dialog .copies.scale input[type="number"] { width: 4.2em; }
+.slice-dialog .scale-note { display: block; margin-top: 4px; }
+.slice-dialog [data-scale-warn] .notice { margin: 6px 0 0; }
+.slice-dialog .copies.scale [data-scale-lock][aria-pressed="true"] { border-color: var(--accent, currentColor); }

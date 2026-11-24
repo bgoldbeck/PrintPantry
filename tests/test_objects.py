@@ -390,3 +390,53 @@ def test_separate_parts_stay_bodies(tmp_path):
 def test_many_bodies_start_on_one_toolhead(tmp_path):
     p = write_stl(tmp_path / "six.stl", sum((cube(x=20 * n) for n in range(6)), []))
     assert {i.extruder for i in O.stl_items([p])} == {1}
+
+
+def test_clean_scale():
+    assert O.clean_scale(None) is None
+    assert O.clean_scale([1, 1, 1]) is None
+    assert O.clean_scale([1.5, "1.5", 0.5]) == (1.5, 1.5, 0.5)
+    for bad in ([1, 1], ["x", 1, 1], [0, 1, 1], [11, 1, 1], "abc"):
+        with pytest.raises(O.ScaleError):
+            O.clean_scale(bad)
+
+
+def test_plate_scales_every_piece(tmp_path):
+    stl = write_stl(tmp_path / "s.stl", cube(s=20))
+    out = tmp_path / "c.3mf"
+    O.plate_3mf([stl], {}, out, scale=(1.5, 1.0, 0.5))
+    assert O.threemf_items(out)[0].size == pytest.approx([30, 20, 10])
+    src = bambu_3mf(tmp_path / "a.3mf")
+    O.plate_3mf([src], {"o100": 1}, out, scale=(2, 2, 2))
+    assert [i.size for i in O.threemf_items(out)][0] == pytest.approx([20, 20, 20])
+
+
+def test_scale_3mf_scales_objects_where_they_stand(tmp_path):
+    src = bambu_3mf(tmp_path / "a.3mf")
+    before = {i.key: i for i in O.threemf_items(src, with_mesh=True)}
+    assert O.scale_3mf(src, (2.0, 1.0, 3.0)) == 2
+    after = {i.key: i for i in O.threemf_items(src, with_mesh=True)}
+    assert after["o100"].size == pytest.approx([20, 10, 30])
+    for key in after:
+        (lo0, hi0), (lo1, hi1) = O.bbox(before[key].tris), O.bbox(after[key].tris)
+        if key == "o100":  # centre of its footprint stays, bottom stays on the bed
+            assert (lo1[0] + hi1[0]) / 2 == pytest.approx((lo0[0] + hi0[0]) / 2)
+            assert (lo1[1] + hi1[1]) / 2 == pytest.approx((lo0[1] + hi0[1]) / 2)
+            assert lo1[2] == pytest.approx(lo0[2])
+    # the rest of the project is untouched
+    with zipfile.ZipFile(src) as zf:
+        assert "Metadata/model_settings.config" in zf.namelist()
+        assert zf.read("3D/3dmodel.model").count(b"<item ") == 2
+
+
+def test_submit_scale(lib, monkeypatch):
+    write_stl(lib / "M" / "a.stl", cube())
+    monkeypatch.setattr(service, "queue_job", lambda job: job)
+    base = {"printer": "u1", "path": "M/a.stl", "machine": "m", "process": "p", "filaments": ["A"]}
+    assert service.submit({**base, "scale": [1.5, 1.5, 1.5]}).scale == (1.5, 1.5, 1.5)
+    assert service.submit({**base, "scale": [1, 1, 1]}).scale is None
+    with pytest.raises(service.BadRequest):
+        service.submit({**base, "scale": [0, 1, 1]})
+    u1 = service.PRINTERS["u1"]
+    assert service.output_name(Path("Clip.stl"), u1, None, 1, (1.5, 1.5, 1.5)) == f"Clip 150%_{u1.tag}.gcode"
+    assert service.output_name(Path("Clip.stl"), u1, None, 2, (2, 1, 1)) == f"Clip 200x100x100% x2_{u1.tag}.gcode"

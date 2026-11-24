@@ -108,6 +108,108 @@ def transformed(tris: array, m: tuple) -> array:
     return out
 
 
+# ---------------------------------------------------------------- scale
+
+MIN_SCALE, MAX_SCALE = 0.01, 10.0  # 1% to 1000%
+
+
+class ScaleError(ValueError):
+    pass
+
+
+def clean_scale(value) -> tuple | None:
+    """A scale from a request: 3 factors (x, y, z; 1 = as is), or None for
+    "not scaled". Raises ScaleError if it isn't one."""
+    if value is None or value == []:
+        return None
+    try:
+        s = tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ScaleError("A scale is 3 numbers (x, y, z)") from None
+    if len(s) != 3 or not all(MIN_SCALE - 1e-9 <= v <= MAX_SCALE + 1e-9 for v in s):
+        raise ScaleError(f"Scale must be {MIN_SCALE * 100:g}% to {MAX_SCALE * 100:g}%")
+    s = tuple(round(v, 6) for v in s)
+    return None if is_unscaled(s) else s
+
+
+def is_unscaled(s) -> bool:
+    return not s or all(abs(v - 1.0) < 1e-9 for v in s)
+
+
+def scaled(tris: array, s: tuple) -> array:
+    """Triangles scaled about the origin by (sx, sy, sz)."""
+    if is_unscaled(s):
+        return tris
+    sx, sy, sz = s
+    out = array("f", tris)
+    for i in range(0, len(out), 3):
+        out[i] *= sx
+        out[i + 1] *= sy
+        out[i + 2] *= sz
+    return out
+
+
+_BUILD_RE = re.compile(rb"<((?:[\w.-]+:)?build)\b[^>]*>(.*?)</\1\s*>", re.S)
+_ITEM_RE = re.compile(rb"<(?:[\w.-]+:)?item\b[^>]*?/?>", re.S)
+_ATTR_RE = r'(\s%s\s*=\s*")([^"]*)(")'
+
+
+def _attr(tag: bytes, name: str) -> str | None:
+    m = re.search((_ATTR_RE % re.escape(name)).encode(), tag)
+    return m.group(2).decode() if m else None
+
+
+def scale_3mf(path: Path, s: tuple) -> int:
+    """Scale each object of a 3MF in place (build items' transforms), each
+    about the middle of its footprint, its bottom staying on the bed, so the
+    objects stay where the project put them. Keeps the project's settings,
+    modifiers and painted colours. Returns how many objects were scaled."""
+    if is_unscaled(s):
+        return 0
+    sx, sy, sz = s
+    with zipfile.ZipFile(path) as zin:
+        infos = zin.infolist()
+        data = {i.filename: zin.read(i) for i in infos}
+        if MODEL not in data:
+            raise ObjectsError(f"{path.name} has no 3D model")
+        model = _Model(zin, True)
+        raw = data[MODEL]
+        b = _BUILD_RE.search(raw)
+        if not b:
+            return 0
+        done = 0
+
+        def one(m: re.Match) -> bytes:
+            nonlocal done
+            tag = m.group(0)
+            oid = _attr(tag, "objectid")
+            file = _attr(tag, "p:path") or MODEL
+            t = parse_transform(_attr(tag, "transform"))
+            tris = array("f")
+            for pid, f, pm in model.parts(file, oid, IDENTITY):
+                tris.extend(model.mesh(f, pid, compose(pm, t)))
+            if not tris:
+                return tag
+            lo, hi = bbox(tris)
+            cx, cy, cz = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]
+            about = (sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, sz, cx * (1 - sx), cy * (1 - sy), cz * (1 - sz))
+            value = " ".join("%.9g" % v for v in compose(t, about)).encode()
+            done += 1
+            pat = (_ATTR_RE % "transform").encode()
+            if re.search(pat, tag):
+                return re.sub(pat, lambda a: a.group(1) + value + a.group(3), tag, count=1)
+            return re.sub(rb"\s*(/?>)$", lambda e: b' transform="' + value + b'"' + e.group(1), tag, count=1)
+
+        inner = _ITEM_RE.sub(one, b.group(2))
+        data[MODEL] = raw[:b.start(2)] + inner + raw[b.end(2):]
+    tmp = path.with_name(path.name + ".part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for i in infos:
+            zout.writestr(i, data[i.filename])
+    tmp.replace(path)
+    return done
+
+
 def bbox(tris: array) -> tuple[list[float], list[float]]:
     if not tris:
         return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
@@ -323,7 +425,7 @@ def esc(s) -> str:
 
 
 def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool = True, plate: int = 0,
-              copies: int = 1, bed: dict | None = None) -> bool:
+              copies: int = 1, bed: dict | None = None, scale: tuple | None = None) -> bool:
     """A plain 3MF of what goes on the plate: a project 3MF's printed meshes
     and/or STLs (split into bodies), a filament per piece from ``assign``
     (0 = leave it off the plate).
@@ -342,8 +444,14 @@ def plate_3mf(paths: list[Path], assign: dict, dst: Path, keep_positions: bool =
     With ``bed`` ({"area": (x0, y0, x1, y1), "gap": mm}) the objects are
     spread over the bed here (see layout.spread) and True is returned: slice
     without --arrange to keep that. False: they didn't fit that way, let the
-    slicer arrange them."""
+    slicer arrange them.
+
+    ``scale`` (x, y, z factors on the bed's axes) resizes every piece; pieces
+    keep their places relative to each other (scaled about one origin)."""
     items = items_for(paths)
+    if not is_unscaled(scale):
+        for it in items:
+            it.tris = scaled(it.tris, scale)
     keep = [it for it in items if str(assign.get(it.key, "")) != "0"]
     if plate:
         keep = [it for it in keep if not it.key.startswith("o") or not it.plate or it.plate == plate]
