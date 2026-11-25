@@ -491,9 +491,10 @@ def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, tit
               bed: dict | None = None) -> bool:
     """One object per group, one part per item, filament per part from
     ``assign`` (else the item's own). Objects are centred on their origin;
-    slice with --arrange so the slicer places them. ``copies`` > 1 adds
-    instances (build items of the same object), which the slicer slices
-    once and repeats, much faster than as many separate objects.
+    slice with --arrange so the slicer places them. ``copies`` > 1 writes
+    each object that many times, each copy a full object with the same
+    filaments (not instances: OrcaSlicer drops the settings of extra
+    instances in a 3MF it didn't make).
     ``bed``: place them spread over the bed instead (see plate_3mf)."""
     resources, build, config = [], [], []
     next_id = 1
@@ -518,28 +519,34 @@ def write_3mf(groups: list[tuple[str, list[Item]]], assign: dict, dst: Path, tit
         lo, hi = boxes[g]
         # Each object centred on its own origin, lowest point on the plate.
         shift = (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2])
-        part_ids, parts_cfg = [], []
-        for it in group:
-            pid = next_id
-            next_id += 1
-            resources.append(_mesh_xml(pid, it.name, it.tris, shift))
-            part_ids.append(pid)
-            ext = _slot(assign.get(it.key), it.extruder)
-            parts_cfg.append('  <part id="%d" subtype="normal_part">\n   <metadata key="name" value="%s"/>\n'
-                             '   <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
-                             '   <metadata key="extruder" value="%d"/>\n  </part>\n' % (pid, esc(it.name), ext))
-        oid = next_id
-        next_id += 1
-        comps = "".join('   <component objectid="%d"/>\n' % p for p in part_ids)
-        resources.append(' <object id="%d" name="%s" type="model">\n  <components>\n%s  </components>\n </object>\n'
-                         % (oid, esc(name), comps))
+        first = _slot(assign.get(group[0].key), group[0].extruder)
+        # Every copy is its own object with its own parts and settings.
+        # OrcaSlicer splits extra instances of an object in a 3MF it didn't
+        # write into new objects without the per-object/part settings
+        # (bbs_3mf.cpp "split as instance"), so those copies fell back to
+        # filament 1 while the first copy kept the picked one.
+        meshes = [_mesh_xml(0, it.name, it.tris, shift) for it in group]  # id swapped per copy
         for c in range(copies):
+            part_ids, parts_cfg = [], []
+            for it, mesh in zip(group, meshes):
+                pid = next_id
+                next_id += 1
+                resources.append(mesh.replace(' <object id="0"', ' <object id="%d"' % pid, 1))
+                part_ids.append(pid)
+                ext = _slot(assign.get(it.key), it.extruder)
+                parts_cfg.append('  <part id="%d" subtype="normal_part">\n   <metadata key="name" value="%s"/>\n'
+                                 '   <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
+                                 '   <metadata key="extruder" value="%d"/>\n  </part>\n' % (pid, esc(it.name), ext))
+            oid = next_id
+            next_id += 1
+            comps = "".join('   <component objectid="%d"/>\n' % p for p in part_ids)
+            resources.append(' <object id="%d" name="%s" type="model">\n  <components>\n%s  </components>\n </object>\n'
+                             % (oid, esc(name), comps))
             x, y = places[g][c] if places else (128 + g * 10, 128 + c * 5)
             build.append('  <item objectid="%d" transform="1 0 0 0 1 0 0 0 1 %.3f %.3f 0" printable="1"/>\n'
                          % (oid, x, y))
-        first = _slot(assign.get(group[0].key), group[0].extruder)
-        config.append(' <object id="%d">\n  <metadata key="name" value="%s"/>\n  <metadata key="extruder" value="%d"/>\n%s </object>\n'
-                      % (oid, esc(name), first, "".join(parts_cfg)))
+            config.append(' <object id="%d">\n  <metadata key="name" value="%s"/>\n  <metadata key="extruder" value="%d"/>\n%s </object>\n'
+                          % (oid, esc(name), first, "".join(parts_cfg)))
     model = ('<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" '
              'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
              ' <metadata name="Title">%s</metadata>\n<resources>\n%s</resources>\n<build>\n%s</build>\n</model>\n'

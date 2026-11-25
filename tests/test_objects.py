@@ -1,3 +1,4 @@
+import re
 """Per-object filaments: listing a 3MF's objects / an STL's bodies, writing the
 chosen toolheads into the 3MF the slicer reads, and the routes around it."""
 
@@ -274,14 +275,21 @@ def test_submit_skips_and_extras_on_a_project(lib, monkeypatch):
 def test_copies_repeat_every_object(tmp_path):
     src = bambu_3mf(tmp_path / "a.3mf")
     out = tmp_path / "c.3mf"
-    O.plate_3mf([src], {"o100": 1, "o101:2": 1, "o101:3": 1}, out, copies=3)
+    O.plate_3mf([src], {"o100": 2, "o101:2": 3, "o101:3": 1}, out, copies=3)
     got = O.threemf_items(out)
-    assert len(got) == 3 and {i.extruder for i in got} == {1}  # objects written once...
-    build = lambda: zipfile.ZipFile(out).read("3D/3dmodel.model").decode().count("<item ")
-    assert build() == 6  # ...placed as instances: 2 objects x 3
+    # Each copy is its own object with the same filaments (OrcaSlicer drops
+    # the settings of extra instances, so the first copy came out different).
+    assert len(got) == 9
+    assert sorted(i.extruder for i in got) == [1, 1, 1, 2, 2, 2, 3, 3, 3]
+    model = lambda: zipfile.ZipFile(out).read("3D/3dmodel.model").decode()
+    assert model().count("<item ") == 6
+    ids = re.findall(r'<item objectid="(\d+)"', model())
+    assert len(set(ids)) == 6  # no shared instances
     stl = write_stl(tmp_path / "s.stl", cube(s=20))
-    O.plate_3mf([stl], {}, out, copies=4)
-    assert build() == 4
+    O.plate_3mf([stl], {"f0": 2}, out, copies=4)
+    assert model().count("<item ") == 4
+    got = O.threemf_items(out)
+    assert len(got) == 4 and {i.extruder for i in got} == {2}
 
 
 def test_item_box_is_the_footprint(tmp_path):
