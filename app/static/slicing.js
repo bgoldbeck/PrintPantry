@@ -298,7 +298,7 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       const v = loadedVendor(i);
       return `${tag}${swatch(headColour(i) || s.colour)}<small>loaded: ${esc(lt)}${v ? ` · ${esc(v)}` : ""}${had}</small>`;
     }
-    const col = objs.active ? slotColour(i) : s.colour;
+    const col = headColour(i) || (objs.active ? slotColour(i) : s.colour);
     return `${tag}${s.type || col ? `${swatch(col)}<small>file had ${esc(s.type || "filament")}</small>` : "<small>any filament</small>"}`;
   }
   function renderFilRows() {
@@ -1036,6 +1036,12 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       body.extra_files = extraList();
       body.keep_positions = objs.keep ?? objs.overlapping;
       body.colours = slots.map((s, i) => (headColour(i) || (objs.compact ? s.colour || "" : "")).slice(0, 7));
+    }
+    // The sliced file carries the loaded spools' colours, so its card picture,
+    // the Print dialog and the plate preview show what this dialog showed.
+    if (!body.colours) {
+      const cols = slots.map((_, i) => headColour(i).slice(0, 7));
+      if (cols.some(Boolean)) body.colours = cols;
     }
     if (objs.copies > 1) body.copies = objs.copies;
     if (scaled()) body.scale = objs.scale.map((v) => Math.round(v * 1e5) / 1e5);

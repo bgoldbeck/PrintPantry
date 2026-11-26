@@ -269,6 +269,36 @@ def pad_filaments(config: dict, count: int, filament_keys, nozzles: int = 1) -> 
     return True
 
 
+SPARE_COLOURS = ["#FFFFFF", "#F5D000", "#D02020", "#2060D0", "#20A040", "#202020", "#E07020", "#9040C0"]
+
+
+def distinct_hex(colours: list[str]) -> list[str]:
+    """Every filament its own colour, kept as close to the chosen one as can be.
+
+    OrcaSlicer treats filaments of the same colour and type as one (objects
+    put on the second print with the first). A repeat is nudged by a step or
+    two in each channel, so it still looks like the toolhead's spool in every
+    preview and picture; a missing colour gets a spare one."""
+    seen: set[str] = set()
+    out = []
+    for c in colours:
+        c = str(c or "").upper()[:7]
+        if not re.fullmatch(r"#[0-9A-F]{6}", c):
+            c = next((x for x in SPARE_COLOURS if x not in seen), "#808080")
+        if c in seen:
+            n = int(c[1:], 16)
+            rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+            for step in range(1, 64):
+                d = -step if sum(rgb) > 382 else step
+                cand = "#" + "".join(f"{min(255, max(0, v + d)):02X}" for v in rgb)
+                if cand not in seen:
+                    c = cand
+                    break
+        seen.add(c)
+        out.append(c)
+    return out
+
+
 def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
                      filaments: int = 0, filament_keys=(), nozzles: int = 1,
                      colours: list[str] | None = None, overrides: dict | None = None,
@@ -286,10 +316,18 @@ def copy_for_slicing(src: Path, dst: Path, process: dict | None = None,
             changed = pad_per_extruder(settings)
             if filaments and pad_filaments(settings, filaments, filament_keys, nozzles):
                 changed = True
-            # The project's own colour list wins over the loaded filaments'.
-            if colours and filaments and len(colours) == filaments and all(colours):
-                settings["filament_colour"] = list(colours)
-                changed = True
+            # Colours of the loaded spools (per filament; "" keeps the
+            # project's), so the sliced file shows what will really print.
+            have = settings.get("filament_colour")
+            if colours and isinstance(have, list) and any(colours):
+                cols = [str(c) for c in have]
+                for i, c in enumerate(colours[:len(cols)]):
+                    if c:
+                        cols[i] = c
+                cols = distinct_hex(cols) if len(cols) > 1 else cols
+                if cols != have:
+                    settings["filament_colour"] = cols
+                    changed = True
             if process:
                 apply_process(settings, process)
                 changed = True

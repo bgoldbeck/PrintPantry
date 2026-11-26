@@ -393,3 +393,11 @@ def test_rfid_tray_is_tagged():
     assert t.tagged
     t = BambuPrinter._tray(1, {"tray_type": "PLA", "tray_uuid": "00000000000000000000000000000000"}, 1, "255")
     assert not t.tagged
+
+
+def test_unknown_filament_head_keeps_its_slot():
+    # U1 head whose filament was never set: the file was sliced for it, stay there.
+    heads = {0: SimpleNamespace(index=0, type="PLA", loaded=True), 1: SimpleNamespace(index=1, type="", loaded=True),
+             2: SimpleNamespace(index=2, type="PLA", loaded=True)}
+    fls = [SimpleNamespace(slot=1, type="PLA"), SimpleNamespace(slot=2, type="PLA")]
+    assert default_tool_map(fls, heads) == {0: 0, 1: 1}

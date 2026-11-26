@@ -65,15 +65,21 @@ def same_material(a: str, b: str) -> bool:
 
 def default_tool_map(file_fils, heads: dict) -> dict[int, int]:
     """Pick a toolhead for each of the file's filaments. Its own slot when that
-    holds the right material; otherwise a loaded head with that material that no
+    holds the right material (or doesn't say what it holds); otherwise a loaded head with that material that no
     other filament of this file is using (so colours of a multi-colour print
     stay apart); otherwise its own slot, and the check warns."""
     def fits(fl, h):
         return h is not None and h.loaded is not False and bool(h.type) and same_material(fl.type, h.type)
 
+    def unknown(h):
+        # Loaded, but the printer doesn't say with what (U1 "NONE"): the file
+        # was most likely sliced for this head, so don't move it elsewhere.
+        return h is not None and h.loaded is not False and not h.type
+
     out: dict[int, int] = {}
     for fl in file_fils:
-        if fits(fl, heads.get(fl.slot - 1)):
+        h = heads.get(fl.slot - 1)
+        if fits(fl, h) or unknown(h):
             out[fl.slot - 1] = fl.slot - 1
     taken = set(out.values()) | {fl.slot - 1 for fl in file_fils}
     for fl in file_fils:
