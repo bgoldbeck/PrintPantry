@@ -728,20 +728,12 @@ def gcode_usage(path: Path) -> list[float]:
         return []
 
 
-SPARE_COLOURS = ["#FFFFFF", "#F5D000", "#D02020", "#2060D0", "#20A040", "#202020", "#E07020", "#9040C0"]
-
-
 def distinct_colours(fils: list[dict]) -> None:
-    """Give every filament its own colour. OrcaSlicer treats filaments of the
-    same colour and type as one: objects put on the second one print with the
-    first, and splitting the bodies of one STL that way crashes it."""
-    seen: set[str] = set()
-    for f in fils:
-        c = str(_first(f.get("filament_colour")) or "").upper()[:7]
-        if not re.fullmatch(r"#[0-9A-F]{6}", c) or c in seen:
-            c = next((x for x in SPARE_COLOURS if x not in seen), c)
+    """Give every filament its own colour (see project.distinct_hex)."""
+    cols = project.distinct_hex([str(_first(f.get("filament_colour")) or "") for f in fils])
+    for f, c in zip(fils, cols):
+        if str(_first(f.get("filament_colour")) or "").upper() != c:
             f["filament_colour"] = [c]
-        seen.add(c)
 
 
 def write_json(path: Path, data: dict) -> str:
@@ -936,7 +928,7 @@ def run_job(job: Job) -> None:
             own_bed = job.bed_type if job.mode == "presets" else info.bed_type
             temps = [{temp_keys(own_bed)[k]: v for k, v in t.items() if k in temp_keys(own_bed)} for t in job.temps]
             project.copy_for_slicing(source, inp, overrides, count, fil_keys - project.META_KEYS, nozzles,
-                                     job.colours if job.mode == "presets" else None,
+                                     job.colours or None,
                                      job.overrides if job.mode == "project" else None,
                                      temps if any(temps) else None)
             if job.scale:

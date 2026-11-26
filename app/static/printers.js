@@ -856,6 +856,18 @@ export async function openPrintDialog(fileId, printerId, startMap = null) {
     ].filter(Boolean);
     return parts.length ? `<p class="print-totals">Total ${parts.join(" · ")}</p>` : "";
   }
+  // Sliced files carry the colours of the spools loaded when slicing. Say so
+  // when a toolhead now holds a clearly different colour than that.
+  const rgb = (c) => { const m = /^#?([0-9a-f]{6})/i.exec(c || ""); if (!m) return null; const n = parseInt(m[1], 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+  const farApart = (a, b) => { const x = rgb(a), y = rgb(b); return !!(x && y) && Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]) > 60; };
+  function colourNote() {
+    const off = chk.tools.map((t) => ({ t, h: heads().find((x) => x.index === map[t.file_index]) }))
+      .filter(({ t, h }) => h && h.loaded !== false && farApart(t.file.color, h.color)
+        && colorName((t.file.color || "").slice(0, 7)) !== colorName((h.color || "").slice(0, 7)));
+    if (!off.length) return `<p class="hint">Colours as sliced. The material is checked too.</p>`;
+    return `<p class="hint colour-off">${off.map(({ t, h }) => `${esc(headName(h))} has ${esc(colorName(h.color.slice(0, 7)))} now; filament ${t.file_index + 1} was sliced as ${esc(colorName(t.file.color.slice(0, 7)))}.`).join(" ")}
+      It prints in the toolhead's colour, as the plate preview shows.</p>`;
+  }
   function checksHtml() {
     const rows = chk.tools.map((t) => `<tr class="${t.ok ? "" : "warn"}">
         <td>${swatch(t.file.type, t.file.color)}<small class="muted"> filament ${t.file_index + 1}</small></td>
@@ -868,7 +880,7 @@ export async function openPrintDialog(fileId, printerId, startMap = null) {
       ${chk.blockers.length ? `<div class="notice error"><strong>Can't start:</strong><ul>${chk.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : ""}
       ${rows ? `<table class="toolmap"><thead><tr><th>File needs</th><th>Print with</th><th>Uses</th><th>Spool</th><th></th></tr></thead><tbody>${rows}</tbody></table>
         ${totalsHtml()}
-        <p class="hint">The file's colour is whatever the slicer had set; only the material is checked.</p>` : ""}
+        ${colourNote()}` : ""}
       ${chk.warnings.length ? `<div class="notice warn"><ul>${chk.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
         <label class="check"><input type="checkbox" data-ack> I've checked the toolheads and want to print anyway</label>` : ""}`;
   }

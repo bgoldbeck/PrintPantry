@@ -229,7 +229,7 @@ def test_filaments_get_distinct_colours():
     fils = [{"filament_colour": ["#FFFFFF"]}, {"filament_colour": ["#ffffff"]}, {}, {"filament_colour": ["#D02020"]}]
     service.distinct_colours(fils)
     cols = [f["filament_colour"][0] for f in fils]
-    assert cols[0] == "#FFFFFF" and len(set(c.upper() for c in cols)) == 4
+    assert cols[0] == "#FFFFFF" and cols[1] == "#FEFEFE" and len(set(c.upper() for c in cols)) == 4
 
 
 def test_rebuild_project_for_more_toolheads(tmp_path):

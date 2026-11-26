@@ -426,6 +426,7 @@ small.hint { display: block; color: var(--ink-2); margin-top: 4px; }
 .toolmap .pick { display: inline-flex; align-items: center; gap: 6px; }
 .toolmap .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--c); border: 1px solid rgb(0 0 0 / 25%); flex: none; }
 .print-dialog .hint, .muted { color: var(--ink-2); font-size: .8rem; margin: 0 0 8px; }
+.print-dialog .hint.colour-off { color: var(--warn, #b26a00); }
 .headpicks { display: flex; flex-wrap: wrap; gap: 6px; }
 .headpick { background: var(--surface-2); color: var(--ink); border: 2px solid transparent; padding: 6px 10px; border-radius: 12px;
   font-weight: 500; gap: 8px; text-align: left; }

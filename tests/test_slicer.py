@@ -623,3 +623,21 @@ def test_copy_for_slicing_sets_filament_temps(tmp_path):
         s = json.loads(zf.read(project.SETTINGS))
     assert s["nozzle_temperature"] == ["220", "240"] and s["hot_plate_temp"] == ["70", "70"]
     assert s["different_settings_to_system"][2] == "nozzle_temperature;hot_plate_temp"
+
+
+def test_copy_for_slicing_uses_loaded_colours(tmp_path):
+    src = make_3mf(tmp_path / "a.3mf", {"filament_colour": ["#FF0000", "#00FF00", "#0000FF"]})
+    dst = tmp_path / "b.3mf"
+    # Project settings too: the sliced file shows the loaded spools' colours,
+    # a blank keeps the project's, and two heads of the same colour stay apart.
+    project.copy_for_slicing(src, dst, colours=["#FFFFFF", "", "#FFFFFF"])
+    with zipfile.ZipFile(dst) as zf:
+        s = json.loads(zf.read(project.SETTINGS))
+    assert s["filament_colour"][:2] == ["#FFFFFF", "#00FF00"]
+    assert s["filament_colour"][2] != "#FFFFFF" and s["filament_colour"][2].startswith("#FE")
+
+
+def test_distinct_hex_nudges_repeats():
+    assert project.distinct_hex(["#202020", "#202020", "#202020"]) == ["#202020", "#212121", "#222222"]
+    assert project.distinct_hex(["#ffffff", "#FFFFFF"]) == ["#FFFFFF", "#FEFEFE"]
+    assert project.distinct_hex(["", "bad"])[0] == "#FFFFFF"
