@@ -81,7 +81,7 @@ function guessCombine(parts) {
   }
   return best.map((p) => p.name);
 }
-const PARTS_KEY = "pp.param.parts";
+const PARTS_KEY = "pp.param.parts2";  // v2: parts in the set no longer default to their own STL
 function loadParts(fileId) {
   try { return JSON.parse(localStorage.getItem(PARTS_KEY) || "{}")[fileId] || null; } catch { return null; }
 }
@@ -124,15 +124,18 @@ export async function openCustomizeDialog(file, onDone) {
   const allParts = info.parts.map((p) => p.name);
   const savedParts = loadParts(file.id);
   const partChoice = {
-    stl: (savedParts?.stl || allParts).filter((n) => allParts.includes(n)),
     combine: (savedParts?.combine || guessCombine(info.parts)).filter((n) => allParts.includes(n)),
   };
+  // Parts printed together come out as one object (STL + multi-colour 3MF), so
+  // by default only the parts left out of it get an STL of their own.
+  partChoice.stl = (savedParts?.stl || allParts.filter((n) => !partChoice.combine.includes(n))).filter((n) => allParts.includes(n));
 
   function formHtml() {
     return groups.map((g) => `<fieldset class="param-group" data-group="${esc(g)}"${groups.length > 1 && g !== activeGroup ? " hidden" : ""}>
       ${params.filter((p) => p.group === g).map((p) => {
         const label = p.label === p.name ? humanize(p.name) : p.label;
-        if (p.type === "bool") return `<div class="param bool">${inputHtml(p, values[p.name], tools.fonts)}${p.description ? `<small class="muted">${esc(label)}</small>` : ""}</div>`;
+        if (p.type === "bool") return `<div class="param bool"><label class="check"><input type="checkbox" id="pp-${esc(p.name)}" data-p="${esc(p.name)}"${values[p.name] ? " checked" : ""}>
+          <span class="param-label">${esc(label)}</span></label>${p.description && p.description !== label ? `<small class="muted">${esc(p.description)}</small>` : ""}</div>`;
         return `<label class="param" for="pp-${esc(p.name)}"><span class="param-label">${esc(label)}</span>
           ${p.description && p.description !== label ? `<small class="muted">${esc(p.description)}</small>` : ""}
           ${inputHtml(p, values[p.name], tools.fonts)}</label>`;
@@ -157,12 +160,12 @@ export async function openCustomizeDialog(file, onDone) {
     ${groups.length > 1 ? `<div class="param-tabs" role="tablist">${groups.map((g) =>
       `<button type="button" class="small${g === activeGroup ? "" : " ghost"}" data-tab="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}
     <form class="param-form" data-form>${formHtml()}</form>
-    ${info.parts.length ? `<div class="field parts-field"><span>Parts</span><table class="parts-table">
-      <thead><tr><th></th><th>STL</th>${info.parts.length > 1 ? `<th title="Put these parts together in one 3MF: the first ticked part prints with filament 1, the next with filament 2, and so on">Multi-colour 3MF</th>` : ""}</tr></thead>
+    ${info.parts.length ? `<div class="field parts-field"><span>Parts</span><div><table class="parts-table">
+      <thead><tr><th></th>${info.parts.length > 1 ? `<th title="Ticked parts come out as one object (one STL plus a multi-colour 3MF with each part kept separate), so they print together and you pick a colour for each part when slicing">Together as one object</th>` : ""}<th title="Also save this part as its own STL">Own STL</th></tr></thead>
       <tbody>${info.parts.map((p) => `<tr><td>${esc(p.label)}</td>
-        <td><input type="checkbox" data-part value="${esc(p.name)}"${partChoice.stl.includes(p.name) ? " checked" : ""} aria-label="${esc(p.label)} as STL"></td>
-        ${info.parts.length > 1 ? `<td><input type="checkbox" data-combine value="${esc(p.name)}"${partChoice.combine.includes(p.name) ? " checked" : ""} aria-label="${esc(p.label)} in the 3MF"></td>` : ""}</tr>`).join("")}
-      </tbody></table></div>` : ""}
+        ${info.parts.length > 1 ? `<td><input type="checkbox" data-combine value="${esc(p.name)}"${partChoice.combine.includes(p.name) ? " checked" : ""} aria-label="${esc(p.label)} in the combined object"></td>` : ""}
+        <td><input type="checkbox" data-part value="${esc(p.name)}"${partChoice.stl.includes(p.name) ? " checked" : ""} aria-label="${esc(p.label)} as its own STL"></td></tr>`).join("")}
+      </tbody></table>${info.parts.length > 1 ? `<small class="muted">Parts ticked under "Together" become one object: you pick a colour for each part when slicing.</small>` : ""}</div></div>` : ""}
     <label class="field"><span>Save as</span><input type="text" data-variant value="custom" maxlength="60"
       title="Name added to the file: ${esc(file.name.replace(/\.[^.]+$/, ""))} - <name>.stl. The same name replaces the last one."></label>
     <label class="check replace-check"><input type="checkbox" data-replace checked> Replace earlier versions (removes the STLs, 3MF and sliced files made from this file before)</label>
@@ -242,7 +245,7 @@ export async function openCustomizeDialog(file, onDone) {
     };
     if (body.combine.length < 2) body.combine = [];
     if (info.parts.length && !body.parts.length && !body.combine.length) {
-      progress.innerHTML = `<div class="notice error">Tick at least one part (or two for the 3MF).</div>`;
+      progress.innerHTML = `<div class="notice error">Tick at least one part (or two to put together).</div>`;
       return;
     }
     if (info.parts.length) saveParts(file.id, { stl: body.parts, combine: body.combine });

@@ -3,6 +3,7 @@
 #   {"src", "out_dir", "values": {alias: value}, "cells": {alias: [sheet, cell]},
 #    "parts": [object names saved as STLs], "names": {object name: STL file name},
 #    "combine": [object names for one multi-colour 3MF], "combine_name": "<file>.3mf",
+#    "combine_stl": "<file>.stl" (the same parts as one STL),
 #    "tolerance": 0.02}
 # Sets the spreadsheet cells, recomputes, and writes one STL per part (and,
 # when asked, one 3MF with all parts in one object, part N on filament N).
@@ -164,6 +165,15 @@ def main():
         out = os.path.join(job["out_dir"], job["combine_name"])
         write_3mf(out, os.path.splitext(job["combine_name"])[0], meshes)
         outputs.append(out)
+        if job.get("combine_stl"):
+            # Same parts as one STL: what the model page shows, with the 3MF
+            # above as its editable source (per-part colours when slicing).
+            whole = Mesh.Mesh()
+            for _, mesh in meshes:
+                whole.addMesh(mesh)
+            out = os.path.join(job["out_dir"], job["combine_stl"])
+            whole.write(out)
+            outputs.insert(0, out)
     if not outputs:
         raise RuntimeError("Nothing to export: none of the chosen parts is a solid")
     say("RESULT " + json.dumps({"outputs": outputs, "warnings": warnings}))

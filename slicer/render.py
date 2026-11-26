@@ -198,14 +198,20 @@ def _run_scad(job, src: Path, out: Path, name: str) -> list[Path]:
 def _run_freecad(job, src: Path, work: Path, out: Path, stem: str, variant: str) -> list[Path]:
     r = job.render
     parts = list(r.get("parts") or [])  # each saved as an STL
-    combine = list(r.get("combine") or [])  # together in one 3MF, part N on filament N
+    combine = list(r.get("combine") or [])  # together as one object, part N on filament N
+    together = len(combine) > 1
     names = {}
     for p in parts:
         label = clean_name(str(r.get("labels", {}).get(p, p)))
-        names[p] = f"{stem} - {variant}.stl" if len(parts) == 1 else f"{stem} - {variant} - {label}.stl"
+        # "<stem> - <variant>.stl" belongs to the combined object when there is one
+        names[p] = f"{stem} - {variant}.stl" if len(parts) == 1 and not together else f"{stem} - {variant} - {label}.stl"
+    # The combined object comes out as an STL (all parts, for the 3D view) plus a
+    # same-named 3MF that keeps the parts apart, so the 3MF is that STL's
+    # editable source and slicing it offers a colour per part.
     spec = {"src": str(src), "out_dir": str(out), "values": r.get("values", {}), "cells": r.get("cells", {}),
             "parts": parts, "names": names, "tolerance": 0.02, "combine": combine,
-            "combine_name": f"{stem} - {variant}.3mf" if len(combine) > 1 else ""}
+            "combine_name": f"{stem} - {variant}.3mf" if together else "",
+            "combine_stl": f"{stem} - {variant}.stl" if together else ""}
     spec_file = work / "job.json"
     spec_file.write_text(json.dumps(spec), "utf-8")
     env = tool_env()

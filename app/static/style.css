@@ -1063,6 +1063,8 @@ dialog.prompt-dialog h2 {
 .range-row input.num { width: 96px; flex: none; padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line);
   background: var(--bg); color: var(--ink); font: inherit; }
 .param-dialog .parts-field { align-items: start; }
+.param-dialog .parts-field > div > small { display: block; margin-top: 6px; }
+.param.bool > small { display: block; margin: 2px 0 0 30px; }
 .param-dialog [hidden] { display: none !important; }
 .parts-table { border-collapse: collapse; justify-self: start; }
 .parts-table th { font-size: .8rem; font-weight: 600; color: var(--ink-2); padding: 0 14px 4px 0; text-align: center; }
@@ -1343,3 +1345,13 @@ button .spinner { width: 10px; height: 10px; margin-right: 6px; }
 .slice-dialog .scale-note { display: block; margin-top: 4px; }
 .slice-dialog [data-scale-warn] .notice { margin: 6px 0 0; }
 .slice-dialog .copies.scale [data-scale-lock][aria-pressed="true"] { border-color: var(--accent, currentColor); }
+
+/* Customize shares .slice-dialog's look but not its edge-to-edge layout */
+.slice-dialog.param-dialog { width: min(720px, calc(100vw - 32px)); padding: 22px 26px; overflow: auto; }
+.slice-dialog.param-dialog[open] { display: block; }
+@media (max-width: 560px) { .slice-dialog.param-dialog { padding: 16px; } }
+
+/* small "i" that shows a note on hover/focus instead of taking up room */
+.info-tip { display: inline-grid; place-items: center; width: 1.15em; height: 1.15em; margin-left: 2px; border-radius: 50%;
+  font-size: .85em; font-weight: 600; color: var(--ink-2); cursor: help; vertical-align: 1px; }
+.info-tip:hover, .info-tip:focus-visible { color: var(--ink); background: var(--surface-2); outline: none; }
