@@ -416,7 +416,10 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     if (sig === tempSig && box.firstChild) return;  // unchanged: keep what's being typed
     tempSig = sig;
     const many = slots.length > 1 || objs.active;
-    box.innerHTML = `<div class="field temps"><span>Temperatures</span><div>
+    const tip = `°C, from ${mode() === "project" ? "the project's own settings" : "the filament preset for this plate"}.${
+      mines.some((m) => Object.keys(m).length) ? " Underlined = yours, remembered for this filament and plate." : ""} ${
+      canRemember ? "Tick Remember to keep them for this filament and plate next time (edit them all under Settings); otherwise changes count for this slice only." : "Changes count for this slice only and show in bold."}`;
+    box.innerHTML = `<div class="field temps"><span>Temperatures <span class="info-tip" tabindex="0" role="note" title="${esc(tip)}" aria-label="${esc(tip)}">ⓘ</span></span><div>
         <div class="temp-grid${canRemember ? " remember" : ""}">
           ${many ? "<span></span>" : ""}${TEMP_FIELDS.map(([, label]) => `<small class="head">${label}</small>`).join("")}${
             canRemember ? `<small class="head">Remember</small>` : ""}
@@ -431,9 +434,6 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
             }).join("")}${canRemember ? `<label class="remember-tick" title="Save these temperatures for ${esc(filSels()[i]?.value || "this filament")} on this plate. They fill in next time.">
               <input type="checkbox" data-remember="${i}"${remember[i] ? " checked" : ""}></label>` : ""}`).join("")}
         </div>
-        <small class="hint">°C, from ${mode() === "project" ? "the project's own settings" : "the filament preset for this plate"}.${
-          mines.some((m) => Object.keys(m).length) ? " <span class=\"yours-key\">Underlined</span> = yours, remembered for this filament and plate." : ""}
-          ${canRemember ? "Tick Remember to keep them for this filament and plate next time (edit them all under Settings); otherwise changes count for this slice only." : "Changes count for this slice only and show in bold."}</small>
       </div></div>`;
     box.querySelector(".temp-grid").classList.toggle("many", many);
     box.querySelectorAll("[data-temp]").forEach((inp) => {

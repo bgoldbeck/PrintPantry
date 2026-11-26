@@ -360,3 +360,32 @@ def test_render_replaces_earlier_outputs(tmp_path):
     gone = R.remove_earlier(lib, "Signs/Shelf Sign/ShelfSign.FCStd", "ShelfSign", keep)
     assert sorted(Path(g).name for g in gone) == ["ShelfSign - Old - Clip.stl", "ShelfSign - Old.3mf", "ShelfSign - Old_U1.gcode"]
     assert (gen / "ShelfSign - New - Clip.stl").exists() and (gen / "Other - Old.stl").exists()
+
+
+def test_freecad_combined_parts_come_out_as_one_object(monkeypatch, tmp_path):
+    """Parts put together get one "<stem> - <variant>.stl" plus a same-named 3MF
+    (its editable source); a lone extra part is then named after its label."""
+    specs = []
+
+    def fake_stream(job, args, cwd, env, line):
+        spec = json.loads(Path(env["PP_RENDER_JOB"]).read_text("utf-8"))
+        specs.append(spec)
+        line("PP:RESULT " + json.dumps({"outputs": [], "warnings": []}))
+        return 0
+
+    monkeypatch.setattr(render, "_stream", fake_stream)
+    job = SimpleNamespace(render={"parts": ["Clip"], "combine": ["SignBase", "SignWhite"],
+                                  "labels": {"Clip": "Clip"}}, message="", warnings=[], log="")
+    src = tmp_path / "ShelfSign.FCStd"
+    src.write_bytes(b"x")
+    work = tmp_path / "work"
+    work.mkdir()
+    render._run_freecad(job, src, work, tmp_path, "ShelfSign", "custom")
+    spec = specs[-1]
+    assert spec["combine_stl"] == "ShelfSign - custom.stl"
+    assert spec["combine_name"] == "ShelfSign - custom.3mf"
+    assert spec["names"] == {"Clip": "ShelfSign - custom - Clip.stl"}
+
+    job.render = {"parts": ["Clip"], "combine": [], "labels": {}}
+    render._run_freecad(job, src, work, tmp_path, "ShelfSign", "custom")
+    assert specs[-1]["names"] == {"Clip": "ShelfSign - custom.stl"} and not specs[-1]["combine_stl"]
