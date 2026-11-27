@@ -602,10 +602,13 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
     return Math.max(0, Number(panel?.value("brim_width")) || 0) + Math.max(0, Number(panel?.value("brim_object_gap")) || 0);
   }
   // What the plate preview draws as the brim (null: none outside the pieces).
+  // "Auto" (Orca's default) is left out: the slicer works out its own width per
+  // object from height, footprint and speed, and leaves it off most pieces, so
+  // only a brim that was actually picked is drawn.
   function brimSpec() {
     const kind = panel?.value("brim_type") || "auto_brim";
     const width = Math.max(0, Number(panel?.value("brim_width")) || 0);
-    if (["no_brim", "inner_only"].includes(kind) || !width) return null;
+    if (["no_brim", "inner_only", "auto_brim"].includes(kind) || !width) return null;
     return {
       kind, width,
       gap: Math.max(0, Number(panel?.value("brim_object_gap")) || 0),
@@ -690,7 +693,8 @@ export async function openSliceDialog(file, printerId, onDone, ctx = {}) {
       : objsz.length === 1 ? `Size: ${fmt(biggest.dims)}` : `${objsz.length} objects, biggest ${fmt(biggest.dims)}`;
     // Too big for the bed (with the brim around it)?
     const bed = bedSize();
-    const m = 2 * brimMargin();
+    const spec = brimSpec();
+    const m = spec && spec.kind !== "brim_ears" ? 2 * (spec.width + spec.gap) : 0;
     const over = bed ? objsz.filter((o) => Math.max(o.dims[0] + m - bed[0], o.dims[1] + m - bed[1]) > 0.01) : [];
     box.querySelector("[data-scale-warn]").innerHTML = over.length
       ? `<div class="notice warn">${over.length === 1 && objsz.length === 1 ? "At this scale it doesn't" : `${esc(over.map((o) => o.name).join(", "))} ${over.length > 1 ? "don't" : "doesn't"}`} fit on the ${bed.map(mm).join(" × ")} mm bed${m ? " (with its brim)" : ""}. Make it smaller.</div>`
